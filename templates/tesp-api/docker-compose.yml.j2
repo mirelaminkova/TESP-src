@@ -10,8 +10,8 @@
 # Based on the fork's docker-compose.yaml (same build target and /app mount),
 # minus its test-only parts: the pulsar_rest and MinIO services, the MinIO S3
 # credentials, and the staging volume shared with pulsar_rest. Pulsar runs on
-# the host here, and S3 is configured in settings.toml and .secrets.toml (both in
-# the /app mount), not in this file.
+# the host here. S3 is configured in settings.toml and, for the key pair, in
+# {{ tesp_secrets_file }}, mounted below; neither goes in this file.
 services:
   tesp-api:
     build:
@@ -35,6 +35,9 @@ services:
       - pulsar-proxy
     volumes:
       - ./:/app
+      # Read by Dynaconf next to settings.toml. Kept outside ./ so that
+      # `COPY . .` in the image build never picks it up.
+      - {{ tesp_secrets_file }}:/app/.secrets.toml:ro
 
   tesp-db:
     image: mongo:8.0

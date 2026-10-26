@@ -1,11 +1,12 @@
 ---
 # Fails before anything is installed if the component parameters are invalid.
 - name: Check component parameters
+  # Same hosts workaround as the plays below (SRC needs localhost).
   hosts: "{{ lookup('env', 'variable_host') | default('localhost', true) }}"
   gather_facts: false
   tasks:
-    # Only a boolean leaves this task, so the assert below needs no no_log and
-    # can show its message.
+    # Keeps the secret out of the assert below, which then needs no no_log
+    # and can show its message.
     - name: Check whether an S3 secret key is set
       ansible.builtin.set_fact:
         tesp_s3_has_secret_key: "{{ tesp_s3_secret_access_key | length > 0 }}"
@@ -13,7 +14,8 @@
 
     - name: Validate the S3 parameters (src_s3_*)
       vars:
-        url_re: 'https?://[^/?#\s]+(/\S*)?$'
+        # scheme://host[:port][/path], ASCII only (no user:pass@)
+        url_re: 'https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?$'
       ansible.builtin.assert:
         quiet: true
         that:
@@ -26,12 +28,14 @@
         fail_msg: >-
           Invalid S3 component parameters.
           src_s3_endpoint_url must be empty (AWS S3) or an http:// or
-          https:// URL such as https://objectstore.surf.nl;
+          https:// URL with a host and optional port and path, such as
+          https://s3.example.org;
           src_s3_addressing_style must be path, virtual or auto;
           src_s3_region may only contain letters, digits and dashes;
           src_s3_access_key_id and src_s3_secret_access_key must be set
-          together; tesp_s3_*presign_expiry_seconds must be between 1 and
-          604800. See "Using S3" in the README.
+          together; tesp_s3_presign_expiry_seconds and
+          tesp_s3_output_presign_expiry_seconds must be between 1 and 604800.
+          See "Using S3" in the README.
 
 - name: Install pre-requisites (SLURM, DRMAA, time sync)
   hosts: "{{ lookup('env', 'variable_host') | default('localhost', true) }}" # workaround because SRC needs localhost, but molecule needs specifc hostvars
@@ -140,12 +144,20 @@
         group: root
         mode: '0640'
 
-    # Holds the S3 secret key: root-only, and no_log so it is never shown
-    # (not even with --diff or -v).
-    - name: Template TESP-API .secrets.toml (S3 credentials)
+    - name: Create the TESP-API secrets directory
+      ansible.builtin.file:
+        path: "{{ tesp_secrets_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+
+    # Holds the S3 secret key. no_log so it is never shown (not even with
+    # --diff or -v).
+    - name: Template TESP-API secrets (S3 credentials)
       ansible.builtin.template:
         src: templates/tesp-api/secrets.toml.j2
-        dest: "{{ tesp_install_dir }}/.secrets.toml"
+        dest: "{{ tesp_secrets_file }}"
         owner: root
         group: root
         mode: '0600'

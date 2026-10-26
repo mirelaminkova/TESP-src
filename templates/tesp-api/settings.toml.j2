@@ -29,8 +29,8 @@ basic_auth.password = "{{ tesp_basic_auth_password }}"
 # S3 inputs and outputs given as s3://bucket/key (validated at startup), set
 # from the src_s3_* component parameters. An empty endpoint means AWS S3.
 # s3.access_key_id and s3.secret_access_key are not in this file: they come
-# from the root-only .secrets.toml next to it (empty there = anonymous access,
-# i.e. public buckets only).
+# from /app/.secrets.toml, bind-mounted from the root-only tesp_secrets_file
+# (empty there = anonymous access, i.e. public buckets only).
 s3.endpoint_url = {{ tesp_s3_endpoint_url | to_json }}
 s3.region = {{ tesp_s3_region | to_json }}
 s3.addressing_style = {{ tesp_s3_addressing_style | to_json }}
