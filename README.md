@@ -1,180 +1,128 @@
----
-title: How to run a Pulsar in SURF Research Cloud
-author: hexylena
-date: 2024-11-29
-license: GPL-2.1
----
+# TESP on SURF Research Cloud
 
-# Pulsar Node on SURF Research Cloud
+This repository holds the Ansible playbook for a **GA4GH Task Execution Service (TES)** component on [SURF Research Cloud](https://portal.live.surfresearchcloud.nl/) (SRC). It turns a single workspace into a TES endpoint: you submit containerised tasks over HTTPS, and they run as SLURM jobs on the workspace.
 
-This repository provides the Ansible playbook for a [Pulsar](https://pulsar.readthedocs.io/) component on SURF Research Cloud (SRC), and serves as the primary documentation for using this Catalog Item.
+It is built on [TESP-API](https://github.com/CESNET/tesp-api) from CESNET, which uses [Pulsar](https://pulsar.readthedocs.io/) as its execution backend.
 
+## How it works
 
-## Using the Pulsar Catalog Item
+```
+TES client (curl, Nextflow, ...)
+   │  HTTPS + HTTP Basic auth
+   ▼
+nginx (host)            /tes/  →  127.0.0.1:8080
+   ▼
+tesp-api (Docker)       ──►  MongoDB (Docker, task state)
+   ▼
+pulsar-proxy (Docker)   adds Pulsar's private token to each request
+   ▼
+Pulsar (host, :8913)    not exposed through nginx
+   ▼
+SLURM + DRMAA (host)    each task runs in an Apptainer container
+```
 
-### Authentication
+What the playbook sets up:
 
-<!-- ![A profile for Helena Rasche is shown with a public ssh key fingerprint and a button for changing the ssh keys in the profile.](images/surf9.png) -->
+| Part | Where it is configured |
+| --- | --- |
+| SLURM controller + worker on the same node, DRMAA, chrony | `playbook.yml` (first play), `group_vars/all.yml` |
+| Pulsar with the `queued_drmaa` manager | `group_vars/all.yml` (`pulsar_*`) |
+| Docker, Apptainer, nginx reverse proxy with SRAM login | `playbook.yml`, `group_vars/all.yml` (`nginx_reverse_proxy_locations`) |
+| TESP-API stack: tesp-api, MongoDB, pulsar-proxy | `templates/tesp-api/`, `group_vars/all.yml` (`tesp_*`) |
+| Welcome page with your endpoint and credentials | `templates/welcome.html` |
 
-1. Ensure that you have an SSH key set in [your SRAM profile](https://sram.surf.nl/profile)
-2. Make a note of your **username** from that page. It is probably of the format `ABBBBBB###` where A is your first initial and BBBBB is your last name, and potentially a number at the end.
+Secrets are generated at deploy time: a random Pulsar token (only used between `pulsar-proxy` and Pulsar) and a random password for the TES endpoint.
 
-### Creating a Pulsar Node
+## Using the catalog item
 
-> [!NOTE]
-> SSH access is required to reconfigure galaxy. Please make sure you set an SSH key
+### 1. Before you start
 
-1. Log in to [SURF Research Cloud](https://portal.live.surfresearchcloud.nl/)
+1. Make sure you have an SSH key in [your SRAM profile](https://sram.surf.nl/profile). You only need it for troubleshooting on the node.
+2. Note your **username** from that page. It usually looks like `ABBBBBB###`: first initial, last name and possibly a number.
+
+### 2. Create a workspace
+
+1. Log in to [SURF Research Cloud](https://portal.live.surfresearchcloud.nl/).
 
    ![screenshot of SRC login portal with a bright yellow login button](images/surf1.png)
 
-2. In SRC, you should be in a collaborative organisation with a wallet. If you're not, I'm not sure how to fix that. I'm mostly writing this documentation for my colleagues in my CO. Mostly you can ignore the top half of the screen, only the bottom half is useful or relevant for us.
+2. You need to be in a collaborative organisation (CO) with a wallet. The **Workspaces** tab in the lower half of the dashboard is the part you need.
 
-   ![SRC dashboard, options like create new workspace, storage, or request a new wallet are available. three workspaces are listed: galaxy-test, imaging, and p20 in various states of running.](images/surf2.png)
+   ![SRC dashboard, options like create new workspace, storage, or request a new wallet are available. three workspaces are listed in various states of running.](images/surf2.png)
 
-3. In the **Workspaces Tab** on the bottom half of the screen, you'll find a **Plus Button** at right to add a new workspace
+3. Click the **plus button** on the right of the **Workspaces** tab to add a workspace, and choose the TESP catalog item.
 
-   ![A small plus button is hovered over which says Add. Below galaxy-test is shown running with a yellow Access button](images/surf3.png)
+   ![A small plus button is hovered over which says Add. Below, a workspace is shown running with a yellow Access button](images/surf3.png)
 
-4. Clicking that will let you choose any of the *Catalog Items* from SRC. They've got a wide selection but we're only interested in the two Pulsar Catalog Items
-
-   ![the two pulsar components in SRC: Galaxy Pulsar GPU Node (CUDA) and Galaxy Pulsar Node are shown. The second is expanded showing an author, Helena Rasche, and a description: let's you run galaxy jobs on another node](images/surf4.png)
-
-> [!WARNING]
-> The GPU nodes are *expensive*. In fact it
-> was the motivating reason for building this catalog item: to enable you to
-> launch a node, run some computations, and shut it down, saving you money.
-
-5. Creating a "workspace" (VM) from a catalog item (a template) is easy, most of the options are fixed for you, you just need to choose the size of the item. Pick an appropriate size for whatever computations you need to do.
+4. Pick a size. Choose it for the tasks you plan to run: everything runs on this one node.
 
    ![workspace creation screen, choose the cloud provider is locked to SURF HPC, flavour is locked to 22.04, and the size options are available from 1GB/8CPU to 60C/750GB Hi-mem](images/surf5.png)
 
-6. Pick a name, it can be anything, it does not matter. Check the expiration date to ensure it is just enough time for your computation and no more. Click submit when you are happy.
+5. Give it a name and check the **expiration date**. SRC deletes the workspace on that date, so choose just enough time for your work. Click **Submit**.
 
-> [!NOTE]
-> By default an "Expiration date" of around 3 days later is chosen. This is an incredibly useful feature as it saves you from forgetting to destroy a VM. Especially for GPU nodes it can help you ensure that they disappear after your computation is complete.
+   ![final details page asking for name and description, with a yellow submit button at the bottom](images/surf6.png)
 
-   ![almost there! some final details reads this page, asking for name and description. both have been filled out with 'pulsar'. a yellow submit button waits at the bottom](images/surf6.png)
+6. Wait for the workspace to be created. This usually takes 5–10 minutes.
 
-7. Once done, the workspace will be created for you. You'll need to wait ~5 minutes usually. Go for a beverage ☕️
+   ![workspace list showing a workspace being created.](images/surf7.png)
 
-   ![workspace list showing a workspace named pulsar being created.](images/surf7.png)
+> [!TIP]
+> To keep job data on an SRC storage volume, attach one when creating the workspace and set the component parameter `src_pulsar_storage_path` to its mount path. Without it, job data lives in `/mnt/pulsar` on the workspace disk.
 
-### Accessing the Pulsar Node
+### 3. Get your endpoint
 
-1. Once the workspace is up, you'll see an **Access** link:
+When the workspace is running, click **Access**. After an SRAM login you see the welcome page for your node, with:
 
-   ![A small plus button is hovered over which says Add. Below galaxy-test is shown running with a yellow Access button](images/surf3.png)
+- the **TES base URL**: `https://<workspace-fqdn>/tes`
+- the **username** (`tes`) and the generated **password**
+- ready-to-copy `curl` commands and a Nextflow config snippet
 
-2. Click that will show you a Pulsar information page. This page is running on your pulsar node itself, and is restricted to ensure only authorised members can access the contents. It includes some configuration you will need to copy to your Galaxy node in order to make use of the Pulsar node.
+Only members of your CO can open this page. Anyone with the username and password can submit tasks, so don't share them.
 
-   ![pulsar configuration information page showing an about with admins and metadata like workspace fqdn. Configuration for galaxy is shown below including XML changes](images/surf8.png)
+### 4. Run a task
 
+Check the service:
 
-### Configuring Galaxy
-
-1. Collect the requirements for accessing the Galaxy machine. You will need:
-
-   - your username from the first step
-   - your SSH key that is associated with your SRAM account
-
-2. SSH into your Galaxy machine (not pulsar!).
-
-   ```
-   ssh -i path/to/your/sram-ssh-key username@sensitiveimages.src-sensitive-i.src.surf-hosted.nl
-   ```
-
-3. You will need to `sudo su` to do anything useful. Do that now.
-4. Galaxy configuration is in `/srv/galaxy/` by default.
-
-The configuration is discussed fully in the Pulsar information, but it will be briefly covered here as well. Generally there are a few steps that must be followed:
-
-- A runner must be registered
-- A destination/environment must be added with the pulsar details
-- Some tools should be redirected to this Pulsar
-
-Here is an example of what those changes look like in your Galaxy node. ([FAQ: how to read a diff](https://training.galaxyproject.org/training-material/topics/admin/faqs/diffs.html)). In this example our pulsar node was called `p20` but that will be different for you.
-
-
-```diff
- runners:
-   local:
-     load: galaxy.jobs.runners.local:LocalJobRunner
-     workers: 4
-   condor:
-     load: galaxy.jobs.runners.condor:CondorJobRunner
-+  pulsar:
-+    load: galaxy.jobs.runners.pulsar:PulsarRESTJobRunner
- 
- 
- execution:
-   default: docker_dispatch
-   environments:
-     local_destination:
-       runner: local
- 
-     # ... probably some more environments here.
- 
-+    remote_p20:
-+       runner: pulsar
-+       url: https://p20.src-sensitive-i.src.surf-hosted.nl
-+       private_token: ySgfM1rnGIsiVN8XlfkFhTB5kgp7AZm3jDnd
-+       dependency_resolution: remote
-+       manager: _default_
-+       # Uncomment the following to enable interactive tools:
-+       docker_enabled: true
-+       docker_set_user: null
-+       docker_memory: "8G"
-+       singularity_enabled: false
-+       tmp_dir: true
-+       outputs_to_working_directory: false
-+       container_resolvers:
-+       - type: explicit
-+       require_container: True
-+       container_monitor_command: /mnt/pulsar/venv/bin/galaxy-container-monitor
-+       container_monitor_result: callback
-+       container_monitor_get_ip_method: command:echo p20.src-sensitive-i.src.surf-hosted.nl
- 
- 
- tools:
- - class: local # these special tools that aren't parameterized for remote execution - expression tools, upload, etc
-   environment: local_env
- - id: Cut1
-   environment: condor_1x1
-+- id: interactive_tool_jupyter_notebook
-+  environment: remote_p20
-+- id: interactive_tool_rstudio
-+  environment: remote_p20
+```bash
+curl -u 'tes:<password>' https://<workspace-fqdn>/tes/v1/service-info
 ```
 
-While you will simply copy-paste the runner and environment, you will need to identify yourself which tools should go to this Pulsar node.
-If you have already run the tool that needs to go to the GPU node, you can find the ID from the job information page:
-![job information page showing a tool id of interactive_tool_rstudio](./images/id1.png)
+Submit a task. Every executor must name a container image:
 
-Otherwise, it can be found from the URL of a tool page, or from the dropdown to the left of "Execute" at the top of the tool:
-![url bar and tool interface for the Cut1 tool](./images/id2.png)
+```bash
+curl -u 'tes:<password>' -H 'Content-Type: application/json' \
+  -d '{"name": "hello", "executors": [{"image": "alpine:3.20", "command": ["echo", "hello from TES"]}]}' \
+  https://<workspace-fqdn>/tes/v1/tasks
+```
 
-> [!IMPORTANT]
-> If you are running jobs for a limited period of time, you might consider making this pulsar node the default destination. Remember to use the `remote_...` name of your pulsar node, based on what you copied. Not `remote_p20`.
-> 
-> ```diff
->  execution:
-> -  default: docker_dispatch
-> +  default: remote_p20
->    environments:
->      local_destination:
->        runner: local
-> ```
+Follow it with the returned id:
 
-With that, you're done, and for the length of time your node is running, your chosen tools (or everything) will be executed on that Pulsar node with more memory and CPU than the Galaxy host, and maybe a GPU as well!
+```bash
+curl -u 'tes:<password>' 'https://<workspace-fqdn>/tes/v1/tasks/<id>?view=FULL'
+```
 
-### Adding Custom Tools (Sensitive Imaging CO Specific)
+The interactive API docs (Swagger UI) are at `https://<workspace-fqdn>/tes/swagger-ui.html`.
 
-You can edit `/srv/galaxy/config/emc-tool-conf.xml` to add new tool XMLs (e.g. for Teo's Thrombo tool case)
+## Troubleshooting
 
-Remember to restart the Galaxy processes after: `systemctl restart galaxy-*`
+SSH to the workspace with your SRAM key and become root (`sudo su`), then:
 
+```bash
+cd /srv/tesp-api
+docker compose -f docker-compose.deploy.yml ps
+docker compose -f docker-compose.deploy.yml logs -f tesp-api
+systemctl status pulsar
+squeue
+```
 
-## License
+## Configuration notes
 
-GPL-2
+- **TESP-API version** is pinned in `group_vars/all.yml` (`tesp_api_version`). Update it deliberately and re-test.
+- **Container runtime:** `tesp_container_type: singularity` runs task images with Apptainer. The upstream `both` mode is broken (it leaves out the `docker://` image prefix), so don't use it.
+- **MTU:** SRC needs a lower MTU on Docker networks (`tesp_network_mtu: 1442`).
+
+## Credits and license
+
+This component started as a fork of [ErasmusMC-Bioinformatics/src-component-pulsar](https://github.com/ErasmusMC-Bioinformatics/src-component-pulsar) by Helena Rasche, and keeps its history. TES support comes from [CESNET/tesp-api](https://github.com/CESNET/tesp-api).
+
+Licensed under the [GNU LGPL v2.1](LICENSE).
