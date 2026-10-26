@@ -2,7 +2,7 @@
 
 This repository holds the Ansible playbook for a **GA4GH Task Execution Service (TES)** component on [SURF Research Cloud](https://portal.live.surfresearchcloud.nl/) (SRC). It turns a single workspace into a TES endpoint: you submit containerised tasks over HTTPS, and they run as SLURM jobs on the workspace.
 
-It is built on [TESP-API](https://github.com/CESNET/tesp-api) from CESNET, which uses [Pulsar](https://pulsar.readthedocs.io/) as its execution backend.
+It is built on [TESP-API](https://github.com/CESNET/tesp-api) from CESNET, which uses [Pulsar](https://pulsar.readthedocs.io/) as its execution backend. The component deploys the [mirelaminkova/tesp-api](https://github.com/mirelaminkova/tesp-api) fork, which carries TES and S3 fixes.
 
 ## How it works
 
@@ -117,12 +117,17 @@ squeue
 
 ## Configuration notes
 
-- **TESP-API version** is pinned in `group_vars/all.yml` (`tesp_api_version`). Update it deliberately and re-test.
-- **Container runtime:** `tesp_container_type: singularity` runs task images with Apptainer. The upstream `both` mode is broken (it leaves out the `docker://` image prefix), so don't use it.
+- **TESP-API version:** `group_vars/all.yml` pins `tesp_api_repo` to the [mirelaminkova/tesp-api](https://github.com/mirelaminkova/tesp-api) fork and `tesp_api_version` to a commit on its `main` (currently `8b44056`). When you bump `tesp_api_version`:
+  1. Check that the fork's CI is green at that commit.
+  2. Diff the fork's `settings.toml` with `templates/tesp-api/settings.toml.j2` and add any new or renamed keys. The template replaces `settings.toml` on deploy, so a missing key is missing in production.
+  3. Diff the fork's `docker-compose.yaml` with `templates/tesp-api/docker-compose.yml.j2` for new build targets, env vars, volumes or services.
+  4. Re-test on a workspace.
+- **Container runtime:** `tesp_container_type: singularity` runs task images with Apptainer, using `singularity exec --no-eval`, which requires Apptainer 1.1 or newer. The `usegalaxy_eu.apptainer` role installs it from the Apptainer PPA, which provides 1.5.x for Ubuntu 22.04; it doesn't upgrade an apptainer that is already installed. The upstream `both` mode is broken (it leaves out the `docker://` image prefix), so don't use it.
+- **S3:** tasks can name inputs and outputs as `s3://bucket/key`. No S3 endpoint or credentials are configured yet, so only inputs from public AWS S3 buckets work. Outputs to `s3://` need credentials, so for now such a task runs and then fails when it uploads its outputs. Configurable S3 is tracked in [#2](https://github.com/mirelaminkova/TESP-src/issues/2).
 - **MTU:** SRC needs a lower MTU on Docker networks (`tesp_network_mtu: 1442`).
 
 ## Credits and license
 
-This component started as a fork of [ErasmusMC-Bioinformatics/src-component-pulsar](https://github.com/ErasmusMC-Bioinformatics/src-component-pulsar) by Helena Rasche, and keeps its history. TES support comes from [CESNET/tesp-api](https://github.com/CESNET/tesp-api).
+This component started as a fork of [ErasmusMC-Bioinformatics/src-component-pulsar](https://github.com/ErasmusMC-Bioinformatics/src-component-pulsar) by Helena Rasche, and keeps its history. TES support comes from [CESNET/tesp-api](https://github.com/CESNET/tesp-api), via the fork named above.
 
 Licensed under the [GNU LGPL v2.1](LICENSE).
