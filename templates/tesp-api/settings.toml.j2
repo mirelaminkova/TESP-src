@@ -5,7 +5,7 @@
 # tesp_api_version), except the S3 key pair, which is in .secrets.toml. The
 # stack runs with FASTAPI_PROFILE=src; Dynaconf merges [src] over [default].
 # [src] repeats the deployment-critical values; the rest (pulsar.status.*,
-# logging.level, oauth, s3.*) comes from [default].
+# logging.level, oauth, s3.*, the resource settings) comes from [default].
 #
 # TESP-API talks to the host Pulsar through the `pulsar-proxy` sidecar, which
 # injects Pulsar's private_token into every request (tesp-api itself cannot
@@ -17,6 +17,15 @@ pulsar.url = "http://pulsar-proxy:8913"
 pulsar.status.poll_interval = 4
 pulsar.status.max_polls = 400
 pulsar.client_timeout = 30
+# TES cpu_cores / ram_gb as per-job SLURM options (e.g. --cpus-per-task=2
+# --mem=1536), sent to Pulsar's DRMAA manager. The {placeholders} are filled
+# in by tesp-api per task. See "Resource limits" in the README.
+pulsar.native_specification.cpu_cores = {{ tesp_native_spec_cpu_cores | to_json }}
+pulsar.native_specification.ram_gb = {{ tesp_native_spec_ram_gb | to_json }}
+
+# --cpus/--memory on the container command line: "auto" means docker only, so
+# none for Apptainer here; SLURM allocates the resources instead.
+container.resource_limits = {{ tesp_container_resource_limits | to_json }}
 
 logging.level = "INFO"
 logging.output_json = false

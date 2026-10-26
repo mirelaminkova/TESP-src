@@ -13,9 +13,33 @@ nginx_reverse_proxy_locations:
 # token-injecting pulsar-proxy sidecar (templates/tesp-api/).
 
 # SLURM
+# One node that is both controller and worker. TES cpu_cores and ram_gb reach
+# SLURM as --cpus-per-task and --mem (tesp_native_spec_* below), so CPUs and
+# memory are consumable resources: SLURM starts a job only when the node has
+# that many CPUs and that much memory free. Without CPUs and RealMemory the
+# node counts as 1 CPU and 1 MB, and every job asking for more is rejected.
 slurm_roles: ['controller', 'exec']
 slurm_nodes:
 - name: localhost
+  CPUs: "{{ ansible_facts['processor_vcpus'] }}"
+  RealMemory: "{{ tesp_slurm_real_memory_mb }}"
+slurm_config:
+  SelectType: select/cons_tres
+  # CPU, not Core: --cpus-per-task counts logical CPUs, the same as CPUs above.
+  SelectTypeParameters: CR_CPU_Memory
+  # Memory for jobs without --mem (tasks without ram_gb), per allocated CPU.
+  # Without it such a job would take all of RealMemory and run alone.
+  DefMemPerCPU: >-
+    {{ (tesp_slurm_real_memory_mb | int)
+       // (ansible_facts['processor_vcpus'] | int) }}
+# Memory (MiB) kept out of SLURM for the OS, Docker (tesp-api, MongoDB),
+# Pulsar and nginx. At most half of the node's memory is held back.
+tesp_slurm_reserved_memory_mb: 2048
+# Must not exceed what slurmd detects, or SLURM drains the node.
+tesp_slurm_real_memory_mb: >-
+  {{ [(ansible_facts['memtotal_mb'] | int)
+        - (tesp_slurm_reserved_memory_mb | int),
+      (ansible_facts['memtotal_mb'] | int) // 2] | max }}
 
 # Pulsar
 pulsar_root: "{{ src_pulsar_storage_path | default('/mnt/pulsar', true) }}" # component variable attached_storage_path
@@ -80,8 +104,8 @@ docker_users:
 # carries the TES and S3 fixes. Bump deliberately: see "Configuration notes"
 # in the README for what to check.
 tesp_api_repo: "https://github.com/mirelaminkova/tesp-api.git"
-# mirelaminkova/tesp-api main, commit date 2026-10-26
-tesp_api_version: "8b44056311279575dcd9d0009616f29b81c5985b"
+# mirelaminkova/tesp-api main, CI run 40350207689
+tesp_api_version: "2d8496a0b5e04fa9b7723cd56e06d1c3343f9083"
 tesp_install_dir: /srv/tesp-api
 tesp_api_port: 8080          # host-localhost port; must match the /tes/ nginx proxy_pass above
 tesp_root_path: /tes         # public URL prefix (also passed to uvicorn --root-path)
@@ -91,6 +115,19 @@ tesp_container_type: singularity  # docker | singularity -- how tesp-api wraps T
                                   # apptainer/SLURM node so images resolve as docker://<image>.
 tesp_network_mtu: 1442       # SURF Research Cloud requires a lower MTU
 tesp_basic_auth_user: tes
+
+# How TES task resources (cpu_cores, ram_gb) are enforced; see "Resource
+# limits" in the README. Templates for the per-job SLURM options that Pulsar
+# passes through DRMAA, each used only when the task requests that resource.
+# Placeholders (Python format, not Jinja): {cpu_cores} in the first, {ram_gb}
+# or {ram_mib} (ram_gb in whole MiB, rounded up) in the second. Set one to ""
+# to leave that resource out of the SLURM request.
+tesp_native_spec_cpu_cores: "--cpus-per-task={cpu_cores}"
+tesp_native_spec_ram_gb: "--mem={ram_mib}"
+# auto | always | never: --cpus/--memory on the container command line.
+# "auto" adds them for docker only. Keep it for singularity: Apptainer needs a
+# cgroups manager for these flags and fails the task without one.
+tesp_container_resource_limits: auto
 
 # S3 storage for s3://bucket/key task inputs and outputs (see "Using S3" in the
 # README). Set from the optional src_s3_* component parameters; with none set,

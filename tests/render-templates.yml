@@ -121,6 +121,37 @@
                 in files['docker-compose.yml']
             fail_msg: S3 key pair missing from secrets.toml or leaked elsewhere
 
+        # The {placeholders} are filled in by tesp-api, so they must reach
+        # settings.toml as written.
+        - name: TES resources go to SLURM, not to Apptainer
+          ansible.builtin.assert:
+            that:
+              - >-
+                'pulsar.native_specification.cpu_cores = '
+                ~ '"--cpus-per-task={cpu_cores}"' in files['settings.toml']
+              - >-
+                'pulsar.native_specification.ram_gb = "--mem={ram_mib}"'
+                in files['settings.toml']
+              - >-
+                'container.resource_limits = "auto"' in files['settings.toml']
+
+        - name: SLURM node and memory settings follow the node's facts
+          ansible.builtin.assert:
+            that:
+              - slurm_nodes[0].CPUs | int == 8
+              - slurm_nodes[0].RealMemory | int == 16000 - 2048
+              - slurm_config.SelectTypeParameters == 'CR_CPU_Memory'
+              - slurm_config.DefMemPerCPU | int == (16000 - 2048) // 8
+          vars:
+            ansible_facts: {processor_vcpus: 8, memtotal_mb: 16000}
+
+        - name: SLURM keeps at least half of a small node's memory
+          ansible.builtin.assert:
+            that:
+              - slurm_nodes[0].RealMemory | int == 1500
+          vars:
+            ansible_facts: {processor_vcpus: 1, memtotal_mb: 3000}
+
         - name: Firewall script guards the Pulsar port
           ansible.builtin.assert:
             that:
