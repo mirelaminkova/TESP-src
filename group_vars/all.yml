@@ -72,8 +72,14 @@ docker_users:
 # TESP-API (GA4GH TES -> Pulsar bridge)
 # Exposed publicly via nginx at https://<workspace_fqdn>{{ tesp_root_path }}/ and
 # protected by tesp-api's own HTTP basic auth (password generated at deploy time).
-tesp_api_repo: "https://github.com/CESNET/tesp-api.git"
-tesp_api_version: "3d470f76d4289abf15ae4b047ad8e267f2a944a9"  # CESNET/tesp-api main @ 2026-02-13; bump deliberately
+# Deployed from the mirelaminkova/tesp-api fork of CESNET/tesp-api, which
+# carries the TES and S3 fixes and builds on Debian bookworm (upstream's
+# bullseye image no longer builds). Pin a fork commit whose CI (unit,
+# integration, conformance) is green. Bump deliberately, and check
+# templates/tesp-api/ against the fork's settings.toml and docker-compose.yaml.
+# Pinned: mirelaminkova/tesp-api main @ 2026-10-26.
+tesp_api_repo: "https://github.com/mirelaminkova/tesp-api.git"
+tesp_api_version: "8b44056311279575dcd9d0009616f29b81c5985b"
 tesp_install_dir: /srv/tesp-api
 tesp_api_port: 8080          # host-localhost port; must match the /tes/ nginx proxy_pass above
 tesp_root_path: /tes         # public URL prefix (also passed to uvicorn --root-path)

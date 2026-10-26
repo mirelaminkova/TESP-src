@@ -1,5 +1,10 @@
 # Managed by Ansible (TESP-src). Do not edit by hand.
 #
+# Replaces the settings.toml of the tesp-api checkout, so it must define every
+# setting the app reads (compare with the fork's settings.toml when bumping
+# tesp_api_version). The stack runs with FASTAPI_PROFILE=src; Dynaconf merges
+# [src] over [default], so [src] only lists what differs or must not be missed.
+#
 # TESP-API talks to the host Pulsar through the `pulsar-proxy` sidecar, which
 # injects Pulsar's private_token into every request (tesp-api itself cannot
 # send the token). MongoDB and the proxy are reached by their compose service
@@ -18,6 +23,19 @@ oauth.enable = false
 basic_auth.enable = true
 basic_auth.username = "{{ tesp_basic_auth_user }}"
 basic_auth.password = "{{ tesp_basic_auth_password }}"
+
+# S3 inputs and outputs given as s3://bucket/key (validated at startup).
+# Not configured on SRC yet: an empty endpoint means AWS S3, and empty
+# credentials mean anonymous access, i.e. public buckets only. Credentials
+# never go in this file; tesp-api also reads TESP_API_S3__* from the
+# environment and a .secrets.toml next to this file.
+s3.endpoint_url = ""
+s3.region = "us-east-1"
+s3.access_key_id = ""
+s3.secret_access_key = ""
+s3.addressing_style = "path"              # "path", "virtual" or "auto"
+s3.presign_expiry_seconds = 3600          # download URLs handed to Pulsar
+s3.output_presign_expiry_seconds = 86400  # upload URLs; must cover a whole task run
 
 [src]
 db.mongodb_uri = "mongodb://tesp-db:27017"

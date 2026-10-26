@@ -2,7 +2,7 @@
 
 This repository holds the Ansible playbook for a **GA4GH Task Execution Service (TES)** component on [SURF Research Cloud](https://portal.live.surfresearchcloud.nl/) (SRC). It turns a single workspace into a TES endpoint: you submit containerised tasks over HTTPS, and they run as SLURM jobs on the workspace.
 
-It is built on [TESP-API](https://github.com/CESNET/tesp-api) from CESNET, which uses [Pulsar](https://pulsar.readthedocs.io/) as its execution backend.
+It is built on [TESP-API](https://github.com/CESNET/tesp-api) from CESNET, which uses [Pulsar](https://pulsar.readthedocs.io/) as its execution backend. The component deploys the [mirelaminkova/tesp-api](https://github.com/mirelaminkova/tesp-api) fork, which carries TES and S3 fixes.
 
 ## How it works
 
@@ -117,12 +117,13 @@ squeue
 
 ## Configuration notes
 
-- **TESP-API version** is pinned in `group_vars/all.yml` (`tesp_api_version`). Update it deliberately and re-test.
-- **Container runtime:** `tesp_container_type: singularity` runs task images with Apptainer. The upstream `both` mode is broken (it leaves out the `docker://` image prefix), so don't use it.
+- **TESP-API version:** `group_vars/all.yml` pins `tesp_api_repo` to the [mirelaminkova/tesp-api](https://github.com/mirelaminkova/tesp-api) fork and `tesp_api_version` to a commit on its `main` (currently `8b44056`). When you bump it, compare the fork's `settings.toml` and `docker-compose.yaml` with `templates/tesp-api/`, since the template replaces `settings.toml` on deploy, then re-test.
+- **Container runtime:** `tesp_container_type: singularity` runs task images with Apptainer, using `singularity exec --no-eval` (needs Apptainer 1.1 or newer; the `usegalaxy_eu.apptainer` role installs the current release from the Apptainer PPA). The upstream `both` mode is broken (it leaves out the `docker://` image prefix), so don't use it.
+- **S3:** tasks can name inputs and outputs as `s3://bucket/key`. No S3 endpoint or credentials are configured yet, so only public AWS S3 buckets work (read-only, anonymous). Configurable S3 is tracked in [#2](https://github.com/mirelaminkova/TESP-src/issues/2).
 - **MTU:** SRC needs a lower MTU on Docker networks (`tesp_network_mtu: 1442`).
 
 ## Credits and license
 
-This component started as a fork of [ErasmusMC-Bioinformatics/src-component-pulsar](https://github.com/ErasmusMC-Bioinformatics/src-component-pulsar) by Helena Rasche, and keeps its history. TES support comes from [CESNET/tesp-api](https://github.com/CESNET/tesp-api).
+This component started as a fork of [ErasmusMC-Bioinformatics/src-component-pulsar](https://github.com/ErasmusMC-Bioinformatics/src-component-pulsar) by Helena Rasche, and keeps its history. TES support comes from [CESNET/tesp-api](https://github.com/CESNET/tesp-api), deployed from the [mirelaminkova/tesp-api](https://github.com/mirelaminkova/tesp-api) fork.
 
 Licensed under the [GNU LGPL v2.1](LICENSE).
