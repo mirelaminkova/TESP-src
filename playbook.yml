@@ -60,13 +60,14 @@
           - iptables
         state: present
 
+    # ---- Pulsar firewall ----
     # Pulsar listens on pulsar_host (0.0.0.0) so the pulsar-proxy container can
     # reach it; this keeps everyone else out. Set up before the Pulsar role
     # starts Pulsar, and re-applied at boot by a systemd unit.
     - name: Install Pulsar firewall script
       ansible.builtin.template:
         src: templates/pulsar-firewall.sh.j2
-        dest: "{{ pulsar_firewall_script }}"
+        dest: /usr/local/sbin/tesp-pulsar-firewall
         owner: root
         group: root
         mode: '0755'
@@ -86,13 +87,6 @@
         name: tesp-pulsar-firewall
         enabled: true
         state: started
-        daemon_reload: true
-
-  handlers:
-    - name: Restart Pulsar firewall
-      ansible.builtin.systemd_service:
-        name: tesp-pulsar-firewall
-        state: restarted
         daemon_reload: true
 
   roles:
@@ -148,7 +142,7 @@
         dest: "{{ tesp_install_dir }}/pulsar-token-proxy.conf"
         owner: root
         group: root
-        mode: '0644'
+        mode: '0640'  # holds the Pulsar token
 
     - name: Template TESP-API deployment compose file
       ansible.builtin.template:
@@ -165,3 +159,10 @@
           - docker-compose.deploy.yml
         build: always
         state: present
+
+  handlers:
+    - name: Restart Pulsar firewall
+      ansible.builtin.systemd_service:
+        name: tesp-pulsar-firewall
+        state: restarted
+        daemon_reload: true

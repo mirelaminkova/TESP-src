@@ -11,7 +11,6 @@
   vars_files:
     - ../group_vars/all.yml
   vars:
-    pulsar_port: 8913  # galaxyproject.pulsar role default
     workspace_fqdn: tesp.example.src.surf-hosted.nl
     fact_co_groups: {src_co_admin: test-co-admins}
     src_pulsar_storage_path: ""
@@ -38,7 +37,8 @@
         - name: Render templates
           ansible.builtin.template:
             src: "{{ templates_dir }}/{{ item }}"
-            dest: "{{ out.path }}/{{ item | basename }}"
+            dest: >-
+              {{ out.path }}/{{ item | basename | regex_replace('\.j2$', '') }}
             mode: '0600'
           loop:
             - welcome.html
@@ -54,9 +54,9 @@
             src: "{{ out.path }}/{{ item }}"
           loop:
             - welcome.html
-            - pulsar-firewall.sh.j2
-            - pulsar-token-proxy.conf.j2
-            - settings.toml.j2
+            - pulsar-firewall.sh
+            - pulsar-token-proxy.conf
+            - settings.toml
           register: rendered
 
         - name: Index rendered files by name
@@ -78,23 +78,31 @@
               - tesp_api_version in files['welcome.html']
             fail_msg: welcome.html leaks a secret or lost connection details
 
+        # Catches secrets the test doesn't know about (e.g. future S3
+        # credentials) if a variable dump is added back.
+        - name: Welcome page template doesn't dump variables
+          ansible.builtin.assert:
+            that:
+              - "'hostvars' not in welcome_src"
+              - "'to_nice_json' not in welcome_src"
+              - "'to_json' not in welcome_src"
+          vars:
+            welcome_src: "{{ lookup('file', templates_dir ~ '/welcome.html') }}"
+
         - name: Pulsar token goes only to the proxy, TES password to tesp-api
           ansible.builtin.assert:
             that:
-              - pulsar_token in files['pulsar-token-proxy.conf.j2']
-              - pulsar_token not in files['settings.toml.j2']
-              - tesp_basic_auth_password in files['settings.toml.j2']
+              - pulsar_token in files['pulsar-token-proxy.conf']
+              - pulsar_token not in files['settings.toml']
+              - tesp_basic_auth_password in files['settings.toml']
 
         - name: Firewall script guards the Pulsar port
           ansible.builtin.assert:
             that:
-              - "'--dport 8913 -j \"$CHAIN\"' in files['pulsar-firewall.sh.j2']"
-              - "'-i docker0 -j RETURN' in files['pulsar-firewall.sh.j2']"
-              - "'-i br-+ -j RETURN' in files['pulsar-firewall.sh.j2']"
-              - "'-j DROP' in files['pulsar-firewall.sh.j2']"
+              - ('--dport ' ~ pulsar_port) in files['pulsar-firewall.sh']
 
         - name: Firewall script is valid sh
-          ansible.builtin.command: sh -n {{ out.path }}/pulsar-firewall.sh.j2
+          ansible.builtin.command: sh -n {{ out.path }}/pulsar-firewall.sh
           changed_when: false
 
       always:

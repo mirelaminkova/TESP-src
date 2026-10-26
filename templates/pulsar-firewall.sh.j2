@@ -9,11 +9,16 @@
 # Matching on interfaces rather than subnets keeps this independent of the
 # addresses Docker picks: docker0 is the default bridge, br-* are
 # user-defined networks such as the TESP-API compose network. Allowed packets
-# RETURN to the rest of INPUT, so any existing firewall still applies.
+# RETURN to the rest of INPUT, so any existing firewall still applies. Any
+# container can connect, but only root and docker-group users (who are
+# root-equivalent) can start containers.
+#
+# Something that rewrites INPUT later (ufw enable/reload, iptables-restore)
+# can drop the jump; running this script again puts it back.
 # Idempotent: safe to run again (Ansible deploys, reboots).
 set -eu
 
-CHAIN={{ pulsar_firewall_chain }}
+CHAIN=TESP-PULSAR
 
 iptables -w -N "$CHAIN" 2>/dev/null || iptables -w -F "$CHAIN"
 iptables -w -A "$CHAIN" -i lo -j RETURN

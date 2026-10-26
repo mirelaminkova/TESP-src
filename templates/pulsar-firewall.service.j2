@@ -1,5 +1,7 @@
 # Managed by Ansible (TESP-src). Do not edit by hand.
 # Restricts Pulsar's port to loopback and Docker bridges; see the script.
+# RequiredBy keeps Pulsar from starting if the rule can't be applied (and
+# means restarting this unit restarts Pulsar too).
 [Unit]
 Description=Restrict Pulsar port {{ pulsar_port }} to loopback and Docker bridges
 Before=pulsar.service
@@ -7,7 +9,8 @@ Before=pulsar.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart={{ pulsar_firewall_script }}
+ExecStart=/usr/local/sbin/tesp-pulsar-firewall
 
 [Install]
 WantedBy=multi-user.target
+RequiredBy=pulsar.service
