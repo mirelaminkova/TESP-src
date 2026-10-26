@@ -1,5 +1,5 @@
 ---
-- name: Install Pre-requisites for Pulsar
+- name: Install pre-requisites (SLURM, DRMAA, time sync)
   hosts: "{{ lookup('env', 'variable_host') | default('localhost', true) }}" # workaround because SRC needs localhost, but molecule needs specifc hostvars
   roles:
     - galaxyproject.repos
@@ -28,7 +28,7 @@
         state: restarted
 
 
-- name: Install Pulsar Server
+- name: Install TESP (GA4GH TES API backed by Pulsar)
   hosts: "{{ lookup('env', 'variable_host') | default('localhost', true) }}" # workaround because SRC needs localhost, but molecule needs specifc hostvars
 
   pre_tasks:
