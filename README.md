@@ -25,7 +25,7 @@ What the playbook sets up:
 
 | Part | Where it is configured |
 | --- | --- |
-| SLURM controller + worker on the same node, DRMAA, chrony | `playbook.yml` (first play), `group_vars/all.yml` |
+| SLURM controller + worker on the same node, DRMAA, chrony | `playbook.yml` (first play), `group_vars/all.yml` (`slurm_*`, `tesp_slurm_*`; see [Resource limits](#resource-limits)) |
 | Pulsar with the `queued_drmaa` manager | `group_vars/all.yml` (`pulsar_*`) |
 | Docker, Apptainer, nginx reverse proxy with SRAM login | `playbook.yml`, `group_vars/all.yml` (`nginx_reverse_proxy_locations`) |
 | TESP-API stack: tesp-api, MongoDB, pulsar-proxy | `templates/tesp-api/`, `group_vars/all.yml` (`tesp_*`) |
@@ -148,6 +148,19 @@ aws {
 }
 ```
 
+## Resource limits
+
+A task's `resources.cpu_cores` and `resources.ram_gb` become SLURM options for its job: tesp-api fills in `pulsar.native_specification.*` in `settings.toml` and Pulsar hands the result to SLURM through DRMAA. A task with `"cpu_cores": 2, "ram_gb": 1.5` runs as a job with `--cpus-per-task=2 --mem=1536` (MiB, rounded up). A task that leaves a resource out gets no option for it. The option formats are `tesp_native_spec_cpu_cores` and `tesp_native_spec_ram_gb` in `group_vars/all.yml`; set one to `""` to stop passing that resource to SLURM.
+
+SLURM sees the workspace's CPUs (`CPUs`) and its memory minus `tesp_slurm_reserved_memory_mb` (2 GiB, at most half the node) for the OS, Docker and Pulsar (`RealMemory`). CPUs and memory are consumable resources (`SelectType=select/cons_tres`, `SelectTypeParameters=CR_CPU_Memory`), and a job without `--mem` gets `DefMemPerCPU`, its per-CPU share of `RealMemory`. What that means for tasks:
+
+- **Scheduling:** a job starts only when that many CPUs and that much memory are free; until then it waits in the queue (`squeue` shows it as pending). Tasks therefore don't oversubscribe the node. tesp-api stops waiting for a task after `pulsar.status.max_polls` × `pulsar.status.poll_interval` (400 × 4 s, about 27 minutes), counting queue time, and marks it failed, so long queues or long tasks hit that limit.
+- **Too large for the node:** a task asking for more CPUs or memory than the node has is rejected by SLURM and fails at submission. Size the workspace for your largest task, or cap the requests in the client, for example with Nextflow's `process.resourceLimits = [cpus: 8, memory: 30.GB]`.
+- **No hard limit at run time:** SLURM reserves the resources but doesn't confine the job to them. The role's `ProctrackType=proctrack/pgid` and the default task plugin don't use cgroups, so a task can use more CPU or memory than it asked for, at the cost of other tasks.
+- **Re-running the playbook:** a change to these SLURM settings restarts `slurmctld`, and changing `SelectType` on a running node loses SLURM's running and pending jobs. Re-run the playbook on an existing workspace only when no tasks are running.
+
+The container itself gets no `--cpus`/`--memory` flags: `container.resource_limits = "auto"` (`tesp_container_resource_limits`) applies them only to Docker. Apptainer needs a working cgroups manager for those flags and fails the task without one.
+
 ## Troubleshooting
 
 SSH to the workspace with your SRAM key and become root (`sudo su`), then:
@@ -162,9 +175,9 @@ squeue
 
 ## Configuration notes
 
-- **TESP-API version:** `group_vars/all.yml` pins `tesp_api_repo` to the [mirelaminkova/tesp-api](https://github.com/mirelaminkova/tesp-api) fork and `tesp_api_version` to a commit on its `main` (currently `8b44056`). When you bump `tesp_api_version`:
+- **TESP-API version:** `group_vars/all.yml` pins `tesp_api_repo` to the [mirelaminkova/tesp-api](https://github.com/mirelaminkova/tesp-api) fork and `tesp_api_version` to a commit on its `main` (currently `2d8496a`). When you bump `tesp_api_version`:
   1. Check that the fork's CI is green at that commit.
-  2. Diff the fork's `settings.toml` with `templates/tesp-api/settings.toml.j2` and add any new or renamed keys. The template replaces `settings.toml` on deploy, so a missing key is missing in production. Also check that `tesp_api/config/properties.py` still loads `.secrets.toml` and that the S3 key names still match `templates/tesp-api/secrets.toml.j2`; otherwise the credentials are silently ignored and S3 access becomes anonymous.
+  2. Diff the fork's `settings.toml` with `templates/tesp-api/settings.toml.j2` and add any new or renamed keys. The template replaces `settings.toml` on deploy, so a missing key is missing in production. Also check that `tesp_api/config/properties.py` still loads `.secrets.toml` and that the S3 key names still match `templates/tesp-api/secrets.toml.j2`; otherwise the credentials are silently ignored and S3 access becomes anonymous. Also check that `tesp_api/service/resources.py` still fills in the `{cpu_cores}`, `{ram_gb}` and `{ram_mib}` placeholders used by `tesp_native_spec_*`.
   3. Diff the fork's `docker-compose.yaml` with `templates/tesp-api/docker-compose.yml.j2` for new build targets, env vars, volumes or services.
   4. Re-test on a workspace.
 - **Container runtime:** `tesp_container_type: singularity` runs task images with Apptainer, using `singularity exec --no-eval`, which requires Apptainer 1.1 or newer. The `usegalaxy_eu.apptainer` role installs it from the Apptainer PPA, which provides 1.5.x for Ubuntu 22.04; it doesn't upgrade an apptainer that is already installed. The upstream `both` mode is broken (it leaves out the `docker://` image prefix), so don't use it.
@@ -174,7 +187,7 @@ squeue
 
 ## Checks
 
-`tests/render-templates.yml` renders every template with test values and checks that the welcome page doesn't leak the Pulsar token or dump variables, and that the S3 key pair ends up only in the secrets file. It needs only `ansible-core`, not root, Docker or the roles from `requirements.yml`:
+`tests/render-templates.yml` renders every template with test values and checks, among other things, that the welcome page doesn't leak the Pulsar token or dump variables, and that the S3 key pair ends up only in the secrets file. It needs only `ansible-core`, not root, Docker or the roles from `requirements.yml`:
 
 ```bash
 ansible-playbook -i localhost, -c local tests/render-templates.yml
