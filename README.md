@@ -16,7 +16,7 @@ tesp-api (Docker)       ──►  MongoDB (Docker, task state)
    ▼
 pulsar-proxy (Docker)   adds Pulsar's private token to each request
    ▼
-Pulsar (host, :8913)    not exposed through nginx
+Pulsar (host, :8913)    not exposed through nginx; firewalled to loopback + Docker bridges
    ▼
 SLURM + DRMAA (host)    each task runs in an Apptainer container
 ```
@@ -30,6 +30,7 @@ What the playbook sets up:
 | Docker, Apptainer, nginx reverse proxy with SRAM login | `playbook.yml`, `group_vars/all.yml` (`nginx_reverse_proxy_locations`) |
 | TESP-API stack: tesp-api, MongoDB, pulsar-proxy | `templates/tesp-api/`, `group_vars/all.yml` (`tesp_*`) |
 | Welcome page with your endpoint and credentials | `templates/welcome.html` |
+| Host firewall rule for Pulsar's port | `templates/pulsar-firewall.*.j2`, `playbook.yml`, `group_vars/all.yml` (`pulsar_port`) |
 
 Secrets are generated at deploy time: a random Pulsar token (only used between `pulsar-proxy` and Pulsar) and a random password for the TES endpoint.
 
@@ -77,7 +78,7 @@ When the workspace is running, click **Access**. After an SRAM login you see the
 - the **username** (`tes`) and the generated **password**
 - ready-to-copy `curl` commands and a Nextflow config snippet
 
-Only members of your CO can open this page. Anyone with the username and password can submit tasks, so don't share them.
+Only members of your CO can open this page. It shows the TES credentials, but not the Pulsar token or other deploy-time secrets. Anyone with the username and password can submit tasks, so don't share them.
 
 ### 4. Run a task
 
@@ -124,7 +125,16 @@ squeue
   4. Re-test on a workspace.
 - **Container runtime:** `tesp_container_type: singularity` runs task images with Apptainer, using `singularity exec --no-eval`, which requires Apptainer 1.1 or newer. The `usegalaxy_eu.apptainer` role installs it from the Apptainer PPA, which provides 1.5.x for Ubuntu 22.04; it doesn't upgrade an apptainer that is already installed. The upstream `both` mode is broken (it leaves out the `docker://` image prefix), so don't use it.
 - **S3:** tasks can name inputs and outputs as `s3://bucket/key`. No S3 endpoint or credentials are configured yet, so only inputs from public AWS S3 buckets work. Outputs to `s3://` need credentials, so for now such a task runs and then fails when it uploads its outputs. Configurable S3 is tracked in [#2](https://github.com/mirelaminkova/TESP-src/issues/2).
+- **Pulsar port:** Pulsar listens on `0.0.0.0:8913` because the `pulsar-proxy` container reaches it through `host.docker.internal` (the Docker bridge gateway). The `tesp-pulsar-firewall` systemd unit adds an iptables chain, `TESP-PULSAR`, that drops connections to 8913 unless they arrive on `lo`, `docker0` or a `br-*` Docker bridge. Pulsar requires that unit, so it won't start if the rule can't be applied. Check the rule with `iptables -S TESP-PULSAR`. If something rewrites the firewall later (`ufw reload`, `iptables-restore`), re-run `/usr/local/sbin/tesp-pulsar-firewall`.
 - **MTU:** SRC needs a lower MTU on Docker networks (`tesp_network_mtu: 1442`).
+
+## Checks
+
+`tests/render-templates.yml` renders every template with test values and checks that the welcome page doesn't leak the Pulsar token or dump variables. It needs only `ansible-core`, not root, Docker or the roles from `requirements.yml`:
+
+```bash
+ansible-playbook -i localhost, -c local tests/render-templates.yml
+```
 
 ## Credits and license
 
