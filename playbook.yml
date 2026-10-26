@@ -95,7 +95,37 @@
           - python3-dev
           - acl
           - gnutls-bin # workaround for git-clone issue, https://stackoverflow.com/a/53147659/4326632
+          - iptables
         state: present
+
+    # ---- Pulsar firewall ----
+    # Pulsar listens on pulsar_host (0.0.0.0) so the pulsar-proxy container can
+    # reach it; this keeps everyone else out. Set up before the Pulsar role
+    # starts Pulsar, and re-applied at boot by a systemd unit.
+    - name: Install Pulsar firewall script
+      ansible.builtin.template:
+        src: templates/pulsar-firewall.sh.j2
+        dest: /usr/local/sbin/tesp-pulsar-firewall
+        owner: root
+        group: root
+        mode: '0755'
+      notify: Restart Pulsar firewall
+
+    - name: Install Pulsar firewall systemd unit
+      ansible.builtin.template:
+        src: templates/pulsar-firewall.service.j2
+        dest: /etc/systemd/system/tesp-pulsar-firewall.service
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Restart Pulsar firewall
+
+    - name: Enable and start Pulsar firewall
+      ansible.builtin.systemd_service:
+        name: tesp-pulsar-firewall
+        enabled: true
+        state: started
+        daemon_reload: true
 
   roles:
     - geerlingguy.docker
@@ -169,7 +199,7 @@
         dest: "{{ tesp_install_dir }}/pulsar-token-proxy.conf"
         owner: root
         group: root
-        mode: '0644'
+        mode: '0640'  # holds the Pulsar token
 
     - name: Template TESP-API deployment compose file
       ansible.builtin.template:
@@ -186,3 +216,10 @@
           - docker-compose.deploy.yml
         build: always
         state: present
+
+  handlers:
+    - name: Restart Pulsar firewall
+      ansible.builtin.systemd_service:
+        name: tesp-pulsar-firewall
+        state: restarted
+        daemon_reload: true

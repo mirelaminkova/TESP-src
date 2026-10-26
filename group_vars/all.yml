@@ -43,8 +43,12 @@ pulsar_optional_dependencies:
   - drmaa
 
 # Must listen beyond loopback so the pulsar-proxy container can reach it via
-# host.docker.internal. It is not exposed through nginx.
+# host.docker.internal. It is not exposed through nginx, and a host firewall
+# rule (templates/pulsar-firewall.sh.j2) drops connections to pulsar_port that
+# don't come from loopback or a Docker bridge.
 pulsar_host: "0.0.0.0"
+# Also hardcoded in templates/tesp-api/pulsar-token-proxy.conf.j2.
+pulsar_port: 8913
 pulsar_uwsgi_options:
   buffer-size: 32768
 
