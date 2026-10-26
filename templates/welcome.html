@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Pulsar Configuration</title>
+  <title>TES Endpoint</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet"
         href="https://cdnjs.cloudflare.com/ajax/libs/concrete.css/3.0.0/concrete.min.css">
@@ -27,25 +27,14 @@
       justify-content: space-between;
       padding: .6rem 1rem;
       box-shadow: 0 2px 4px rgba(0,0,0,0.06);
-      position: relative; /* for centered title */
     }
-    .brand-left, .brand-right{
-      display: flex; align-items: center; gap: .75rem;
-    }
-    /* Smaller Pulsar/SURF logos */
     .brand-logo{ height: 28px; width: auto; object-fit: contain; display: block; }
-
-    /* Centered title */
-    .brand-title{
-      position: absolute; left: 50%; transform: translateX(-50%);
-      margin: 0; font-size: 1.25rem; font-weight: 600; line-height: 1; color: var(--brand-fg);
-      text-align: center;
-    }
+    .brand-title{ margin: 0; font-size: 1.25rem; font-weight: 600; line-height: 1; color: var(--brand-fg); }
 
     main { max-width: 1000px; margin: 2rem auto; padding: 0 1rem; }
 
     .copy-box { position: relative; border: 1px solid #e1e4e8; border-radius: 8px; padding: .75rem; background: #fafafa; }
-    .copy-box pre { margin: 0; overflow-x: auto; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .copy-box pre { margin: 0; padding-right: 4rem; overflow-x: auto; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .copy-btn {
       position: absolute; top: .5rem; right: .5rem;
       border: 1px solid #d0d7de; border-radius: 6px; background: #f6f8fa;
@@ -59,229 +48,116 @@
   </style>
 </head>
 
+{% set tes_url = 'https://' ~ (workspace_fqdn | default('localhost', true)) ~ (tesp_root_path | default('/tes', true)) %}
+{% set tes_user = tesp_basic_auth_user | default('tes', true) %}
+{% set tes_password = tesp_basic_auth_password | default('unknown', true) %}
 <body>
   <header class="brand-bar" role="banner" aria-label="Brand">
-    <div class="brand-left">
-      <a href="https://galaxyproject.org/pulsar" target="_blank" rel="noopener">
-        <img class="brand-logo"
-             src="https://galaxyproject.org/images/galaxy-logos/pulsar_transparent.png"
-             alt="Pulsar logo">
-      </a>
-    </div>
-
-    <h1 class="brand-title">Pulsar Configuration</h1>
-
-    <div class="brand-right">
-      <a href="https://www.surf.nl/en" target="_blank" rel="noopener">
-        <img class="brand-logo"
-             src="https://www.ictopen.nl/sites/ict_open/files/styles/max_1300x1300/public/media-images/Logo%20SURF%20groot_0.png?itok=7aw8DXCZ"
-             alt="SURF logo">
-      </a>
-    </div>
+    <h1 class="brand-title">GA4GH TES Endpoint</h1>
+    <a href="https://www.surf.nl/en" target="_blank" rel="noopener">
+      <img class="brand-logo"
+           src="https://www.ictopen.nl/sites/ict_open/files/styles/max_1300x1300/public/media-images/Logo%20SURF%20groot_0.png?itok=7aw8DXCZ"
+           alt="SURF logo">
+    </a>
   </header>
   <main>
     <p><strong>Auto-generated as part of deployment</strong></p>
 
     <section>
       <h2>About</h2>
+      <p>This workspace runs a <strong>GA4GH Task Execution Service (TES)</strong> API
+        (<a href="https://github.com/CESNET/tesp-api">TESP-API</a>). Tasks you submit are handed to a
+        local <a href="https://pulsar.readthedocs.io/">Pulsar</a> server and run as SLURM jobs on this node,
+        each inside its own container.</p>
       <ul>
         <li><strong>Admins:</strong> {{ fact_co_groups.src_co_admin }}</li>
         <li><strong>Workspace FQDN:</strong> {{ workspace_fqdn | default('localhost', true) }}</li>
-        <li><strong>Pulsar Root:</strong> <code>{{ pulsar_root }}</code></li>
+        <li><strong>Job storage:</strong> <code>{{ pulsar_root }}</code></li>
+        <li><strong>TESP-API version:</strong> <code>{{ tesp_api_version }}</code></li>
       </ul>
     </section>
 
     <section>
-      <h2>Connect to New Galaxy Workspace</h2>
-      <p>When creating a <strong>new Galaxy workspace</strong> on SURF Research Cloud, copy and paste these values into the workspace parameters:</p>
-
-      <h3>Pulsar Configurations</h3>
-      <p>Copy this <strong>entire line</strong> (including the brackets):</p>
-      <div class="copy-box">
-        <button class="copy-btn" onclick="copyToClipboard('pulsar-config')">Copy</button>
-        <pre id="pulsar-config">[{url: https://{{ workspace_fqdn | default('localhost', true) }}, private_token: {{ pulsar_token | default('unknown', true) }}, docker_enabled: true, pulsar_root: {{ pulsar_root }}}]</pre>
-      </div>
-      <p><em>Paste this into the <strong>"Connect existing Pulsar"</strong> parameter field.</em></p>
-
-      <h3>Tool Mappings</h3>
-      <p>Example: send BWA and Bowtie2 tools to this Pulsar server:</p>
-      <div class="copy-box">
-        <button class="copy-btn" onclick="copyToClipboard('tool-mappings')">Copy</button>
-        <pre id="tool-mappings">[{tool_id: bwa, environment: remote_{{ ansible_hostname | replace('.', '-') | replace('_', '-') }}}, {tool_id: bowtie2, environment: remote_{{ ansible_hostname | replace('.', '-') | replace('_', '-') }}}]</pre>
-      </div>
-      <p><em>Paste this into the <strong>"Send tools to Pulsar"</strong> parameter field.</em></p>
-
-      <div class="warning">
-        <strong>Important Notes:</strong>
-        <ul>
-          <li>Copy the <strong>entire line</strong> including all brackets <code>[ ]</code>.</li>
-          <li><strong>Do NOT add extra quotes</strong> — ResearchCloud will handle this automatically.</li>
-          <li>Replace <code>bwa</code> and <code>bowtie2</code> with your actual tool IDs.</li>
-        </ul>
-      </div>
-    </section>
-
-    <section>
-      <h2>Connect a GA4GH TES client</h2>
-      <p>This node also exposes a <strong>GA4GH Task Execution Service (TES)</strong> endpoint (via
-        <a href="https://github.com/CESNET/tesp-api">TESP-API</a>). TES clients submit tasks that are
-        translated into Pulsar jobs and executed on this node's SLURM cluster.</p>
-
+      <h2>Connection details</h2>
       <ul>
-        <li><strong>TES base URL:</strong> <code>https://{{ workspace_fqdn | default('localhost', true) }}{{ tesp_root_path | default('/tes', true) }}</code></li>
+        <li><strong>TES base URL:</strong> <code>{{ tes_url }}</code></li>
         <li><strong>Auth:</strong> HTTP Basic</li>
-        <li><strong>Username:</strong> <code>{{ tesp_basic_auth_user | default('tes', true) }}</code></li>
-        <li><strong>Password:</strong> <code>{{ tesp_basic_auth_password | default('unknown', true) }}</code></li>
+        <li><strong>Username:</strong> <code>{{ tes_user }}</code></li>
+        <li><strong>Password:</strong> <code>{{ tes_password }}</code></li>
       </ul>
-
-      <p>Quick check (lists the TES service info):</p>
-      <div class="copy-box">
-        <button class="copy-btn" onclick="copyToClipboard('tes-curl')">Copy</button>
-        <pre id="tes-curl">curl -u {{ tesp_basic_auth_user | default('tes', true) }}:{{ tesp_basic_auth_password | default('unknown', true) }} https://{{ workspace_fqdn | default('localhost', true) }}{{ tesp_root_path | default('/tes', true) }}/v1/service-info</pre>
-      </div>
+      <p>The API documentation (Swagger UI) is at <a href="{{ tes_url }}/swagger-ui.html">{{ tes_url }}/swagger-ui.html</a>.</p>
 
       <div class="warning">
-        <strong>Note:</strong> jobs run inside containers on this node
-        (<code>CONTAINER_TYPE={{ tesp_container_type | default('singularity', true) }}</code>), so each TES task
-        must specify a container <code>image</code>.
+        <strong>Keep the password private.</strong> Anyone with these credentials can run jobs on this workspace.
       </div>
     </section>
 
     <section>
-      <h2>Manual Pulsar configuration</h2>
-      <p>If you have an existing Galaxy instance you want to keep, you can connect it to Pulsar by editing Galaxy’s job configuration.</p>
+      <h2>Quick check</h2>
+      <p>Show the service info:</p>
+      <div class="copy-box">
+        <button class="copy-btn" onclick="copyToClipboard('tes-info', this)">Copy</button>
+        <pre id="tes-info">curl -u '{{ tes_user }}:{{ tes_password }}' {{ tes_url }}/v1/service-info</pre>
+      </div>
 
-      <h3>YAML</h3>
-      <p>Your job configuration is probably at <code>/srv/galaxy/config/job_conf.yml</code>.</p>
-<pre>
-runners:
-  local:
-    load: galaxy.jobs.runners.local:LocalJobRunner
-    workers: 4
-  pulsar:
-    load: galaxy.jobs.runners.pulsar:PulsarRESTJobRunner
+      <p>Submit a test task (it prints the task <code>id</code>):</p>
+      <div class="copy-box">
+        <button class="copy-btn" onclick="copyToClipboard('tes-submit', this)">Copy</button>
+        <pre id="tes-submit">curl -u '{{ tes_user }}:{{ tes_password }}' -H 'Content-Type: application/json' \
+  -d '{"name": "hello", "executors": [{"image": "alpine:3.20", "command": ["echo", "hello from TES"]}]}' \
+  {{ tes_url }}/v1/tasks</pre>
+      </div>
 
-execution:
-  default: docker_dispatch
-  environments:
-    local:
-      runner: local
+      <p>Check on it, replacing <code>&lt;id&gt;</code> with the id from the previous command:</p>
+      <div class="copy-box">
+        <button class="copy-btn" onclick="copyToClipboard('tes-get', this)">Copy</button>
+        <pre id="tes-get">curl -u '{{ tes_user }}:{{ tes_password }}' '{{ tes_url }}/v1/tasks/&lt;id&gt;?view=FULL'</pre>
+      </div>
 
-    ...
-    remote_{{ ansible_hostname }}:
-       runner: pulsar
-       url: https://{{ workspace_fqdn | default('localhost', true)  }}
-       private_token: {{ pulsar_token | default('unknown', true) }}
-       dependency_resolution: remote
-       manager: _default_
-       # Uncomment the following to enable interactive tools:
-       # docker_enabled: true
-       # docker_set_user: null
-       # docker_memory: "8G"
-       # singularity_enabled: false
-       # tmp_dir: true
-       # outputs_to_working_directory: false
-       # container_resolvers:
-       # - type: explicit
-       # require_container: True
-       # container_monitor_command: {{ pulsar_root }}/venv/bin/galaxy-container-monitor
-       # container_monitor_result: callback
-       # container_monitor_get_ip_method: command:echo {{ workspace_fqdn | default('localhost', true) }}
-
-</pre>
-
+      <div class="warning">
+        <strong>Note:</strong> every executor in a task must name a container <code>image</code>. Images are
+        pulled from Docker Hub (or another registry) and run with Apptainer
+        (<code>CONTAINER_TYPE={{ tesp_container_type | default('singularity', true) }}</code>).
+      </div>
     </section>
 
+    <section>
+      <h2>Using it from a workflow manager</h2>
+      <p>Point any TES client at the base URL above with the same credentials. For example, a
+        <a href="https://www.nextflow.io/docs/latest/executor.html#ga4gh-tes">Nextflow</a> configuration
+        (not yet tested against this component):</p>
+      <div class="copy-box">
+        <button class="copy-btn" onclick="copyToClipboard('nf-config', this)">Copy</button>
+        <pre id="nf-config">plugins { id 'nf-ga4gh' }
+process.executor = 'tes'
+tes.endpoint = '{{ tes_url }}'
+tes.basicUsername = '{{ tes_user }}'
+tes.basicPassword = '{{ tes_password }}'</pre>
+      </div>
+    </section>
 
-      <h3>XML</h3>
-      <details><summary>(Older) XML Configuration</summary>
-      <p>Your job configuration is probably at <code>/srv/galaxy/config/job_conf.xml</code></p>
-<pre>...
-&lt;plugins&gt;
-    &lt;plugin id="pulsar" type="runner" load="galaxy.jobs.runners.pulsar:PulsarRESTJobRunner" /&gt;
-&lt;/plugins&gt;
-...
-&lt;destinations&gt;
-  &lt;destination id="remote_{{ ansible_hostname }}" runner="pulsar"&gt;
-    &lt;param id="url"&gt;https://{{ workspace_fqdn | default('localhost', true)  }}&lt;/param&gt;
-    &lt;param id="dependency_resolution"&gt;remote&lt;/param&gt;
-    &lt;param id="private_token"&gt;{{ pulsar_token | default('unknown', true)  }}&lt;/param&gt;
-    &lt;param id="manager"&gt;_default_&lt;/param&gt;
+    <details><summary>Troubleshooting (on this node)</summary>
+      <p>SSH in and become root (<code>sudo su</code>), then:</p>
+<pre>
+# TESP-API stack (tesp-api, MongoDB, pulsar-proxy)
+cd {{ tesp_install_dir }}
+docker compose -f docker-compose.deploy.yml ps
+docker compose -f docker-compose.deploy.yml logs -f tesp-api
 
-&lt;!-- Uncomment the following to enable interactive tools: --&gt;
-&lt;!--
-    &lt;param id="docker_enabled"&gt;true&lt;/param&gt;
-    &lt;param id="docker_memory"&gt;8G&lt;/param&gt;
-    &lt;param id="singularity_enabled"&gt;false&lt;/param&gt;
-    &lt;param id="tmp_dir"&gt;True&lt;/param&gt;
-    &lt;param id="outputs_to_working_directory"&gt;False&lt;/param&gt;
-    &lt;param id="require_container"&gt;true&lt;/param&gt;
-    &lt;param id="container_monitor_command"&gt;{{ pulsar_root }}/venv/bin/galaxy-container-monitor&lt;/param&gt;
-    &lt;param id="container_monitor_result"&gt;callback&lt;/param&gt;
-    &lt;param id="container_monitor_get_ip_method"&gt;command:echo {{ workspace_fqdn | default('localhost', true)  }}&lt;/param&gt;
---&gt;
-
-  &lt;/destination&gt;
-&lt;destinations&gt;
-...
-</pre>
-      </details>
-
-      <h3>Tool Destinations</h3>
-    <p>Select some tools which will run</p>
-<pre>...
-tools:
-...
-- id: bwa
-  environment: remote_{{ ansible_hostname }}
-</pre>
-
-      <details><summary>(Older) XML Configuration</summary>
-    <p>Or in XML</p>
-<pre>...
-&lt;tools&gt;
-  ...
-  &lt;tool id="toolshed.g2.bx.psu.edu/repos/devteam/bwa/bwa/0.7.18" destination="remote_{{ ansible_hostname }}"/&gt;
-&lt;/tools&gt;
-</pre>
-      </details>
-
-
-    <h2>Restart Galaxy</h2>
-    <p>On the galaxy machine, restart galaxy</p>
-    <code>[root@galaxy]$ systemctl restart galaxy-*</code>
-
-    <h2>Testing Pulsar via Galaxy</h2>
-    <p>On Galaxy, run a job using one of the tools you decided should go to the Pulsar destination</p>
-
-
-    <details><summary>Debugging Pulsar</summary>
-    <h2>Testing Pulsar</h2>
-    <p>On the pulsar machine, this node, you can run the following command to check that Pulsar is running correctly, but this will likely fail part way through due to <a href="https://github.com/galaxyproject/pulsar/issues/377">galaxyproject/pulsar#377</a>, but if the job executes otherwise then you're probably fine.</p>
-<pre>[root@{{ inventory_hostname }}]$ . {{ pulsar_root }}/venv/bin/activate
-[root@{{ inventory_hostname }}]$ pulsar-check --private_token={{ pulsar_token | default('unknown', true)  }}
-{}
-INFO:pulsar.client.manager:Setting Pulsar client class to standard, non-caching variant.
-DEBUG:pulsar.client.client:Uploading path [/tmp/pulsar-check-client.tzn_c2ki/t/script.py] (action_type: [transfer])
-...
+# Pulsar and SLURM
+systemctl status pulsar
+journalctl -u pulsar -f
+squeue
 </pre>
     </details>
 
-    <h2>Ansible Configuration</h2>
     <details>
-      <summary>Host Variables</summary>
+      <summary>Ansible host variables</summary>
       <p>Host variables for <code>{{ inventory_hostname }}</code></p>
       <pre>{{ hostvars[inventory_hostname] | to_nice_json }}</pre>
     </details>
   </main>
 
-  <!--
-  <footer>
-    <hr>
-    <p>
-    </p>
-  </footer>
-  -->
 <script>
   function copyToClipboard(targetId, btn) {
     const node = document.getElementById(targetId);
