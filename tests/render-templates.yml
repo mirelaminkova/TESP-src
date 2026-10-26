@@ -22,9 +22,13 @@
       ansible.builtin.set_fact:
         pulsar_token: test-pulsar-token-7Hq2
         tesp_basic_auth_password: test-tes-password-K9xw
-        # Stands in for any other secret (e.g. S3 credentials) that a
-        # variable dump would leak.
+        # Stands in for any other secret that a variable dump would leak.
         test_unlisted_secret: test-unlisted-secret-Zp4m
+        # S3 component parameters, as SRC passes them. The secret has
+        # characters that must be escaped in TOML.
+        src_s3_endpoint_url: https://s3.example.org
+        src_s3_access_key_id: test-s3-access-key-Qe3r
+        src_s3_secret_access_key: test-s3-secret/Jw8+"\\
 
     - name: Create output directory
       ansible.builtin.tempfile:
@@ -48,6 +52,7 @@
             - tesp-api/docker-compose.yml.j2
             - tesp-api/pulsar-token-proxy.conf.j2
             - tesp-api/settings.toml.j2
+            - tesp-api/secrets.toml.j2
 
         - name: Read rendered files
           ansible.builtin.slurp:
@@ -57,6 +62,8 @@
             - pulsar-firewall.sh
             - pulsar-token-proxy.conf
             - settings.toml
+            - secrets.toml
+            - docker-compose.yml
           register: rendered
 
         - name: Index rendered files by name
@@ -95,6 +102,24 @@
               - pulsar_token in files['pulsar-token-proxy.conf']
               - pulsar_token not in files['settings.toml']
               - tesp_basic_auth_password in files['settings.toml']
+
+        - name: S3 key pair goes only to the secrets file
+          ansible.builtin.assert:
+            that:
+              - tesp_s3_secret_access_key == src_s3_secret_access_key
+              - ('s3.access_key_id = ' ~ src_s3_access_key_id | to_json)
+                in files['secrets.toml']
+              - ('s3.secret_access_key = ' ~ src_s3_secret_access_key | to_json)
+                in files['secrets.toml']
+              - src_s3_secret_access_key not in files['welcome.html']
+              - src_s3_secret_access_key not in files['settings.toml']
+              - src_s3_secret_access_key not in files['docker-compose.yml']
+              - src_s3_access_key_id not in files['settings.toml']
+              - ('s3.endpoint_url = "' ~ src_s3_endpoint_url ~ '"')
+                in files['settings.toml']
+              - (tesp_secrets_file ~ ':/app/.secrets.toml:ro')
+                in files['docker-compose.yml']
+            fail_msg: S3 key pair missing from secrets.toml or leaked elsewhere
 
         - name: Firewall script guards the Pulsar port
           ansible.builtin.assert:

@@ -2,9 +2,10 @@
 #
 # Replaces the settings.toml of the tesp-api checkout, so it must define every
 # setting the app reads (see "Configuration notes" in the README when bumping
-# tesp_api_version). The stack runs with FASTAPI_PROFILE=src; Dynaconf merges
-# [src] over [default]. [src] repeats the deployment-critical values; the rest
-# (pulsar.status.*, logging.level, oauth, s3.*) comes from [default].
+# tesp_api_version), except the S3 key pair, which is in .secrets.toml. The
+# stack runs with FASTAPI_PROFILE=src; Dynaconf merges [src] over [default].
+# [src] repeats the deployment-critical values; the rest (pulsar.status.*,
+# logging.level, oauth, s3.*) comes from [default].
 #
 # TESP-API talks to the host Pulsar through the `pulsar-proxy` sidecar, which
 # injects Pulsar's private_token into every request (tesp-api itself cannot
@@ -25,18 +26,16 @@ basic_auth.enable = true
 basic_auth.username = "{{ tesp_basic_auth_user }}"
 basic_auth.password = "{{ tesp_basic_auth_password }}"
 
-# S3 inputs and outputs given as s3://bucket/key (validated at startup).
-# Not configured on SRC yet: an empty endpoint means AWS S3, and empty
-# credentials mean anonymous access, i.e. public buckets only. Credentials
-# never go in this file; tesp-api also reads TESP_API_S3__* from the
-# environment and a .secrets.toml next to this file.
-s3.endpoint_url = ""
-s3.region = "us-east-1"
-s3.access_key_id = ""
-s3.secret_access_key = ""
-s3.addressing_style = "path"              # "path", "virtual" or "auto"
-s3.presign_expiry_seconds = 3600          # download URLs handed to Pulsar
-s3.output_presign_expiry_seconds = 86400  # upload URLs; must cover a whole task run
+# S3 inputs and outputs given as s3://bucket/key (validated at startup), set
+# from the src_s3_* component parameters. An empty endpoint means AWS S3.
+# s3.access_key_id and s3.secret_access_key are not in this file: they come
+# from /app/.secrets.toml, bind-mounted from the root-only tesp_secrets_file
+# (empty there = anonymous access, i.e. public buckets only).
+s3.endpoint_url = {{ tesp_s3_endpoint_url | to_json }}
+s3.region = {{ tesp_s3_region | to_json }}
+s3.addressing_style = {{ tesp_s3_addressing_style | to_json }}
+s3.presign_expiry_seconds = {{ tesp_s3_presign_expiry_seconds | int }}
+s3.output_presign_expiry_seconds = {{ tesp_s3_output_presign_expiry_seconds | int }}
 
 [src]
 db.mongodb_uri = "mongodb://tesp-db:27017"
