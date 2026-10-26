@@ -53,7 +53,6 @@
           - git
           - libcurl4-openssl-dev
           - libssl-dev
-          - python3-psycopg2
           - python3-virtualenv
           - python3-dev
           - acl
@@ -62,7 +61,6 @@
 
   roles:
     - geerlingguy.docker
-    - galaxyproject.cvmfs
     - usegalaxy_eu.apptainer
     - uusrc.general.nginx_reverse_proxy
     # https://github.com/galaxyproject/pulsar/issues/375
@@ -82,14 +80,6 @@
         owner: www-data
         group: www-data
         mode: '0640'
-
-    - name: Deploy epilog
-      copy:
-        src: files/epilog.sh
-        dest: /etc/slurm/epilog.sh
-        owner: root
-        group: root
-        mode: '0755'
 
     # ---- TESP-API: GA4GH TES front-end for Pulsar ----
     # Lets TES clients submit jobs that are translated into Pulsar jobs and run

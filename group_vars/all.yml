@@ -9,23 +9,13 @@ nginx_reverse_proxy_locations:
   location: /tes/
   proxy_pass: "http://127.0.0.1:8080/"
   auth: noauth
-- name: pulsar
-  location: /
-  proxy_pass: "http://localhost:8913"
-  auth: noauth
-
-# CVMFS vars
-cvmfs_role: client
-galaxy_cvmfs_repos_enabled: config-repo
-cvmfs_quota_limit: 500
+# Pulsar is not published through nginx: only tesp-api talks to it, via the
+# token-injecting pulsar-proxy sidecar (templates/tesp-api/).
 
 # SLURM
 slurm_roles: ['controller', 'exec']
 slurm_nodes:
 - name: localhost
-slurm_config:
-  Epilog: /etc/slurm/epilog.sh
-  PrologEpilogTimeout: 90
 
 # Pulsar
 pulsar_root: "{{ src_pulsar_storage_path | default('/mnt/pulsar', true) }}" # component variable attached_storage_path
@@ -51,9 +41,9 @@ pulsar_optional_dependencies:
   - uwsgi
   # drmaa required if connecting to an external DRM using it.
   - drmaa
-  # For galaxy-container-monitor
-  - galaxy-job-execution
 
+# Must listen beyond loopback so the pulsar-proxy container can reach it via
+# host.docker.internal. It is not exposed through nginx.
 pulsar_host: "0.0.0.0"
 pulsar_uwsgi_options:
   buffer-size: 32768
@@ -72,29 +62,10 @@ pulsar_yaml_config:
   persistence_directory: "{{ pulsar_persistence_dir }}"
   tool_dependency_dir: "{{ pulsar_dependencies_dir }}"
   min_polling_interval: 0.5
-  # We also need to create the dependency resolvers configuration so pulsar
-  # knows how to find and install dependencies for the tools we ask it to run.
-  # The simplest method which covers 99% of the use cases is to use conda auto
-  # installs similar to how Galaxy works.
-  dependency_resolution:
-    resolvers:
-      - type: conda
-        auto_init: true
-        auto_install: true
-
-# Pulsar should use the same job metrics plugins as Galaxy. This will automatically set `job_metrics_config_file` in
-# `pulsar_yaml_config` and create `{{ pulsar_config_dir }}/job_metrics_conf.yml`.
-pulsar_job_metrics_plugins:
-  - type: core
-  - type: cpuinfo
-  - type: meminfo
-  - type: uname
-  - type: env
-  - type: cgroup
-  - type: hostname
 
 # Docker
 docker_install_compose: true
+# Lets Pulsar jobs use docker if tesp_container_type is switched to "docker".
 docker_users:
   - "{{ pulsar_user.name }}"
 
