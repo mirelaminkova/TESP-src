@@ -103,6 +103,46 @@ curl -u 'tes:<password>' 'https://<workspace-fqdn>/tes/v1/tasks/<id>?view=FULL'
 
 The interactive API docs (Swagger UI) are at `https://<workspace-fqdn>/tes/swagger-ui.html`.
 
+## Using S3
+
+Tasks can name inputs and outputs as `s3://bucket/key`, so a Nextflow client can use an `s3://bucket/work` work directory. TESP reads and writes them on S3 storage you choose when you create the workspace, for example [SURF Object Store](https://www.surf.nl/en/services/surf-object-store) or MinIO. tesp-api signs every transfer itself with short-lived presigned URLs, so the secret key never reaches Pulsar or the task containers.
+
+Set these component parameters in the catalog item. All are optional:
+
+| Parameter | Default | Secret | Meaning |
+| --- | --- | --- | --- |
+| `src_s3_endpoint_url` | empty (AWS S3) | no | S3 endpoint, including `https://` (or `http://`), for example `https://objectstore.surf.nl` |
+| `src_s3_region` | `us-east-1` | no | Region to sign requests for. S3-compatible stores that don't use regions accept the default |
+| `src_s3_access_key_id` | empty | **yes** | Access key |
+| `src_s3_secret_access_key` | empty | **yes** | Secret key |
+| `src_s3_addressing_style` | `path` | no | `path` (`https://host/bucket/key`, works with MinIO and most S3-compatible stores), `virtual` (`https://bucket.host/key`) or `auto` |
+
+Configure the access key and secret key as **secret** parameters in the SRC catalog item (stored in SRC's vault, not shown in the catalog item), never as plain or fixed values. Set both or neither: without them, TESP accesses S3 anonymously, so only public buckets can be read and `s3://` outputs fail when the task uploads them. The playbook stops before installing anything if a parameter is invalid, for example an endpoint without `https://`, an unknown addressing style, or only one of the two keys.
+
+Example for SURF Object Store, using the endpoint and key pair from your Object Store account:
+
+```
+src_s3_endpoint_url      = https://objectstore.surf.nl
+src_s3_addressing_style  = path
+src_s3_access_key_id     = <access key>   (secret)
+src_s3_secret_access_key = <secret key>   (secret)
+```
+
+The endpoint must be reachable from two places: from the workspace (tesp-api and Pulsar's staging of inputs and outputs), and from wherever Nextflow runs, because Nextflow itself reads and writes the work directory. Configure Nextflow with the same endpoint and its own credentials, for example:
+
+```groovy
+workDir = 's3://<bucket>/work'
+
+aws {
+    accessKey = '<access key>'
+    secretKey = '<secret key>'
+    client {
+        endpoint = 'https://objectstore.surf.nl'
+        s3PathStyleAccess = true   // matches src_s3_addressing_style = path
+    }
+}
+```
+
 ## Troubleshooting
 
 SSH to the workspace with your SRAM key and become root (`sudo su`), then:
@@ -123,7 +163,7 @@ squeue
   3. Diff the fork's `docker-compose.yaml` with `templates/tesp-api/docker-compose.yml.j2` for new build targets, env vars, volumes or services.
   4. Re-test on a workspace.
 - **Container runtime:** `tesp_container_type: singularity` runs task images with Apptainer, using `singularity exec --no-eval`, which requires Apptainer 1.1 or newer. The `usegalaxy_eu.apptainer` role installs it from the Apptainer PPA, which provides 1.5.x for Ubuntu 22.04; it doesn't upgrade an apptainer that is already installed. The upstream `both` mode is broken (it leaves out the `docker://` image prefix), so don't use it.
-- **S3:** tasks can name inputs and outputs as `s3://bucket/key`. No S3 endpoint or credentials are configured yet, so only inputs from public AWS S3 buckets work. Outputs to `s3://` need credentials, so for now such a task runs and then fails when it uploads its outputs. Configurable S3 is tracked in [#2](https://github.com/mirelaminkova/TESP-src/issues/2).
+- **S3:** set from the `src_s3_*` component parameters (see [Using S3](#using-s3)). `settings.toml` (0640) holds the endpoint, region and addressing style; the key pair goes in `/srv/tesp-api/.secrets.toml` (root, 0600), which tesp-api's Dynaconf merges in. The playbook validates the parameters before it installs anything. The presign lifetimes are `tesp_s3_presign_expiry_seconds` and `tesp_s3_output_presign_expiry_seconds` in `group_vars/all.yml`; the upload lifetime must cover a whole task run.
 - **MTU:** SRC needs a lower MTU on Docker networks (`tesp_network_mtu: 1442`).
 
 ## Credits and license

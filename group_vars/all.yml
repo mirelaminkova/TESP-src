@@ -87,3 +87,22 @@ tesp_container_type: singularity  # docker | singularity -- how tesp-api wraps T
                                   # apptainer/SLURM node so images resolve as docker://<image>.
 tesp_network_mtu: 1442       # SURF Research Cloud requires a lower MTU
 tesp_basic_auth_user: tes
+
+# S3 storage for s3://bucket/key task inputs and outputs (see "Using S3" in the
+# README). Set from the optional src_s3_* component parameters; with none set,
+# tesp-api uses AWS S3 anonymously (public buckets only). The access key pair is
+# written to a root-only .secrets.toml, never to settings.toml.
+# e.g. https://objectstore.surf.nl
+tesp_s3_endpoint_url: "{{ src_s3_endpoint_url | default('', true) | trim }}"
+tesp_s3_region: "{{ src_s3_region | default('us-east-1', true) | trim }}"
+# The key pair must be secret parameters in the SRC catalog item.
+tesp_s3_access_key_id: >-
+  {{ src_s3_access_key_id | default('', true) | trim }}
+tesp_s3_secret_access_key: >-
+  {{ src_s3_secret_access_key | default('', true) | trim }}
+# path | virtual | auto
+tesp_s3_addressing_style: >-
+  {{ src_s3_addressing_style | default('path', true) | trim }}
+tesp_s3_presign_expiry_seconds: 3600          # download URLs handed to Pulsar
+# Upload URLs; must cover a whole task run. Both at most 604800 (7 days).
+tesp_s3_output_presign_expiry_seconds: 86400

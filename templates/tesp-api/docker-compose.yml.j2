@@ -10,7 +10,8 @@
 # Based on the fork's docker-compose.yaml (same build target and /app mount),
 # minus its test-only parts: the pulsar_rest and MinIO services, the MinIO S3
 # credentials, and the staging volume shared with pulsar_rest. Pulsar runs on
-# the host here, and the S3 defaults (AWS, anonymous) come from settings.toml.
+# the host here, and S3 is configured in settings.toml and .secrets.toml (both in
+# the /app mount), not in this file.
 services:
   tesp-api:
     build:
