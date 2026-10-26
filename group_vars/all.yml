@@ -13,15 +13,13 @@ nginx_reverse_proxy_locations:
 # token-injecting pulsar-proxy sidecar (templates/tesp-api/).
 
 # SLURM
-# One node that is both controller and worker. TES cpu_cores and ram_gb reach
-# SLURM as --cpus-per-task and --mem (tesp_native_spec_* below), so CPUs and
-# memory are consumable resources: SLURM starts a job only when the node has
-# that many CPUs and that much memory free. Without CPUs and RealMemory the
-# node counts as 1 CPU and 1 MB, and every job asking for more is rejected.
+# One node, both controller and worker. CPUs and RealMemory must be set:
+# without them the node counts as 1 CPU and 1 MB and rejects any task asking
+# for more. See "Resource limits" in the README.
 slurm_roles: ['controller', 'exec']
 slurm_nodes:
 - name: localhost
-  CPUs: "{{ ansible_facts['processor_vcpus'] }}"
+  CPUs: "{{ tesp_slurm_cpus }}"
   RealMemory: "{{ tesp_slurm_real_memory_mb }}"
 slurm_config:
   SelectType: select/cons_tres
@@ -30,8 +28,11 @@ slurm_config:
   # Memory for jobs without --mem (tasks without ram_gb), per allocated CPU.
   # Without it such a job would take all of RealMemory and run alone.
   DefMemPerCPU: >-
-    {{ (tesp_slurm_real_memory_mb | int)
-       // (ansible_facts['processor_vcpus'] | int) }}
+    {{ (tesp_slurm_real_memory_mb | int) // (tesp_slurm_cpus | int) }}
+# Online CPUs, as slurmd counts them; more than slurmd finds drains the node.
+tesp_slurm_cpus: >-
+  {{ [ansible_facts['processor_vcpus'] | int,
+      ansible_facts['processor_nproc'] | int] | min }}
 # Memory (MiB) kept out of SLURM for the OS, Docker (tesp-api, MongoDB),
 # Pulsar and nginx. At most half of the node's memory is held back.
 tesp_slurm_reserved_memory_mb: 2048
@@ -104,7 +105,8 @@ docker_users:
 # carries the TES and S3 fixes. Bump deliberately: see "Configuration notes"
 # in the README for what to check.
 tesp_api_repo: "https://github.com/mirelaminkova/tesp-api.git"
-# mirelaminkova/tesp-api main, CI run 40350207689
+# mirelaminkova/tesp-api main, 2026-10-26; CI green:
+# https://github.com/mirelaminkova/tesp-api/actions/runs/40350207689
 tesp_api_version: "2d8496a0b5e04fa9b7723cd56e06d1c3343f9083"
 tesp_install_dir: /srv/tesp-api
 tesp_api_port: 8080          # host-localhost port; must match the /tes/ nginx proxy_pass above

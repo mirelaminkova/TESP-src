@@ -123,7 +123,7 @@
 
         # The {placeholders} are filled in by tesp-api, so they must reach
         # settings.toml as written.
-        - name: TES resources go to SLURM, not to Apptainer
+        - name: Resource settings reach settings.toml with placeholders intact
           ansible.builtin.assert:
             that:
               - >-
@@ -133,8 +133,11 @@
                 'pulsar.native_specification.ram_gb = "--mem={ram_mib}"'
                 in files['settings.toml']
               - >-
-                'container.resource_limits = "auto"' in files['settings.toml']
+                'container.resource_limits = "auto"'
+                in files['settings.toml']
 
+        # gather_facts is off; the group_vars templates read these facts
+        # lazily, so task vars stand in for them.
         - name: SLURM node and memory settings follow the node's facts
           ansible.builtin.assert:
             that:
@@ -143,14 +146,21 @@
               - slurm_config.SelectTypeParameters == 'CR_CPU_Memory'
               - slurm_config.DefMemPerCPU | int == (16000 - 2048) // 8
           vars:
-            ansible_facts: {processor_vcpus: 8, memtotal_mb: 16000}
+            ansible_facts:
+              processor_vcpus: 8
+              processor_nproc: 8
+              memtotal_mb: 16000
 
-        - name: SLURM keeps at least half of a small node's memory
+        - name: SLURM gets online CPUs and at least half of a small node
           ansible.builtin.assert:
             that:
               - slurm_nodes[0].RealMemory | int == 1500
+              - slurm_nodes[0].CPUs | int == 1
           vars:
-            ansible_facts: {processor_vcpus: 1, memtotal_mb: 3000}
+            ansible_facts:
+              processor_vcpus: 2
+              processor_nproc: 1
+              memtotal_mb: 3000
 
         - name: Firewall script guards the Pulsar port
           ansible.builtin.assert:

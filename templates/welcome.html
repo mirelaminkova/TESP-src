@@ -124,7 +124,8 @@
       <p>A task's <code>resources.cpu_cores</code> and <code>resources.ram_gb</code> are passed to SLURM
         (<code>--cpus-per-task</code>, <code>--mem</code>): a task waits until that much is free on this node,
         and fails if it asks for more than the node has. SLURM reserves the resources but doesn't cap what a
-        running task uses.</p>
+        running task uses. A task that hasn't finished about 27 minutes after submission, queue time included,
+        is marked failed.</p>
     </section>
 
     <section>
