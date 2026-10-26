@@ -1,9 +1,10 @@
 # Managed by Ansible (TESP-src). Do not edit by hand.
 #
 # Replaces the settings.toml of the tesp-api checkout, so it must define every
-# setting the app reads (compare with the fork's settings.toml when bumping
+# setting the app reads (see "Configuration notes" in the README when bumping
 # tesp_api_version). The stack runs with FASTAPI_PROFILE=src; Dynaconf merges
-# [src] over [default], so [src] only lists what differs or must not be missed.
+# [src] over [default]. [src] repeats the deployment-critical values; the rest
+# (pulsar.status.*, logging.level, oauth, s3.*) comes from [default].
 #
 # TESP-API talks to the host Pulsar through the `pulsar-proxy` sidecar, which
 # injects Pulsar's private_token into every request (tesp-api itself cannot
