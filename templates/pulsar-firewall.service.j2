@@ -1,0 +1,13 @@
+# Managed by Ansible (TESP-src). Do not edit by hand.
+# Restricts Pulsar's port to loopback and Docker bridges; see the script.
+[Unit]
+Description=Restrict Pulsar port {{ pulsar_port }} to loopback and Docker bridges
+Before=pulsar.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart={{ pulsar_firewall_script }}
+
+[Install]
+WantedBy=multi-user.target

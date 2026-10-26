@@ -1,0 +1,104 @@
+---
+# Renders every template with representative values and checks what ends up
+# where. Runs locally without root, Docker or the SRC roles:
+#
+#   ansible-playbook -i localhost, -c local tests/render-templates.yml
+#
+# The rendered files go to a temporary directory that is removed afterwards.
+- name: Render templates and check them
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+  vars:
+    pulsar_port: 8913  # galaxyproject.pulsar role default
+    workspace_fqdn: tesp.example.src.surf-hosted.nl
+    fact_co_groups: {src_co_admin: test-co-admins}
+    src_pulsar_storage_path: ""
+    templates_dir: "{{ playbook_dir }}/../templates"
+  tasks:
+    # Test values only. Set as host facts, like playbook.yml does, so they
+    # show up in hostvars the way the real secrets do.
+    - name: Set test secrets
+      ansible.builtin.set_fact:
+        pulsar_token: test-pulsar-token-7Hq2
+        tesp_basic_auth_password: test-tes-password-K9xw
+        # Stands in for any other secret (e.g. S3 credentials) that a
+        # variable dump would leak.
+        test_unlisted_secret: test-unlisted-secret-Zp4m
+
+    - name: Create output directory
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: tesp-render
+      register: out
+
+    - name: Render, check, clean up
+      block:
+        - name: Render templates
+          ansible.builtin.template:
+            src: "{{ templates_dir }}/{{ item }}"
+            dest: "{{ out.path }}/{{ item | basename }}"
+            mode: '0600'
+          loop:
+            - welcome.html
+            - chrony.conf
+            - pulsar-firewall.sh.j2
+            - pulsar-firewall.service.j2
+            - tesp-api/docker-compose.yml.j2
+            - tesp-api/pulsar-token-proxy.conf.j2
+            - tesp-api/settings.toml.j2
+
+        - name: Read rendered files
+          ansible.builtin.slurp:
+            src: "{{ out.path }}/{{ item }}"
+          loop:
+            - welcome.html
+            - pulsar-firewall.sh.j2
+            - pulsar-token-proxy.conf.j2
+            - settings.toml.j2
+          register: rendered
+
+        - name: Index rendered files by name
+          ansible.builtin.set_fact:
+            files: >-
+              {{ files | default({})
+                 | combine({item.item: item.content | b64decode}) }}
+          loop: "{{ rendered.results }}"
+          loop_control:
+            label: "{{ item.item }}"
+
+        - name: Welcome page shows the TES credentials but no other secrets
+          ansible.builtin.assert:
+            that:
+              - pulsar_token not in files['welcome.html']
+              - test_unlisted_secret not in files['welcome.html']
+              - tesp_basic_auth_password in files['welcome.html']
+              - workspace_fqdn in files['welcome.html']
+              - tesp_api_version in files['welcome.html']
+            fail_msg: welcome.html leaks a secret or lost connection details
+
+        - name: Pulsar token goes only to the proxy, TES password to tesp-api
+          ansible.builtin.assert:
+            that:
+              - pulsar_token in files['pulsar-token-proxy.conf.j2']
+              - pulsar_token not in files['settings.toml.j2']
+              - tesp_basic_auth_password in files['settings.toml.j2']
+
+        - name: Firewall script guards the Pulsar port
+          ansible.builtin.assert:
+            that:
+              - "'--dport 8913 -j \"$CHAIN\"' in files['pulsar-firewall.sh.j2']"
+              - "'-i docker0 -j RETURN' in files['pulsar-firewall.sh.j2']"
+              - "'-i br-+ -j RETURN' in files['pulsar-firewall.sh.j2']"
+              - "'-j DROP' in files['pulsar-firewall.sh.j2']"
+
+        - name: Firewall script is valid sh
+          ansible.builtin.command: sh -n {{ out.path }}/pulsar-firewall.sh.j2
+          changed_when: false
+
+      always:
+        - name: Remove output directory
+          ansible.builtin.file:
+            path: "{{ out.path }}"
+            state: absent

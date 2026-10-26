@@ -16,7 +16,7 @@ tesp-api (Docker)       ──►  MongoDB (Docker, task state)
    ▼
 pulsar-proxy (Docker)   adds Pulsar's private token to each request
    ▼
-Pulsar (host, :8913)    not exposed through nginx
+Pulsar (host, :8913)    not exposed through nginx; firewalled to loopback + Docker bridges
    ▼
 SLURM + DRMAA (host)    each task runs in an Apptainer container
 ```
@@ -30,6 +30,7 @@ What the playbook sets up:
 | Docker, Apptainer, nginx reverse proxy with SRAM login | `playbook.yml`, `group_vars/all.yml` (`nginx_reverse_proxy_locations`) |
 | TESP-API stack: tesp-api, MongoDB, pulsar-proxy | `templates/tesp-api/`, `group_vars/all.yml` (`tesp_*`) |
 | Welcome page with your endpoint and credentials | `templates/welcome.html` |
+| Host firewall rule for Pulsar's port | `templates/pulsar-firewall.*.j2`, `playbook.yml` |
 
 Secrets are generated at deploy time: a random Pulsar token (only used between `pulsar-proxy` and Pulsar) and a random password for the TES endpoint.
 
@@ -124,6 +125,7 @@ squeue
   4. Re-test on a workspace.
 - **Container runtime:** `tesp_container_type: singularity` runs task images with Apptainer, using `singularity exec --no-eval`, which requires Apptainer 1.1 or newer. The `usegalaxy_eu.apptainer` role installs it from the Apptainer PPA, which provides 1.5.x for Ubuntu 22.04; it doesn't upgrade an apptainer that is already installed. The upstream `both` mode is broken (it leaves out the `docker://` image prefix), so don't use it.
 - **S3:** tasks can name inputs and outputs as `s3://bucket/key`. No S3 endpoint or credentials are configured yet, so only inputs from public AWS S3 buckets work. Outputs to `s3://` need credentials, so for now such a task runs and then fails when it uploads its outputs. Configurable S3 is tracked in [#2](https://github.com/mirelaminkova/TESP-src/issues/2).
+- **Pulsar port:** Pulsar listens on `0.0.0.0:8913` because the `pulsar-proxy` container reaches it through `host.docker.internal` (the Docker bridge gateway). The `tesp-pulsar-firewall` systemd unit adds an iptables chain, `TESP-PULSAR`, that drops connections to 8913 unless they arrive on `lo`, `docker0` or a `br-*` Docker bridge. Check it with `iptables -S TESP-PULSAR`. The welcome page shows the TES credentials but never the Pulsar token.
 - **MTU:** SRC needs a lower MTU on Docker networks (`tesp_network_mtu: 1442`).
 
 ## Credits and license

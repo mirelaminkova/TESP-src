@@ -1,0 +1,25 @@
+#!/bin/sh
+# Managed by Ansible (TESP-src). Do not edit by hand.
+#
+# Pulsar listens on {{ pulsar_host }}:{{ pulsar_port }} so the pulsar-proxy container can
+# reach it through host.docker.internal (the Docker bridge gateway). Only
+# loopback and Docker bridge interfaces may connect; everything else is
+# dropped, so Pulsar is not reachable from outside the workspace.
+#
+# Matching on interfaces rather than subnets keeps this independent of the
+# addresses Docker picks: docker0 is the default bridge, br-* are
+# user-defined networks such as the TESP-API compose network. Allowed packets
+# RETURN to the rest of INPUT, so any existing firewall still applies.
+# Idempotent: safe to run again (Ansible deploys, reboots).
+set -eu
+
+CHAIN={{ pulsar_firewall_chain }}
+
+iptables -w -N "$CHAIN" 2>/dev/null || iptables -w -F "$CHAIN"
+iptables -w -A "$CHAIN" -i lo -j RETURN
+iptables -w -A "$CHAIN" -i docker0 -j RETURN
+iptables -w -A "$CHAIN" -i br-+ -j RETURN
+iptables -w -A "$CHAIN" -j DROP
+
+iptables -w -C INPUT -p tcp --dport {{ pulsar_port }} -j "$CHAIN" 2>/dev/null \
+  || iptables -w -I INPUT 1 -p tcp --dport {{ pulsar_port }} -j "$CHAIN"
