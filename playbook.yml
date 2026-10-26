@@ -37,6 +37,17 @@
           tesp_s3_output_presign_expiry_seconds must be between 1 and 604800.
           See "Using S3" in the README.
 
+    # tesp-api would refuse to start on a negative value; | int in the
+    # template would silently turn a non-number into 0 (no limit).
+    - name: Validate tesp_max_wait_seconds
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - tesp_max_wait_seconds | string is match('[0-9]+$')
+        fail_msg: >-
+          tesp_max_wait_seconds must be a whole number of seconds, 0 for no
+          limit. See "Long tasks" in the README.
+
 - name: Install pre-requisites (SLURM, DRMAA, time sync)
   hosts: "{{ lookup('env', 'variable_host') | default('localhost', true) }}" # workaround because SRC needs localhost, but molecule needs specifc hostvars
   roles:
