@@ -136,6 +136,47 @@
                 'container.resource_limits = "auto"'
                 in files['settings.toml']
 
+        # The keys load_status_polling reads in tesp-api c3a9f23. max_polls
+        # is deprecated there and would log a warning at startup.
+        - name: Status polling settings reach settings.toml, max_polls doesn't
+          ansible.builtin.assert:
+            that:
+              - "'pulsar.status.poll_interval = 4' in files['settings.toml']"
+              - >-
+                'pulsar.status.max_poll_interval = 60' in files['settings.toml']
+              - >-
+                'pulsar.status.max_wait_seconds = 0' in files['settings.toml']
+              - >-
+                'pulsar.status.error_retry_seconds = 600'
+                in files['settings.toml']
+              - >-
+                files['settings.toml']
+                is not search('(?m)^\\s*pulsar\\.status\\.max_polls\\s*=')
+              - "'canceled and ends in' not in files['welcome.html']"
+
+        - name: Render with a task runtime cap
+          ansible.builtin.template:
+            src: "{{ templates_dir }}/{{ item }}"
+            dest: >-
+              {{ out.path }}/capped-{{ item | basename
+                                       | regex_replace('\.j2$', '') }}
+            mode: '0600'
+          loop:
+            - tesp-api/settings.toml.j2
+            - welcome.html
+          vars:
+            tesp_max_wait_seconds: 86400
+
+        - name: The cap reaches settings.toml and the welcome page
+          ansible.builtin.assert:
+            that:
+              - >-
+                'pulsar.status.max_wait_seconds = 86400'
+                in lookup('file', out.path ~ '/capped-settings.toml')
+              - >-
+                '86400 seconds after submission'
+                in lookup('file', out.path ~ '/capped-welcome.html')
+
         # gather_facts is off; the group_vars templates read these facts
         # lazily, so task vars stand in for them.
         - name: SLURM node and memory settings follow the node's facts

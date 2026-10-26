@@ -154,12 +154,20 @@ A task's `resources.cpu_cores` and `resources.ram_gb` become SLURM options for i
 
 SLURM sees the workspace's CPUs (`CPUs`) and its memory minus `tesp_slurm_reserved_memory_mb` (2 GiB, at most half the node) for the OS, Docker and Pulsar (`RealMemory`). CPUs and memory are consumable resources (`SelectType=select/cons_tres`, `SelectTypeParameters=CR_CPU_Memory`), and a job without `--mem` gets `DefMemPerCPU`, its per-CPU share of `RealMemory`. What that means for tasks:
 
-- **Scheduling:** a job starts only when that many CPUs and that much memory are free; until then it waits in the queue (`squeue` shows it as pending). Tasks therefore don't oversubscribe the node. tesp-api stops waiting for a task after `pulsar.status.max_polls` × `pulsar.status.poll_interval` (400 × 4 s, about 27 minutes), counting queue time, and marks it failed, so long queues or long tasks hit that limit.
+- **Scheduling:** a job starts only when that many CPUs and that much memory are free; until then it waits in the queue (`squeue` shows it as pending). Tasks therefore don't oversubscribe the node, and tesp-api keeps waiting however long a task queues (see [Long tasks](#long-tasks)).
 - **Too large for the node:** a task asking for more CPUs or memory than the node has is rejected by SLURM and fails at submission. Size the workspace for your largest task, or cap the requests in the client, for example with Nextflow's `process.resourceLimits = [cpus: 8, memory: 30.GB]`.
 - **No hard limit at run time:** SLURM reserves the resources but doesn't confine the job to them. The role's `ProctrackType=proctrack/pgid` and the default task plugin don't use cgroups, so a task can use more CPU or memory than it asked for, at the cost of other tasks.
 - **Re-running the playbook:** a change to these SLURM settings restarts `slurmctld`, and changing `SelectType` on a running node loses SLURM's running and pending jobs. Re-run the playbook on an existing workspace only when no tasks are running.
 
 The container itself gets no `--cpus`/`--memory` flags: `container.resource_limits = "auto"` (`tesp_container_resource_limits`) applies them only to Docker. Apptainer needs a working cgroups manager for those flags and fails the task without one.
+
+## Long tasks
+
+tesp-api waits for each task until its SLURM job finishes, however long it queues or runs. It asks Pulsar for the job's status 4 seconds after submission and then less and less often, at most once a minute (`pulsar.status.poll_interval` and `max_poll_interval` in `templates/tesp-api/settings.toml.j2`). If Pulsar can't be reached or answers with a server error, tesp-api retries for 10 minutes (`error_retry_seconds`) before it fails the task. Canceling a task takes effect at the next status request, so up to a minute later.
+
+To cap how long a task may queue and run, set `tesp_max_wait_seconds` in `group_vars/all.yml` (default `0`, no limit). Past it tesp-api cancels the SLURM job and the task ends in `SYSTEM_ERROR`. A task with S3 outputs must also finish within `tesp_s3_output_presign_expiry_seconds` (1 day), or its uploads fail (see [Using S3](#using-s3)).
+
+**Known limitation:** tesp-api waits for tasks in its own process and doesn't pick them up again after a restart. Restarting it (for example by re-running the playbook, which rebuilds and restarts the tesp-api stack; see also [#9](https://github.com/mirelaminkova/TESP-src/issues/9)) loses every task that is queued or running: the task never gets its logs or final state, and its SLURM job goes on. Redeploy only when no tasks are running.
 
 ## Troubleshooting
 
@@ -175,9 +183,9 @@ squeue
 
 ## Configuration notes
 
-- **TESP-API version:** `group_vars/all.yml` pins `tesp_api_repo` to the [mirelaminkova/tesp-api](https://github.com/mirelaminkova/tesp-api) fork and `tesp_api_version` to a commit on its `main` (currently `2d8496a`). When you bump `tesp_api_version`:
+- **TESP-API version:** `group_vars/all.yml` pins `tesp_api_repo` to the [mirelaminkova/tesp-api](https://github.com/mirelaminkova/tesp-api) fork and `tesp_api_version` to a commit on its `main` (currently `c3a9f23`). When you bump `tesp_api_version`:
   1. Check that the fork's CI is green at that commit.
-  2. Diff the fork's `settings.toml` with `templates/tesp-api/settings.toml.j2` and add any new or renamed keys. The template replaces `settings.toml` on deploy, so a missing key is missing in production. Also check that `tesp_api/config/properties.py` still loads `.secrets.toml` and that the S3 key names still match `templates/tesp-api/secrets.toml.j2`; otherwise the credentials are silently ignored and S3 access becomes anonymous. Also check that `tesp_api/service/resources.py` still fills in the `{cpu_cores}`, `{ram_gb}` and `{ram_mib}` placeholders used by `tesp_native_spec_*`.
+  2. Diff the fork's `settings.toml` with `templates/tesp-api/settings.toml.j2` and add any new or renamed keys. The template replaces `settings.toml` on deploy, so a missing key is missing in production. Also check that `tesp_api/config/properties.py` still loads `.secrets.toml` and that the S3 key names still match `templates/tesp-api/secrets.toml.j2`; otherwise the credentials are silently ignored and S3 access becomes anonymous. Also check that `tesp_api/service/resources.py` still fills in the `{cpu_cores}`, `{ram_gb}` and `{ram_mib}` placeholders used by `tesp_native_spec_*`, and that `load_status_polling` in `tesp_api/service/job_polling.py` still reads the `pulsar.status.*` keys the template sets.
   3. Diff the fork's `docker-compose.yaml` with `templates/tesp-api/docker-compose.yml.j2` for new build targets, env vars, volumes or services.
   4. Re-test on a workspace.
 - **Container runtime:** `tesp_container_type: singularity` runs task images with Apptainer, using `singularity exec --no-eval`, which requires Apptainer 1.1 or newer. The `usegalaxy_eu.apptainer` role installs it from the Apptainer PPA, which provides 1.5.x for Ubuntu 22.04; it doesn't upgrade an apptainer that is already installed. The upstream `both` mode is broken (it leaves out the `docker://` image prefix), so don't use it.
