@@ -117,10 +117,9 @@ tesp_container_type: singularity  # docker | singularity -- how tesp-api wraps T
                                   # apptainer/SLURM node so images resolve as docker://<image>.
 tesp_network_mtu: 1442       # SURF Research Cloud requires a lower MTU
 tesp_basic_auth_user: tes
-# Longest a TES task may queue and run, in whole seconds
-# (pulsar.status.max_wait_seconds). Past it tesp-api cancels the Pulsar job and
-# the task ends in SYSTEM_ERROR. 0 = no limit: tesp-api waits until the job
-# finishes. See "Long tasks" in the README.
+# Longest a TES task's Pulsar job may queue and run, in whole seconds. Past it
+# tesp-api cancels the job and the task ends in SYSTEM_ERROR. 0 = no limit:
+# tesp-api waits until the job finishes. See "Long tasks" in the README.
 tesp_max_wait_seconds: 0
 
 # How TES task resources (cpu_cores, ram_gb) are enforced; see "Resource

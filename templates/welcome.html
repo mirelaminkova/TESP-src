@@ -128,9 +128,12 @@
 
       <p>Long tasks are fine: the service waits until a task's job finishes, however long it queues or runs.
 {% if tesp_max_wait_seconds | default(0) | int > 0 %}
-        On this workspace a task that hasn't finished {{ tesp_max_wait_seconds | int }} seconds after submission,
-        queue time included, is canceled and ends in <code>SYSTEM_ERROR</code>.
+        On this workspace a task whose job hasn't finished
+        <span id="max-wait">{{ tesp_max_wait_seconds | int }}</span> seconds after submission, queue time
+        included, is canceled and ends in <code>SYSTEM_ERROR</code>.
 {% endif %}
+        A task with S3 outputs must finish within
+        {{ tesp_s3_output_presign_expiry_seconds | default(86400, true) | int }} seconds, or its uploads fail.
         Tasks that are queued or running when the service restarts (for example when the workspace is
         redeployed) are lost: they never get their logs or final state.</p>
     </section>

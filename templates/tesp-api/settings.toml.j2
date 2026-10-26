@@ -15,13 +15,9 @@
 [default]
 db.mongodb_uri = "mongodb://tesp-db:27017"
 pulsar.url = "http://pulsar-proxy:8913"
-# tesp-api requests a job's status until the job is complete: first after
-# poll_interval seconds, then 1.25 times longer each time, up to
-# max_poll_interval. max_wait_seconds > 0 cancels the job and fails the task
-# after that long (tesp_max_wait_seconds, see "Long tasks" in the README).
-# Pulsar errors (connection, timeout, 5xx/429) are retried for
-# error_retry_seconds. pulsar.status.max_polls is deprecated and ignored (it
-# logs a warning), so it is left out.
+# How tesp-api waits for Pulsar jobs; see "Long tasks" in the README. The
+# deprecated pulsar.status.max_polls is left out: it is ignored and would log a
+# warning at startup.
 pulsar.status.poll_interval = 4
 pulsar.status.max_poll_interval = 60
 pulsar.status.max_wait_seconds = {{ tesp_max_wait_seconds | int }}
