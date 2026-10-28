@@ -98,9 +98,20 @@
       ansible.builtin.include_role:
         name: uusrc.general.fact_regular_users
 
-    - name: Generate password
-      ansible.builtin.set_fact:
-        pulsar_token: "{{ lookup('community.general.random_string', base64=True, length=24) }}"
+    # The rule matches the variable name; the path itself is not secret.
+    # ast-grep-ignore: secret-needs-no-log
+    - name: Create the TESP-API secrets directory
+      ansible.builtin.file:
+        path: "{{ tesp_secrets_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+
+    # The same token on every run, so a re-run doesn't leave pulsar-proxy
+    # with an old one.
+    - name: Get the Pulsar token
+      ansible.builtin.include_tasks: tasks/pulsar-token.yml
 
     - name: Generate TESP-API basic auth password
       ansible.builtin.set_fact:
@@ -158,6 +169,29 @@
     - galaxyproject.pulsar
 
   post_tasks:
+    # The role's restart (pulsar_restart_handler_name) is a handler: if a run
+    # stops after the role wrote a new app.yml but before handlers ran, the
+    # next run changes nothing and Pulsar would keep the old token. So also
+    # restart Pulsar whenever a file in its config directory is newer than
+    # the running process. Same second counts as newer: an extra restart is
+    # harmless, a missed one breaks every task.
+    - name: Check whether Pulsar runs with its current config
+      ansible.builtin.shell: |
+        set -euo pipefail
+        started=$(date -d "$(systemctl show -P ActiveEnterTimestamp {{ pulsar_systemd_service_name | default('pulsar') }}.service)" +%s)
+        newest=$(find {{ pulsar_root }}/config -maxdepth 1 -type f -printf '%T@\n' | sort -n | tail -n 1 | cut -d. -f1)
+        if [ "${newest:-0}" -ge "$started" ]; then echo stale; else echo current; fi
+      args:
+        executable: /bin/bash
+      register: tesp_pulsar_config_state
+      changed_when: false
+
+    - name: Restart Pulsar if its config is newer than the running process
+      ansible.builtin.systemd_service:
+        name: "{{ pulsar_systemd_service_name | default('pulsar') }}.service"
+        state: restarted
+      when: tesp_pulsar_config_state.stdout == 'stale'
+
     - name: Create directory /srv/static/
       ansible.builtin.file:
         path: /srv/static/
@@ -197,16 +231,6 @@
         group: root
         mode: '0640'
 
-    # The rule matches the variable name; the path itself is not secret.
-    # ast-grep-ignore: secret-needs-no-log
-    - name: Create the TESP-API secrets directory
-      ansible.builtin.file:
-        path: "{{ tesp_secrets_dir }}"
-        state: directory
-        owner: root
-        group: root
-        mode: '0700'
-
     # Holds the S3 secret key. no_log so it is never shown (not even with
     # --diff or -v).
     - name: Template TESP-API secrets (S3 credentials)
@@ -226,6 +250,22 @@
         group: root
         mode: '0640'  # holds the Pulsar token
 
+    # pulsar-proxy keeps the file it started with: the template replaces the
+    # bind-mounted file (new inode) and nginx reads it only at start. The
+    # checksum goes into a label on the service, so Compose recreates the
+    # container whenever the config differs from the one it runs with, also
+    # on a later run if this one stops before the stack is up.
+    - name: Checksum the Pulsar proxy config
+      ansible.builtin.stat:
+        path: "{{ tesp_install_dir }}/pulsar-token-proxy.conf"
+        get_checksum: true
+        checksum_algorithm: sha256
+      register: tesp_pulsar_proxy_conf_stat
+
+    - name: Remember the Pulsar proxy config checksum
+      ansible.builtin.set_fact:
+        tesp_pulsar_proxy_conf_checksum: "{{ tesp_pulsar_proxy_conf_stat.stat.checksum }}"
+
     - name: Template TESP-API deployment compose file
       ansible.builtin.template:
         src: templates/tesp-api/docker-compose.yml.j2
@@ -243,6 +283,13 @@
         state: present
 
   handlers:
+    # Notified by the galaxyproject.pulsar role when its config changes
+    # (pulsar_restart_handler_name in group_vars/all.yml).
+    - name: Restart Pulsar
+      ansible.builtin.systemd_service:
+        name: "{{ pulsar_systemd_service_name | default('pulsar') }}.service"
+        state: restarted
+
     - name: Restart Pulsar firewall
       ansible.builtin.systemd_service:
         name: tesp-pulsar-firewall

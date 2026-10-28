@@ -1,0 +1,56 @@
+---
+# Sets pulsar_token. The token is generated on the first run and kept in
+# tesp_pulsar_token_file (0600, in the root-only tesp_secrets_dir), and later
+# runs read it back. Pulsar's app.yml and pulsar-token-proxy.conf therefore
+# stay the same on a re-run, so pulsar-proxy never holds an old token.
+# Delete the file and re-run the playbook to rotate the token.
+# Included by playbook.yml and tests/render-templates.yml.
+
+# Letters and digits only, as defence in depth: pulsar-proxy puts the token
+# in a query string, where an unencoded base64 + would reach Pulsar as a
+# space. The proxy template URL-encodes it anyway (#29), which is what keeps
+# a token put in the file by hand working. The builtin password
+# lookup needs no collection (the unit tests have only ansible-core);
+# /dev/null means it generates without storing. Options go in the term:
+# ansible-core 2.12 and older ignore keyword arguments to this lookup.
+- name: Store a new Pulsar token unless one is stored already
+  ansible.builtin.copy:
+    content: >-
+      {{ lookup('ansible.builtin.password',
+                '/dev/null chars=ascii_letters,digits length=32') }}
+    dest: "{{ tesp_pulsar_token_file }}"
+    force: false
+    mode: '0600'
+  no_log: true
+
+# copy with force: false leaves an existing file's mode alone.
+- name: Keep the stored Pulsar token file private
+  ansible.builtin.file:
+    path: "{{ tesp_pulsar_token_file }}"
+    mode: '0600'
+  no_log: true
+
+- name: Read the stored Pulsar token
+  ansible.builtin.slurp:
+    src: "{{ tesp_pulsar_token_file }}"
+  register: tesp_pulsar_token_stored
+  no_log: true
+
+- name: Set the Pulsar token
+  ansible.builtin.set_fact:
+    pulsar_token: "{{ tesp_pulsar_token_stored.content | b64decode | trim }}"
+  no_log: true
+
+# An empty or short file would otherwise give Pulsar a weak or empty
+# private_token. 24 characters, not 32, so that a 24-character token put in
+# the file by hand (for example a base64 one) is still accepted. Not no_log, so the message
+# shows: it names the file and the check, never the token.
+# ast-grep-ignore: secret-needs-no-log
+- name: Check the stored Pulsar token
+  ansible.builtin.assert:
+    that:
+      - pulsar_token | length >= 24
+    fail_msg: >-
+      {{ tesp_pulsar_token_file }} holds no usable Pulsar token. Delete it and
+      re-run the playbook to generate a new one.
+    quiet: true
