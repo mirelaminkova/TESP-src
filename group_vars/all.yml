@@ -158,3 +158,6 @@ tesp_s3_output_presign_expiry_seconds: 86400
 # be baked into an image layer. Bind-mounted read-only as /app/.secrets.toml.
 tesp_secrets_dir: /etc/tesp-api
 tesp_secrets_file: "{{ tesp_secrets_dir }}/secrets.toml"
+# Pulsar's private_token, generated on the first run and reused on later ones
+# (tasks/pulsar-token.yml). Delete it and re-run to rotate the token.
+tesp_pulsar_token_file: "{{ tesp_secrets_dir }}/pulsar_token"

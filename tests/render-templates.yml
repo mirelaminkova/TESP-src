@@ -213,6 +213,34 @@
           ansible.builtin.command: sh -n {{ out.path }}/pulsar-firewall.sh
           changed_when: false
 
+        # Last: these replace the test pulsar_token fact set above.
+        - name: Generate and store a Pulsar token
+          ansible.builtin.include_tasks: ../tasks/pulsar-token.yml
+          vars:
+            tesp_pulsar_token_file: "{{ out.path }}/pulsar_token"
+
+        - name: Remember the first token
+          ansible.builtin.set_fact:
+            first_pulsar_token: "{{ pulsar_token }}"
+
+        - name: Run the token tasks again, as a re-run of the playbook does
+          ansible.builtin.include_tasks: ../tasks/pulsar-token.yml
+          vars:
+            tesp_pulsar_token_file: "{{ out.path }}/pulsar_token"
+
+        - name: Check the stored token file
+          ansible.builtin.stat:
+            path: "{{ out.path }}/pulsar_token"
+          register: token_file
+
+        - name: A re-run keeps the Pulsar token; the file is private
+          ansible.builtin.assert:
+            that:
+              - first_pulsar_token | length >= 24
+              - pulsar_token == first_pulsar_token
+              - token_file.stat.mode == '0600'
+            fail_msg: the Pulsar token changed on a re-run, or its file is readable by others
+
       always:
         - name: Remove output directory
           ansible.builtin.file:

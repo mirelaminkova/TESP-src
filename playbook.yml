@@ -86,9 +86,18 @@
       ansible.builtin.include_role:
         name: uusrc.general.fact_regular_users
 
-    - name: Generate password
-      set_fact:
-        pulsar_token: "{{ lookup('community.general.random_string', base64=True, length=24) }}"
+    - name: Create the TESP-API secrets directory
+      ansible.builtin.file:
+        path: "{{ tesp_secrets_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+
+    # The same token on every run, so a re-run doesn't leave pulsar-proxy
+    # with an old one.
+    - name: Get the Pulsar token
+      ansible.builtin.include_tasks: tasks/pulsar-token.yml
 
     - name: Generate TESP-API basic auth password
       set_fact:
@@ -185,14 +194,6 @@
         group: root
         mode: '0640'
 
-    - name: Create the TESP-API secrets directory
-      ansible.builtin.file:
-        path: "{{ tesp_secrets_dir }}"
-        state: directory
-        owner: root
-        group: root
-        mode: '0700'
-
     # Holds the S3 secret key. no_log so it is never shown (not even with
     # --diff or -v).
     - name: Template TESP-API secrets (S3 credentials)
@@ -211,6 +212,9 @@
         owner: root
         group: root
         mode: '0640'  # holds the Pulsar token
+      # The container keeps the file it started with: the template replaces
+      # the file rather than rewriting it, and nginx reads it only at start.
+      notify: Restart pulsar-proxy
 
     - name: Template TESP-API deployment compose file
       ansible.builtin.template:
@@ -234,3 +238,12 @@
         name: tesp-pulsar-firewall
         state: restarted
         daemon_reload: true
+
+    - name: Restart pulsar-proxy
+      community.docker.docker_compose_v2:
+        project_src: "{{ tesp_install_dir }}"
+        files:
+          - docker-compose.deploy.yml
+        services:
+          - pulsar-proxy
+        state: restarted
