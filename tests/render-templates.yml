@@ -87,8 +87,8 @@
               - tesp_api_version in files['welcome.html']
             fail_msg: welcome.html leaks a secret or lost connection details
 
-        # Each value the Nextflow catalog item asks for has its own copy
-        # field, labelled like the Nextflow form.
+        # Each value the nextflow-tesp-src catalog item asks for has its own
+        # copy field, hinted with its form label and parameter key.
         - name: Welcome page has copy fields for the Nextflow workspace
           ansible.builtin.assert:
             that:
@@ -104,7 +104,23 @@
                 ('id="field-fqdn">' ~ workspace_fqdn ~ '<')
                 in files['welcome.html']
               - >-
-                'id="field-s3-bucket">tesp-test-bucket<'
+                'id="field-nf-workdir">s3://tesp-test-bucket/work<'
+                in files['welcome.html']
+              - "'id=\"field-s3-bucket\"' not in files['welcome.html']"
+              - >-
+                '<small>Paste TESP URL · src_tes_endpoint</small>'
+                in files['welcome.html']
+              - "'<small>src_tes_username</small>' in files['welcome.html']"
+              - >-
+                '<small>Write the TES password · src_tes_password</small>'
+                in files['welcome.html']
+              - >-
+                '<small>S3 bucket resource · src_nf_workdir</small>'
+                in files['welcome.html']
+              - "'<small>src_s3_endpoint_url</small>' in files['welcome.html']"
+              - "'<small>src_s3_region</small>' in files['welcome.html']"
+              - >-
+                'href="https://github.com/mirelaminkova/nextflow-tesp-src"'
                 in files['welcome.html']
               - >-
                 ('id="field-s3-endpoint">' ~ src_s3_endpoint_url ~ '<')
@@ -131,7 +147,7 @@
         - name: Without S3 settings the page says so and shows no workDir
           ansible.builtin.assert:
             that:
-              - "'id=\"field-s3-bucket\"' not in page"
+              - "'id=\"field-nf-workdir\"' not in page"
               - "'workDir' not in page"
               - "'aws {' not in page"
               - "'id=\"s3-unset\"' in page"
@@ -156,7 +172,7 @@
               - "\"endpoint = 'https://s3.example.org'\" in page"
               - "'workDir' not in page"
               - "'s3PathStyleAccess' not in page"
-              - "'id=\"field-s3-bucket\"' not in page"
+              - "'id=\"field-nf-workdir\"' not in page"
               - "'id=\"s3-no-keys\"' in page"
           vars:
             page: "{{ lookup('file', out.path ~ '/endpoint-only-welcome.html') }}"
