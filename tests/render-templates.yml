@@ -204,6 +204,66 @@
               processor_nproc: 1
               memtotal_mb: 3000
 
+        - name: Generated config is bind-mounted from outside the build context
+          ansible.builtin.assert:
+            that:
+              - (tesp_settings_file ~ ':/app/settings.toml:ro')
+                in files['docker-compose.yml']
+              - (tesp_secrets_file ~ ':/app/.secrets.toml:ro')
+                in files['docker-compose.yml']
+              - (tesp_pulsar_proxy_conf ~ ':/etc/nginx/conf.d/default.conf:ro')
+                in files['docker-compose.yml']
+              - not (tesp_settings_file is match(tesp_install_dir ~ '/'))
+              - not (tesp_secrets_file is match(tesp_install_dir ~ '/'))
+              - not (tesp_pulsar_proxy_conf is match(tesp_install_dir ~ '/'))
+            fail_msg: >-
+              a generated tesp-api config file is in tesp_install_dir, the
+              image build context, or isn't mounted from tesp_secrets_dir
+
+        # playbook.yml itself: only the compose file may be templated into
+        # the build context, and every other tesp-api config file must
+        # restart the stack when it changes.
+        - name: Find the template tasks and handlers in playbook.yml
+          ansible.builtin.set_fact:
+            playbook_tasks: >-
+              {{ (plays | map(attribute='pre_tasks', default=[]) | list
+                  + plays | map(attribute='post_tasks', default=[]) | list)
+                 | flatten(levels=1) }}
+            handler_names: >-
+              {{ plays | map(attribute='handlers', default=[]) | flatten(levels=1)
+                 | map(attribute='name') | list }}
+          vars:
+            plays: "{{ lookup('file', playbook_dir ~ '/../playbook.yml') | from_yaml }}"
+
+        - name: Only the compose file is templated into the build context
+          ansible.builtin.assert:
+            that:
+              - >-
+                not (item['ansible.builtin.template'].dest
+                     is search('tesp_install_dir'))
+                or item['ansible.builtin.template'].dest
+                   is search('/docker-compose\.deploy\.yml$')
+            quiet: true
+          loop: "{{ playbook_tasks }}"
+          loop_control:
+            label: "{{ item.name }}"
+          when: "'ansible.builtin.template' in item"
+
+        - name: Changed tesp-api config restarts the stack
+          ansible.builtin.assert:
+            that:
+              - "'Restart the TESP-API stack' in handler_names"
+              - item.notify | default([]) is search('Restart the TESP-API stack')
+            fail_msg: "{{ item.name }} doesn't restart the stack when it changes"
+            quiet: true
+          loop: "{{ playbook_tasks }}"
+          loop_control:
+            label: "{{ item.name }}"
+          when: >-
+            'ansible.builtin.template' in item
+            and item['ansible.builtin.template'].src
+            is search('^templates/tesp-api/(?!docker-compose)')
+
         - name: Firewall script guards the Pulsar port
           ansible.builtin.assert:
             that:

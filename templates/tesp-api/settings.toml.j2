@@ -1,6 +1,7 @@
 # Managed by Ansible (TESP-src). Do not edit by hand.
 #
-# Replaces the settings.toml of the tesp-api checkout, so it must define every
+# Deployed to {{ tesp_settings_file }} (root, 0600) and bind-mounted
+# read-only over the tesp-api checkout's settings.toml, so it must define every
 # setting the app reads (see "Configuration notes" in the README when bumping
 # tesp_api_version), except the S3 key pair, which is in .secrets.toml. The
 # stack runs with FASTAPI_PROFILE=src; Dynaconf merges [src] over [default].

@@ -153,8 +153,14 @@ tesp_s3_secret_access_key: >-
 tesp_s3_presign_expiry_seconds: 3600          # download URLs handed to Pulsar
 # Upload URLs; must cover a whole task run. Both at most 604800 (7 days).
 tesp_s3_output_presign_expiry_seconds: 86400
-# Root-only, and outside tesp_install_dir on purpose: that directory is the
-# image build context (the Dockerfile does COPY . .), so a secret in it would
-# be baked into an image layer. Bind-mounted read-only as /app/.secrets.toml.
+# Generated tesp-api config. Root-only, and outside tesp_install_dir on
+# purpose: that directory is the image build context (the Dockerfile does
+# COPY . .), so a file with a secret in it would be baked into an image layer.
+# Each file is bind-mounted read-only (templates/tesp-api/docker-compose.yml.j2).
 tesp_secrets_dir: /etc/tesp-api
+# S3 key pair; /app/.secrets.toml in the tesp-api container.
 tesp_secrets_file: "{{ tesp_secrets_dir }}/secrets.toml"
+# Holds the TES password; /app/settings.toml in the tesp-api container.
+tesp_settings_file: "{{ tesp_secrets_dir }}/settings.toml"
+# Holds the Pulsar token; the pulsar-proxy container's nginx config.
+tesp_pulsar_proxy_conf: "{{ tesp_secrets_dir }}/pulsar-token-proxy.conf"

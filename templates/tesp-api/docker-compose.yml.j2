@@ -12,6 +12,10 @@
 # credentials, and the staging volume shared with pulsar_rest. Pulsar runs on
 # the host here. S3 is configured in settings.toml and, for the key pair, in
 # {{ tesp_secrets_file }}, mounted below; neither goes in this file.
+#
+# The generated config files ({{ tesp_secrets_dir }}) are bind-mounted
+# read-only, never put in ./: ./ is the image build context and the Dockerfile
+# does `COPY . .`, so they would end up in an image layer.
 services:
   tesp-api:
     build:
@@ -35,8 +39,8 @@ services:
       - pulsar-proxy
     volumes:
       - ./:/app
-      # Read by Dynaconf next to settings.toml. Kept outside ./ so that
-      # `COPY . .` in the image build never picks it up.
+      # Read by Dynaconf; mounted over the checkout's own settings.toml.
+      - {{ tesp_settings_file }}:/app/settings.toml:ro
       - {{ tesp_secrets_file }}:/app/.secrets.toml:ro
 
   tesp-db:
@@ -55,7 +59,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - {{ tesp_install_dir }}/pulsar-token-proxy.conf:/etc/nginx/conf.d/default.conf:ro
+      - {{ tesp_pulsar_proxy_conf }}:/etc/nginx/conf.d/default.conf:ro
 
 # Some cloud providers (incl. SURF Research Cloud) require a lower MTU.
 networks:
