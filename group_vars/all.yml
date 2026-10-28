@@ -64,6 +64,11 @@ pulsar_optional_dependencies:
   # more robust in small ways.
   - psutil
   - uwsgi
+  # The uwsgi runner starts Pulsar with `--ini-paste` (PasteDeploy) and the
+  # role's server.ini uses egg:Paste#http. pulsar-app 0.16 no longer pulls
+  # these in, and without them uwsgi exits with "No module named 'paste'".
+  - Paste
+  - PasteDeploy
   # drmaa required if connecting to an external DRM using it.
   - drmaa
 
