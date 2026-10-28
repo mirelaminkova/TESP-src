@@ -118,7 +118,7 @@ The catalog item can set these component parameters. All are optional:
 | `src_s3_access_key_id` | empty | **yes** | Access key |
 | `src_s3_secret_access_key` | empty | **yes** | Secret key |
 | `src_s3_addressing_style` | `path` | no | `path` (`https://host/bucket/key`, works with MinIO and most S3-compatible stores), `virtual` (`https://bucket.host/key`) or `auto` |
-| `src_s3_bucket` | empty | no | Bucket shared with the [nextflow-tesp-src](https://github.com/mirelaminkova/nextflow-tesp-src) workspace, as `bucket` or `s3://bucket`. The welcome page shows `s3://<bucket>/work` as a copy field for that workspace's `src_nf_workdir`, and uses it as `workDir` in its Nextflow example. tesp-api doesn't restrict tasks to it: the key pair decides which buckets tasks can reach |
+| `src_s3_bucket` | empty | no | Bucket shared with the [nextflow-tesp-src](https://github.com/mirelaminkova/nextflow-tesp-src) workspace, as `bucket`, `s3://bucket` or `s3://bucket/prefix`. The welcome page shows `s3://<bucket>/<prefix>` (or `s3://<bucket>/work` without a prefix) as a copy field for that workspace's `src_nf_workdir`, and uses it as `workDir` in its Nextflow example. tesp-api doesn't restrict tasks to it: the key pair decides which buckets tasks can reach |
 
 - **Who sets what:** the catalog item maintainer adds the parameters to the catalog item. Make the endpoint, region and addressing style overwritable if workspace owners should choose them when they create a workspace.
 - **Secrets:** give the access key and secret key from SRC's secret store (see the SRC documentation on secrets in component parameters), never as plain fixed values, which anyone who can see the catalog item can read. Every workspace created with the same secret shares that key pair, so use a key that only grants access to the buckets meant for TESP.
@@ -142,7 +142,7 @@ To run Nextflow against TESP, create a [nextflow-tesp-src](https://github.com/mi
 | `src_tes_endpoint` | Paste TESP URL | TES URL |
 | `src_tes_username` | | TES username |
 | `src_tes_password` (secret) | Write the TES password | TES password |
-| `src_nf_workdir` | S3 bucket resource | Nextflow work directory, `s3://<src_s3_bucket>/work` |
+| `src_nf_workdir` | S3 bucket resource | Nextflow work directory: `s3://<bucket>/<prefix>` from `src_s3_bucket`, or `s3://<bucket>/work` without a prefix |
 | `src_s3_endpoint_url`, `src_s3_region`, `src_s3_addressing_style` | | the same values as TESP's |
 
 Give that workspace its own S3 key pair for the bucket (`src_s3_access_key_id`, `src_s3_secret_access_key`); the TESP welcome page never shows TESP's.

@@ -27,7 +27,9 @@
           # A set parameter must leave a valid name ("s3://" alone doesn't).
           - >-
             (src_s3_bucket | default('') | trim) == ''
-            or tesp_s3_bucket is match(tesp_s3_bucket_re)
+            or (tesp_s3_bucket is match(tesp_s3_bucket_re)
+                and (tesp_s3_prefix == ''
+                     or tesp_s3_prefix is match(tesp_s3_prefix_re)))
           - (tesp_s3_access_key_id != '') == (tesp_s3_has_secret_key | bool)
           - tesp_s3_presign_expiry_seconds | int in range(1, 604801)
           - tesp_s3_output_presign_expiry_seconds | int in range(1, 604801)
@@ -39,7 +41,8 @@
           src_s3_addressing_style must be path, virtual or auto;
           src_s3_region may only contain letters, digits, _ and -;
           src_s3_bucket must be empty or a bucket name (letters, digits,
-          ., _ and -, 3 to 255 characters), optionally as s3://bucket;
+          ., _ and -, 3 to 255 characters), optionally as s3://bucket or
+          s3://bucket/prefix (prefix: the same characters and /);
           src_s3_access_key_id and src_s3_secret_access_key must be set
           together; tesp_s3_presign_expiry_seconds and
           tesp_s3_output_presign_expiry_seconds must be between 1 and 604800.

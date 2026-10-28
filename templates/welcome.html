@@ -62,6 +62,7 @@
 {% set tes_user = tesp_basic_auth_user | default('tes', true) %}
 {% set tes_password = tesp_basic_auth_password | default('unknown', true) %}
 {% set s3_bucket = tesp_s3_bucket | default('') %}
+{% set s3_workdir = tesp_s3_workdir | default('') %}
 {% set s3_endpoint = tesp_s3_endpoint_url | default('') %}
 {% set s3_region = tesp_s3_region | default('us-east-1', true) %}
 {% set s3_style = tesp_s3_addressing_style | default('path', true) %}
@@ -108,7 +109,7 @@
 {{ field('field-tes-username', 'TES username', tes_user, 'src_tes_username') }}
 {{ field('field-tes-password', 'TES password', tes_password, 'Write the TES password · src_tes_password') }}
 {% if s3_bucket %}
-{{ field('field-nf-workdir', 'Nextflow work directory', 's3://' ~ s3_bucket ~ '/work', 'S3 bucket resource · src_nf_workdir') }}
+{{ field('field-nf-workdir', 'Nextflow work directory', s3_workdir, 'S3 bucket resource · src_nf_workdir') }}
 {% endif %}
 {% if s3_endpoint %}
 {{ field('field-s3-endpoint', 'S3 endpoint URL', s3_endpoint, 'src_s3_endpoint_url') }}
@@ -136,7 +137,7 @@
         <li><strong>Region:</strong> <code>{{ s3_region | e }}</code></li>
         <li><strong>Addressing style:</strong> <code>{{ s3_style | e }}</code></li>
         <li><strong>Bucket for the Nextflow work directory:</strong>
-          {% if s3_bucket %}<code>s3://{{ s3_bucket | e }}/work</code>{% else %}not set (component parameter <code>src_s3_bucket</code>){% endif %}</li>
+          {% if s3_bucket %}<code>{{ s3_workdir | e }}</code>{% else %}not set (component parameter <code>src_s3_bucket</code>){% endif %}</li>
         <li><strong>Key pair:</strong> {{ 'configured' if s3_has_keys else 'not configured' }}</li>
       </ul>
 {% if not s3_has_keys %}
@@ -216,7 +217,7 @@ tes.endpoint = '{{ tes_url }}'
 tes.basicUsername = '{{ tes_user }}'
 tes.basicPassword = '{{ tes_password }}'
 {% if s3_bucket %}
-workDir = 's3://{{ s3_bucket }}/work'
+workDir = '{{ s3_workdir }}'
 {% endif %}
 {% if s3_used %}
 

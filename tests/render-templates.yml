@@ -177,6 +177,54 @@
           vars:
             page: "{{ lookup('file', out.path ~ '/endpoint-only-welcome.html') }}"
 
+        # What SRC passed on a failed deploy: a bucket with a prefix, the
+        # form nextflow-tesp-src's src_nf_workdir takes.
+        - name: A prefix after the bucket becomes the work directory
+          ansible.builtin.assert:
+            that:
+              - tesp_s3_bucket == 'nextflow-tesp'
+              - tesp_s3_prefix == 'test/run1'
+              - tesp_s3_workdir == 's3://nextflow-tesp/test/run1'
+              - tesp_s3_bucket is match(tesp_s3_bucket_re)
+              - tesp_s3_prefix is match(tesp_s3_prefix_re)
+          vars:
+            tesp_s3_location: nextflow-tesp/test/run1
+
+        - name: Without a prefix the work directory is <bucket>/work
+          ansible.builtin.assert:
+            that:
+              - tesp_s3_prefix == ''
+              - tesp_s3_workdir == 's3://tesp-test-bucket/work'
+
+        - name: Render the welcome page with a bucket prefix
+          ansible.builtin.template:
+            src: "{{ templates_dir }}/welcome.html"
+            dest: "{{ out.path }}/prefix-welcome.html"
+            mode: '0600'
+          vars:
+            tesp_s3_location: nextflow-tesp/test
+
+        - name: The page uses the prefix as the work directory
+          ansible.builtin.assert:
+            that:
+              - "'id=\"field-nf-workdir\">s3://nextflow-tesp/test<' in page"
+              - "\"workDir = 's3://nextflow-tesp/test'\" in page"
+              - "'s3://nextflow-tesp/test/work' not in page"
+          vars:
+            page: "{{ lookup('file', out.path ~ '/prefix-welcome.html') }}"
+
+        - name: Prefixes are checked before they reach the welcome page
+          ansible.builtin.assert:
+            that:
+              - "'work' is match(tesp_s3_prefix_re)"
+              - "'a/b_c/d.e-f' is match(tesp_s3_prefix_re)"
+              - "'' is not match(tesp_s3_prefix_re)"
+              - "'/x' is not match(tesp_s3_prefix_re)"
+              - "'a//b' is not match(tesp_s3_prefix_re)"
+              - "'a b' is not match(tesp_s3_prefix_re)"
+              - "\"a'b\" is not match(tesp_s3_prefix_re)"
+              - "'a\\n' is not match(tesp_s3_prefix_re)"
+
         - name: Bucket names are checked before they reach the welcome page
           ansible.builtin.assert:
             that:
