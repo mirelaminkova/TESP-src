@@ -187,6 +187,7 @@
               - slurm_nodes[0].RealMemory | int == 16000 - 2048
               - slurm_config.SelectTypeParameters == 'CR_CPU_Memory'
               - slurm_config.DefMemPerCPU | int == (16000 - 2048) // 8
+              - slurm_config.EnforcePartLimits == 'ALL'
           vars:
             ansible_facts:
               processor_vcpus: 8

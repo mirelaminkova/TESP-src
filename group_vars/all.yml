@@ -29,6 +29,10 @@ slurm_config:
   # Without it such a job would take all of RealMemory and run alone.
   DefMemPerCPU: >-
     {{ (tesp_slurm_real_memory_mb | int) // (tesp_slurm_cpus | int) }}
+  # Reject at submission a job asking for more than the partition (this one
+  # node) has. With the default NO, sbatch accepts it and it stays pending
+  # forever as (PartitionConfig).
+  EnforcePartLimits: ALL
 # Online CPUs, as slurmd counts them; more than slurmd finds drains the node.
 tesp_slurm_cpus: >-
   {{ [ansible_facts['processor_vcpus'] | int,
