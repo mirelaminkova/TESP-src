@@ -14,14 +14,20 @@
 
     - name: Validate the S3 parameters (src_s3_*)
       vars:
-        # scheme://host[:port][/path], ASCII only (no user:pass@)
-        url_re: 'https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?$'
+        # scheme://host[:port][/path], ASCII only (no user:pass@). \Z, not
+        # $, which would let a trailing newline through.
+        url_re: 'https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?\Z'
+        region_re: '[A-Za-z0-9_-]+\Z'
       ansible.builtin.assert:
         quiet: true
         that:
           - tesp_s3_endpoint_url == '' or tesp_s3_endpoint_url is match(url_re)
           - tesp_s3_addressing_style in ['path', 'virtual', 'auto']
-          - tesp_s3_region is match('[A-Za-z0-9_-]+$')
+          - tesp_s3_region is match(region_re)
+          # A set parameter must leave a valid name ("s3://" alone doesn't).
+          - >-
+            (src_s3_bucket | default('') | trim) == ''
+            or tesp_s3_bucket is match(tesp_s3_bucket_re)
           - (tesp_s3_access_key_id != '') == (tesp_s3_has_secret_key | bool)
           - tesp_s3_presign_expiry_seconds | int in range(1, 604801)
           - tesp_s3_output_presign_expiry_seconds | int in range(1, 604801)
@@ -32,6 +38,8 @@
           https://s3.example.org;
           src_s3_addressing_style must be path, virtual or auto;
           src_s3_region may only contain letters, digits, _ and -;
+          src_s3_bucket must be empty or a bucket name (letters, digits,
+          ., _ and -, 3 to 255 characters), optionally as s3://bucket;
           src_s3_access_key_id and src_s3_secret_access_key must be set
           together; tesp_s3_presign_expiry_seconds and
           tesp_s3_output_presign_expiry_seconds must be between 1 and 604800.

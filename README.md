@@ -117,11 +117,12 @@ The catalog item can set these component parameters. All are optional:
 | `src_s3_access_key_id` | empty | **yes** | Access key |
 | `src_s3_secret_access_key` | empty | **yes** | Secret key |
 | `src_s3_addressing_style` | `path` | no | `path` (`https://host/bucket/key`, works with MinIO and most S3-compatible stores), `virtual` (`https://bucket.host/key`) or `auto` |
+| `src_s3_bucket` | empty | no | Bucket shared with the Nextflow workspace, as `bucket` or `s3://bucket`. Shown on the welcome page as a copy field and in the Nextflow example as `workDir = 's3://<bucket>/work'`. tesp-api doesn't restrict tasks to it: the key pair decides which buckets tasks can reach |
 
 - **Who sets what:** the catalog item maintainer adds the parameters to the catalog item. Make the endpoint, region and addressing style overwritable if workspace owners should choose them when they create a workspace.
 - **Secrets:** give the access key and secret key from SRC's secret store (see the SRC documentation on secrets in component parameters), never as plain fixed values, which anyone who can see the catalog item can read. Every workspace created with the same secret shares that key pair, so use a key that only grants access to the buckets meant for TESP.
 - **Both or neither:** without a key pair, TESP accesses S3 anonymously, so only public buckets can be read and `s3://` outputs fail when the task uploads them.
-- **Validation:** the playbook stops before installing anything if a parameter is invalid, for example an endpoint without `https://`, an unknown addressing style, or only one of the two keys.
+- **Validation:** the playbook stops before installing anything if a parameter is invalid, for example an endpoint without `https://`, an unknown addressing style, an invalid bucket name, or only one of the two keys.
 
 Example for SURF Object Store, with the S3 endpoint and key pair of your Object Store project:
 
@@ -130,7 +131,10 @@ src_s3_endpoint_url      = <Object Store S3 endpoint, e.g. https://objectstore.s
 src_s3_addressing_style  = path
 src_s3_access_key_id     = <access key>   (secret)
 src_s3_secret_access_key = <secret key>   (secret)
+src_s3_bucket            = <bucket name>
 ```
+
+Give the Nextflow workspace the same bucket (its "S3 bucket resource" parameter) and the TES URL, username and password from the TESP welcome page, which has a copy button for each.
 
 The endpoint must be reachable from two places: from the workspace (tesp-api, and Pulsar staging inputs and outputs), and from wherever Nextflow runs, because Nextflow itself reads and writes the work directory. Configure Nextflow with the same endpoint and its own credentials, for example:
 
@@ -147,6 +151,8 @@ aws {
     }
 }
 ```
+
+Nextflow has no `auto` addressing style: without `s3PathStyleAccess = true` it uses virtual-host addressing, which MinIO and many S3-compatible stores don't serve. Use `path` on both sides unless the store needs `virtual`.
 
 ## Resource limits
 

@@ -150,6 +150,17 @@ tesp_s3_addressing_style: >-
 tesp_s3_access_key_id: "{{ src_s3_access_key_id | default('') | trim }}"
 tesp_s3_secret_access_key: >-
   {{ src_s3_secret_access_key | default('') | trim }}
+# Bucket shared with the Nextflow workspace for its s3://<bucket>/work work
+# directory; optional. Only shown on the welcome page: tesp-api itself accepts
+# any bucket the key pair can reach. "s3://bucket/" is accepted and trimmed to
+# the bucket name.
+tesp_s3_bucket: >-
+  {{ src_s3_bucket | default('') | trim | regex_replace('^s3://', '')
+     | regex_replace('/+$', '') }}
+# S3 bucket names, loosely (Ceph RGW allows more than AWS): letters, digits,
+# ., _ and -, starting and ending with a letter or digit. \Z, not $, which
+# would let a trailing newline through.
+tesp_s3_bucket_re: '[A-Za-z0-9][A-Za-z0-9._-]{1,253}[A-Za-z0-9]\Z'
 tesp_s3_presign_expiry_seconds: 3600          # download URLs handed to Pulsar
 # Upload URLs; must cover a whole task run. Both at most 604800 (7 days).
 tesp_s3_output_presign_expiry_seconds: 86400
