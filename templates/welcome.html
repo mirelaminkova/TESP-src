@@ -100,20 +100,21 @@
 
     <section>
       <h2>Connection details</h2>
-      <p>Copy these into the parameters of a Nextflow (or other TES client) workspace. Where the Nextflow
-        catalog item names a field differently, the small print gives its name.</p>
+      <p>Copy these into the parameters of a <a href="https://github.com/mirelaminkova/nextflow-tesp-src">nextflow-tesp-src</a> (or other TES client)
+        workspace. The small print gives the Nextflow form's label where it differs, and the component
+        parameter.</p>
       <div class="fields">
-{{ field('field-tes-url', 'TES URL', tes_url, 'Paste TESP URL') }}
-{{ field('field-tes-username', 'TES username', tes_user) }}
-{{ field('field-tes-password', 'TES password', tes_password, 'Write the TES password') }}
+{{ field('field-tes-url', 'TES URL', tes_url, 'Paste TESP URL · src_tes_endpoint') }}
+{{ field('field-tes-username', 'TES username', tes_user, 'src_tes_username') }}
+{{ field('field-tes-password', 'TES password', tes_password, 'Write the TES password · src_tes_password') }}
 {% if s3_bucket %}
-{{ field('field-s3-bucket', 'S3 bucket', s3_bucket, 'S3 bucket resource') }}
+{{ field('field-nf-workdir', 'Nextflow work directory', 's3://' ~ s3_bucket ~ '/work', 'S3 bucket resource · src_nf_workdir') }}
 {% endif %}
 {% if s3_endpoint %}
-{{ field('field-s3-endpoint', 'S3 endpoint URL', s3_endpoint) }}
+{{ field('field-s3-endpoint', 'S3 endpoint URL', s3_endpoint, 'src_s3_endpoint_url') }}
 {% endif %}
 {% if s3_used %}
-{{ field('field-s3-region', 'S3 region', s3_region) }}
+{{ field('field-s3-region', 'S3 region', s3_region, 'src_s3_region') }}
 {% endif %}
 {{ field('field-fqdn', 'Workspace FQDN', fqdn) }}
       </div>
@@ -200,9 +201,12 @@
 
     <section>
       <h2>Using it from a workflow manager</h2>
-      <p>Point any TES client at the base URL above with the same credentials. For example, a
-        <a href="https://www.nextflow.io/docs/latest/executor.html#ga4gh-tes">Nextflow</a> configuration
-        (not yet tested against this component). Fill in the S3 key pair for the bucket yourself; this page
+      <p>The <a href="https://github.com/mirelaminkova/nextflow-tesp-src">nextflow-tesp-src</a> catalog item writes its Nextflow configuration itself
+        from the parameters above, plus its own S3 key pair (<code>src_s3_access_key_id</code>,
+        <code>src_s3_secret_access_key</code>) and the same addressing style.</p>
+      <p>For other TES clients, point them at the base URL above with the same credentials. For a
+        <a href="https://www.nextflow.io/docs/latest/executor.html#ga4gh-tes">Nextflow</a> setup of your own,
+        an equivalent configuration is below. Fill in the S3 key pair for the bucket yourself; this page
         never shows it:</p>
       <div class="copy-box">
         <button class="copy-btn" onclick="copyToClipboard('nf-config', this)">Copy</button>

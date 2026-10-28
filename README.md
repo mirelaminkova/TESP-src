@@ -76,7 +76,8 @@ When the workspace is running, click **Access**. After an SRAM login you see the
 
 - the **TES base URL**: `https://<workspace-fqdn>/tes`
 - the **username** (`tes`) and the generated **password**
-- ready-to-copy `curl` commands and a Nextflow config snippet
+- copy fields for the parameters of a [nextflow-tesp-src](https://github.com/mirelaminkova/nextflow-tesp-src) workspace (see [Using S3](#using-s3))
+- ready-to-copy `curl` commands and a Nextflow config snippet for other setups
 
 Only members of your CO can open this page. It shows the TES credentials, but not the Pulsar token or other deploy-time secrets. Anyone with the username and password can submit tasks, so don't share them.
 
@@ -117,7 +118,7 @@ The catalog item can set these component parameters. All are optional:
 | `src_s3_access_key_id` | empty | **yes** | Access key |
 | `src_s3_secret_access_key` | empty | **yes** | Secret key |
 | `src_s3_addressing_style` | `path` | no | `path` (`https://host/bucket/key`, works with MinIO and most S3-compatible stores), `virtual` (`https://bucket.host/key`) or `auto` |
-| `src_s3_bucket` | empty | no | Bucket shared with the Nextflow workspace, as `bucket` or `s3://bucket`. Shown on the welcome page as a copy field and in the Nextflow example as `workDir = 's3://<bucket>/work'`. tesp-api doesn't restrict tasks to it: the key pair decides which buckets tasks can reach |
+| `src_s3_bucket` | empty | no | Bucket shared with the [nextflow-tesp-src](https://github.com/mirelaminkova/nextflow-tesp-src) workspace, as `bucket` or `s3://bucket`. The welcome page shows `s3://<bucket>/work` as a copy field for that workspace's `src_nf_workdir`, and uses it as `workDir` in its Nextflow example. tesp-api doesn't restrict tasks to it: the key pair decides which buckets tasks can reach |
 
 - **Who sets what:** the catalog item maintainer adds the parameters to the catalog item. Make the endpoint, region and addressing style overwritable if workspace owners should choose them when they create a workspace.
 - **Secrets:** give the access key and secret key from SRC's secret store (see the SRC documentation on secrets in component parameters), never as plain fixed values, which anyone who can see the catalog item can read. Every workspace created with the same secret shares that key pair, so use a key that only grants access to the buckets meant for TESP.
@@ -134,9 +135,19 @@ src_s3_secret_access_key = <secret key>   (secret)
 src_s3_bucket            = <bucket name>
 ```
 
-Give the Nextflow workspace the same bucket (its "S3 bucket resource" parameter) and the TES URL, username and password from the TESP welcome page, which has a copy button for each.
+To run Nextflow against TESP, create a [nextflow-tesp-src](https://github.com/mirelaminkova/nextflow-tesp-src) workspace (its README, "Connecting to TESP"). The TESP welcome page has a copy button for each value it needs:
 
-The endpoint must be reachable from two places: from the workspace (tesp-api, and Pulsar staging inputs and outputs), and from wherever Nextflow runs, because Nextflow itself reads and writes the work directory. Configure Nextflow with the same endpoint and its own credentials, for example:
+| nextflow-tesp-src parameter | Form label | Welcome page field |
+| --- | --- | --- |
+| `src_tes_endpoint` | Paste TESP URL | TES URL |
+| `src_tes_username` | | TES username |
+| `src_tes_password` (secret) | Write the TES password | TES password |
+| `src_nf_workdir` | S3 bucket resource | Nextflow work directory, `s3://<src_s3_bucket>/work` |
+| `src_s3_endpoint_url`, `src_s3_region`, `src_s3_addressing_style` | | the same values as TESP's |
+
+Give that workspace its own S3 key pair for the bucket (`src_s3_access_key_id`, `src_s3_secret_access_key`); the TESP welcome page never shows TESP's.
+
+The endpoint must be reachable from two places: from the workspace (tesp-api, and Pulsar staging inputs and outputs), and from wherever Nextflow runs, because Nextflow itself reads and writes the work directory. nextflow-tesp-src writes the Nextflow configuration from its parameters. For a Nextflow setup of your own, use the same endpoint and its own credentials, for example:
 
 ```groovy
 workDir = 's3://<bucket>/work'
