@@ -55,6 +55,11 @@ pulsar_systemd_environment:
 
 pulsar_create_user: true
 pulsar_user: {name: pulsar, shell: /bin/bash}
+# The config files (app.yml holds private_token) stay root-owned and 0444, as
+# the role writes them, but with a shared group the role makes pulsar_root and
+# its config directory 0750 root:pulsar instead of 0755, so only root and the
+# Pulsar user can reach them. Also covers the role's app.yml backups.
+pulsar_group: pulsar
 
 pulsar_optional_dependencies:
   - pyOpenSSL
@@ -76,6 +81,10 @@ pulsar_host: "0.0.0.0"
 pulsar_port: 8913
 pulsar_uwsgi_options:
   buffer-size: 32768
+  # uwsgi logs each request's URL with its query string, which carries the
+  # private_token that pulsar-proxy adds. Pulsar's own log lines still go to
+  # the journal (journalctl -u pulsar).
+  disable-logging: true
 
 pulsar_yaml_config:
   managers:
