@@ -155,6 +155,23 @@
           vars:
             page: "{{ lookup('file', out.path ~ '/no-s3-welcome.html') }}"
 
+        # SRC passes the CO admins as a list.
+        - name: Render the welcome page with a list of admins
+          ansible.builtin.template:
+            src: "{{ templates_dir }}/welcome.html"
+            dest: "{{ out.path }}/admins-welcome.html"
+            mode: '0600'
+          vars:
+            fact_co_groups: {src_co_admin: [alice, bob]}
+
+        - name: Admins are listed by name, not as a Python list
+          ansible.builtin.assert:
+            that:
+              - "'<strong>Admins:</strong> alice, bob</li>' in page"
+              - "'test-co-admins</li>' in files['welcome.html']"
+          vars:
+            page: "{{ lookup('file', out.path ~ '/admins-welcome.html') }}"
+
         - name: Render the welcome page with an endpoint but no bucket or keys
           ansible.builtin.template:
             src: "{{ templates_dir }}/welcome.html"
@@ -229,7 +246,10 @@
           ansible.builtin.assert:
             that:
               - "'tesp-test-bucket' is match(tesp_s3_bucket_re)"
-              - "'my.bucket_01' is match(tesp_s3_bucket_re)"
+              - "'my.bucket-01' is match(tesp_s3_bucket_re)"
+              - "'Nextflow_TESP' is not match(tesp_s3_bucket_re)"
+              - "'my_bucket' is not match(tesp_s3_bucket_re)"
+              - "'bucket-' is not match(tesp_s3_bucket_re)"
               - "'' is not match(tesp_s3_bucket_re)"
               - "'a b' is not match(tesp_s3_bucket_re)"
               - "'bucket/prefix' is not match(tesp_s3_bucket_re)"
@@ -237,8 +257,8 @@
               - "'-bucket' is not match(tesp_s3_bucket_re)"
               - "'ab' is not match(tesp_s3_bucket_re)"
               - "'abc' is match(tesp_s3_bucket_re)"
-              - "('a' * 255) is match(tesp_s3_bucket_re)"
-              - "('a' * 256) is not match(tesp_s3_bucket_re)"
+              - "('a' * 63) is match(tesp_s3_bucket_re)"
+              - "('a' * 64) is not match(tesp_s3_bucket_re)"
               - "'abc\\n' is not match(tesp_s3_bucket_re)"
 
         # Catches secrets the test doesn't know about (e.g. future S3

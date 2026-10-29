@@ -40,9 +40,10 @@
           https://s3.example.org;
           src_s3_addressing_style must be path, virtual or auto;
           src_s3_region may only contain letters, digits, _ and -;
-          src_s3_bucket must be empty or a bucket name (letters, digits,
-          ., _ and -, 3 to 255 characters), optionally as s3://bucket or
-          s3://bucket/prefix (prefix: the same characters and /);
+          src_s3_bucket must be empty or an S3 bucket name (lowercase
+          letters, digits, . and -, 3 to 63 characters), optionally as
+          s3://bucket or s3://bucket/prefix (prefix: letters, digits, ., _,
+          - and /);
           src_s3_access_key_id and src_s3_secret_access_key must be set
           together; tesp_s3_presign_expiry_seconds and
           tesp_s3_output_presign_expiry_seconds must be between 1 and 604800.

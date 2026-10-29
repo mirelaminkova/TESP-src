@@ -93,7 +93,8 @@
         local <a href="https://pulsar.readthedocs.io/">Pulsar</a> server and run as SLURM jobs on this node,
         each inside its own container.</p>
       <ul>
-        <li><strong>Admins:</strong> {{ fact_co_groups.src_co_admin }}</li>
+        {% set co_admins = fact_co_groups.src_co_admin %}
+        <li><strong>Admins:</strong> {{ co_admins | join(', ') if co_admins is iterable and co_admins is not string else co_admins }}</li>
         <li><strong>Job storage:</strong> <code>{{ pulsar_root }}</code></li>
         <li><strong>TESP-API version:</strong> <code>{{ tesp_api_version }}</code></li>
       </ul>

@@ -155,14 +155,11 @@ tesp_s3_addressing_style: >-
 tesp_s3_access_key_id: "{{ src_s3_access_key_id | default('') | trim }}"
 tesp_s3_secret_access_key: >-
   {{ src_s3_secret_access_key | default('') | trim }}
-# Bucket shared with the Nextflow workspace for its s3://<bucket>/work work
-# directory; optional. Only shown on the welcome page: tesp-api itself accepts
-# any bucket the key pair can reach. "s3://bucket/" is accepted and trimmed to
-# the bucket name.
 # Bucket shared with the Nextflow workspace, as bucket, s3://bucket or
-# s3://bucket/prefix (nextflow-tesp-src's src_nf_workdir form). The welcome
-# page offers s3://<bucket>/<prefix> as that workspace's work directory, or
-# s3://<bucket>/work without a prefix.
+# s3://bucket/prefix (nextflow-tesp-src's src_nf_workdir form); optional. The
+# welcome page offers s3://<bucket>/<prefix> as that workspace's work
+# directory, or s3://<bucket>/work without a prefix. Only shown on the welcome
+# page: tesp-api itself accepts any bucket the key pair can reach.
 tesp_s3_location: >-
   {{ src_s3_bucket | default('') | trim | regex_replace('^s3://', '')
      | regex_replace('/+$', '') }}
@@ -171,7 +168,9 @@ tesp_s3_prefix: "{{ tesp_s3_location | regex_replace('^[^/]*/?', '') }}"
 tesp_s3_workdir: >-
   {{ ('s3://' ~ tesp_s3_bucket ~ '/' ~ (tesp_s3_prefix or 'work'))
      if tesp_s3_bucket else '' }}
-tesp_s3_bucket_re: '[A-Za-z0-9][A-Za-z0-9._-]{1,253}[A-Za-z0-9]\Z'
+# S3 bucket naming rules (also Ceph RGW's defaults): 3 to 63 lowercase
+# letters, digits, . and -, starting and ending with a letter or digit.
+tesp_s3_bucket_re: '[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]\Z'
 # Key prefix: /-separated segments of the same characters, none empty.
 tesp_s3_prefix_re: '[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*\Z'
 tesp_s3_presign_expiry_seconds: 3600          # download URLs handed to Pulsar
