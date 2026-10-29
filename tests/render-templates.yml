@@ -29,6 +29,8 @@
         src_s3_endpoint_url: https://s3.example.org
         src_s3_access_key_id: test-s3-access-key-Qe3r
         src_s3_secret_access_key: test-s3-secret/Jw8+"\\
+        # Given as an s3:// URL; the playbook keeps just the bucket name.
+        src_s3_bucket: ' s3://tesp-test-bucket/ '
 
     - name: Create output directory
       ansible.builtin.tempfile:
@@ -84,6 +86,180 @@
               - workspace_fqdn in files['welcome.html']
               - tesp_api_version in files['welcome.html']
             fail_msg: welcome.html leaks a secret or lost connection details
+
+        # Each value the nextflow-tesp-src catalog item asks for has its own
+        # copy field, hinted with its form label and parameter key.
+        - name: Welcome page has copy fields for the Nextflow workspace
+          ansible.builtin.assert:
+            that:
+              - tesp_s3_bucket == 'tesp-test-bucket'
+              - >-
+                ('id="field-tes-url">https://' ~ workspace_fqdn ~ '/tes<')
+                in files['welcome.html']
+              - "'id=\"field-tes-username\">tes<' in files['welcome.html']"
+              - >-
+                ('id="field-tes-password">' ~ tesp_basic_auth_password ~ '<')
+                in files['welcome.html']
+              - >-
+                ('id="field-fqdn">' ~ workspace_fqdn ~ '<')
+                in files['welcome.html']
+              - >-
+                'id="field-nf-workdir">s3://tesp-test-bucket/work<'
+                in files['welcome.html']
+              - "'id=\"field-s3-bucket\"' not in files['welcome.html']"
+              - >-
+                '<small>Paste TESP URL · src_tes_endpoint</small>'
+                in files['welcome.html']
+              - "'<small>src_tes_username</small>' in files['welcome.html']"
+              - >-
+                '<small>Write the TES password · src_tes_password</small>'
+                in files['welcome.html']
+              - >-
+                '<small>S3 bucket resource · src_nf_workdir</small>'
+                in files['welcome.html']
+              - "'<small>src_s3_endpoint_url</small>' in files['welcome.html']"
+              - "'<small>src_s3_region</small>' in files['welcome.html']"
+              - >-
+                'href="https://github.com/mirelaminkova/nextflow-tesp-src"'
+                in files['welcome.html']
+              - >-
+                ('id="field-s3-endpoint">' ~ src_s3_endpoint_url ~ '<')
+                in files['welcome.html']
+              - "\"workDir = 's3://tesp-test-bucket/work'\" in files['welcome.html']"
+              - "\"endpoint = 'https://s3.example.org'\" in files['welcome.html']"
+              - "'id=\"s3-no-keys\"' not in files['welcome.html']"
+              - "'s3PathStyleAccess = true' in files['welcome.html']"
+              - "'id=\"field-s3-region\">us-east-1<' in files['welcome.html']"
+            fail_msg: welcome.html lacks a copy field or the S3 work directory
+
+        - name: Render the welcome page without S3 settings
+          ansible.builtin.template:
+            src: "{{ templates_dir }}/welcome.html"
+            dest: "{{ out.path }}/no-s3-welcome.html"
+            mode: '0600'
+          # The src_s3_* test values are facts, which beat task vars, so
+          # override what group_vars derives from them.
+          vars:
+            tesp_s3_bucket: ''
+            tesp_s3_endpoint_url: ''
+            tesp_s3_access_key_id: ''
+
+        - name: Without S3 settings the page says so and shows no workDir
+          ansible.builtin.assert:
+            that:
+              - "'id=\"field-nf-workdir\"' not in page"
+              - "'workDir' not in page"
+              - "'aws {' not in page"
+              - "'id=\"s3-unset\"' in page"
+              - "'id=\"s3-no-keys\"' not in page"
+          vars:
+            page: "{{ lookup('file', out.path ~ '/no-s3-welcome.html') }}"
+
+        # SRC passes the CO admins as a list.
+        - name: Render the welcome page with a list of admins
+          ansible.builtin.template:
+            src: "{{ templates_dir }}/welcome.html"
+            dest: "{{ out.path }}/admins-welcome.html"
+            mode: '0600'
+          vars:
+            fact_co_groups: {src_co_admin: [alice, bob]}
+
+        - name: Admins are listed by name, not as a Python list
+          ansible.builtin.assert:
+            that:
+              - "'<strong>Admins:</strong> alice, bob</li>' in page"
+              - "'test-co-admins</li>' in files['welcome.html']"
+          vars:
+            page: "{{ lookup('file', out.path ~ '/admins-welcome.html') }}"
+
+        - name: Render the welcome page with an endpoint but no bucket or keys
+          ansible.builtin.template:
+            src: "{{ templates_dir }}/welcome.html"
+            dest: "{{ out.path }}/endpoint-only-welcome.html"
+            mode: '0600'
+          vars:
+            tesp_s3_bucket: ''
+            tesp_s3_access_key_id: ''
+            tesp_s3_addressing_style: virtual
+
+        - name: Endpoint only gives an aws block without workDir or path style
+          ansible.builtin.assert:
+            that:
+              - "'aws {' in page"
+              - "\"endpoint = 'https://s3.example.org'\" in page"
+              - "'workDir' not in page"
+              - "'s3PathStyleAccess' not in page"
+              - "'id=\"field-nf-workdir\"' not in page"
+              - "'id=\"s3-no-keys\"' in page"
+          vars:
+            page: "{{ lookup('file', out.path ~ '/endpoint-only-welcome.html') }}"
+
+        # What SRC passed on a failed deploy: a bucket with a prefix, the
+        # form nextflow-tesp-src's src_nf_workdir takes.
+        - name: A prefix after the bucket becomes the work directory
+          ansible.builtin.assert:
+            that:
+              - tesp_s3_bucket == 'nextflow-tesp'
+              - tesp_s3_prefix == 'test/run1'
+              - tesp_s3_workdir == 's3://nextflow-tesp/test/run1'
+              - tesp_s3_bucket is match(tesp_s3_bucket_re)
+              - tesp_s3_prefix is match(tesp_s3_prefix_re)
+          vars:
+            tesp_s3_location: nextflow-tesp/test/run1
+
+        - name: Without a prefix the work directory is <bucket>/work
+          ansible.builtin.assert:
+            that:
+              - tesp_s3_prefix == ''
+              - tesp_s3_workdir == 's3://tesp-test-bucket/work'
+
+        - name: Render the welcome page with a bucket prefix
+          ansible.builtin.template:
+            src: "{{ templates_dir }}/welcome.html"
+            dest: "{{ out.path }}/prefix-welcome.html"
+            mode: '0600'
+          vars:
+            tesp_s3_location: nextflow-tesp/test
+
+        - name: The page uses the prefix as the work directory
+          ansible.builtin.assert:
+            that:
+              - "'id=\"field-nf-workdir\">s3://nextflow-tesp/test<' in page"
+              - "\"workDir = 's3://nextflow-tesp/test'\" in page"
+              - "'s3://nextflow-tesp/test/work' not in page"
+          vars:
+            page: "{{ lookup('file', out.path ~ '/prefix-welcome.html') }}"
+
+        - name: Prefixes are checked before they reach the welcome page
+          ansible.builtin.assert:
+            that:
+              - "'work' is match(tesp_s3_prefix_re)"
+              - "'a/b_c/d.e-f' is match(tesp_s3_prefix_re)"
+              - "'' is not match(tesp_s3_prefix_re)"
+              - "'/x' is not match(tesp_s3_prefix_re)"
+              - "'a//b' is not match(tesp_s3_prefix_re)"
+              - "'a b' is not match(tesp_s3_prefix_re)"
+              - "\"a'b\" is not match(tesp_s3_prefix_re)"
+              - "'a\\n' is not match(tesp_s3_prefix_re)"
+
+        - name: Bucket names are checked before they reach the welcome page
+          ansible.builtin.assert:
+            that:
+              - "'tesp-test-bucket' is match(tesp_s3_bucket_re)"
+              - "'my.bucket-01' is match(tesp_s3_bucket_re)"
+              - "'Nextflow_TESP' is not match(tesp_s3_bucket_re)"
+              - "'my_bucket' is not match(tesp_s3_bucket_re)"
+              - "'bucket-' is not match(tesp_s3_bucket_re)"
+              - "'' is not match(tesp_s3_bucket_re)"
+              - "'a b' is not match(tesp_s3_bucket_re)"
+              - "'bucket/prefix' is not match(tesp_s3_bucket_re)"
+              - "'<script>' is not match(tesp_s3_bucket_re)"
+              - "'-bucket' is not match(tesp_s3_bucket_re)"
+              - "'ab' is not match(tesp_s3_bucket_re)"
+              - "'abc' is match(tesp_s3_bucket_re)"
+              - "('a' * 63) is match(tesp_s3_bucket_re)"
+              - "('a' * 64) is not match(tesp_s3_bucket_re)"
+              - "'abc\\n' is not match(tesp_s3_bucket_re)"
 
         # Catches secrets the test doesn't know about (e.g. future S3
         # credentials) if a variable dump is added back.
