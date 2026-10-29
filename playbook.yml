@@ -189,14 +189,9 @@
         state: directory
         mode: '0755'
 
-    - name: Template TESP-API settings.toml
-      ansible.builtin.template:
-        src: templates/tesp-api/settings.toml.j2
-        dest: "{{ tesp_install_dir }}/settings.toml"
-        owner: root
-        group: root
-        mode: '0640'
-
+    # Generated config goes to tesp_secrets_dir, outside the image build
+    # context, and is bind-mounted into the containers. The running containers
+    # see a new version only after a restart (handler below).
     - name: Create the TESP-API secrets directory
       ansible.builtin.file:
         path: "{{ tesp_secrets_dir }}"
@@ -204,6 +199,22 @@
         owner: root
         group: root
         mode: '0700'
+
+    # Left in the build context by earlier versions of this playbook. (The
+    # checkout's own settings.toml is restored by the clone task above.)
+    - name: Remove the old Pulsar token-injection proxy config
+      ansible.builtin.file:
+        path: "{{ tesp_install_dir }}/pulsar-token-proxy.conf"
+        state: absent
+
+    - name: Template TESP-API settings.toml
+      ansible.builtin.template:
+        src: templates/tesp-api/settings.toml.j2
+        dest: "{{ tesp_settings_file }}"
+        owner: root
+        group: root
+        mode: '0600'  # holds the TES password
+      notify: Restart the TESP-API stack
 
     # Holds the S3 secret key. no_log so it is never shown (not even with
     # --diff or -v).
@@ -215,14 +226,16 @@
         group: root
         mode: '0600'
       no_log: true
+      notify: Restart the TESP-API stack
 
     - name: Template Pulsar token-injection proxy config
       ansible.builtin.template:
         src: templates/tesp-api/pulsar-token-proxy.conf.j2
-        dest: "{{ tesp_install_dir }}/pulsar-token-proxy.conf"
+        dest: "{{ tesp_pulsar_proxy_conf }}"
         owner: root
         group: root
-        mode: '0640'  # holds the Pulsar token
+        mode: '0600'  # holds the Pulsar token
+      notify: Restart the TESP-API stack
 
     - name: Template TESP-API deployment compose file
       ansible.builtin.template:
@@ -246,3 +259,17 @@
         name: tesp-pulsar-firewall
         state: restarted
         daemon_reload: true
+
+    # The containers read their config files only at start, and a bind mount
+    # keeps the file it started with: the template module replaces a file
+    # rather than rewriting it. Changes to the compose file itself are applied
+    # by the "Build and start" task. MongoDB has no generated config.
+    - name: Restart the TESP-API stack
+      community.docker.docker_compose_v2:
+        project_src: "{{ tesp_install_dir }}"
+        files:
+          - docker-compose.deploy.yml
+        services:
+          - tesp-api
+          - pulsar-proxy
+        state: restarted
