@@ -98,13 +98,17 @@
       ansible.builtin.include_role:
         name: uusrc.general.fact_regular_users
 
+    # no_log here and on the other tasks that handle a secret: -v would
+    # print the facts, --diff the rendered files.
     - name: Generate password
       set_fact:
         pulsar_token: "{{ lookup('community.general.random_string', base64=True, length=24) }}"
+      no_log: true
 
     - name: Generate TESP-API basic auth password
       set_fact:
         tesp_basic_auth_password: "{{ lookup('community.general.random_string', base64=True, length=24) }}"
+      no_log: true
 
     - name: Install Dependencies
       ansible.builtin.apt:
@@ -155,7 +159,10 @@
     - usegalaxy_eu.apptainer
     - uusrc.general.nginx_reverse_proxy
     # https://github.com/galaxyproject/pulsar/issues/375
-    - galaxyproject.pulsar
+    - role: galaxyproject.pulsar
+      # --diff would print app.yml, which holds the Pulsar token. Not no_log,
+      # which would also hide the role's errors.
+      diff: false
 
   post_tasks:
     - name: Create directory /srv/static/
@@ -196,6 +203,7 @@
         owner: root
         group: root
         mode: '0640'
+      no_log: true  # holds the TES password
 
     - name: Create the TESP-API secrets directory
       ansible.builtin.file:
@@ -223,6 +231,7 @@
         owner: root
         group: root
         mode: '0640'  # holds the Pulsar token
+      no_log: true
 
     - name: Template TESP-API deployment compose file
       ansible.builtin.template:

@@ -380,6 +380,56 @@
               processor_nproc: 1
               memtotal_mb: 3000
 
+        - name: Pulsar logs no request URLs and its config isn't world-readable
+          ansible.builtin.assert:
+            that:
+              - pulsar_uwsgi_options['disable-logging'] | bool
+              - pulsar_group == pulsar_user.name
+            fail_msg: >-
+              uwsgi would log private_token with every request URL, or
+              Pulsar's config directory would be world-readable (#8)
+
+        # -v prints facts and --diff rendered files, so every task that
+        # touches a secret must be no_log, and the Pulsar role (app.yml)
+        # must not show diffs.
+        - name: Find the tasks and roles in playbook.yml
+          ansible.builtin.set_fact:
+            playbook_tasks: >-
+              {{ (plays | map(attribute='pre_tasks', default=[]) | list
+                  + plays | map(attribute='tasks', default=[]) | list
+                  + plays | map(attribute='post_tasks', default=[]) | list
+                  + plays | map(attribute='handlers', default=[]) | list)
+                 | flatten(levels=1) }}
+            playbook_roles: >-
+              {{ plays | map(attribute='roles', default=[]) | flatten(levels=1) }}
+          vars:
+            plays: "{{ lookup('file', playbook_dir ~ '/../playbook.yml') | from_yaml }}"
+
+        - name: Tasks that handle the Pulsar token or a password are no_log
+          ansible.builtin.assert:
+            that:
+              - item.no_log | default(false) | bool
+            fail_msg: "{{ item.name }} handles a secret but isn't no_log"
+            quiet: true
+          loop: "{{ playbook_tasks }}"
+          loop_control:
+            label: "{{ item.name }}"
+          when: item | to_json is search(secret_re)
+          vars:
+            secret_re: >-
+              pulsar_token|tesp_basic_auth_password|tesp_s3_secret_access_key|pulsar-token-proxy\.conf|settings\.toml|secrets\.toml
+
+        - name: The Pulsar role doesn't show diffs
+          ansible.builtin.assert:
+            that:
+              - pulsar_role | length == 1
+              - pulsar_role[0].diff is defined
+              - not pulsar_role[0].diff
+          vars:
+            pulsar_role: >-
+              {{ playbook_roles | select('mapping')
+                 | selectattr('role', 'eq', 'galaxyproject.pulsar') | list }}
+
         - name: Firewall script guards the Pulsar port
           ansible.builtin.assert:
             that:
