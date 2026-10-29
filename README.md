@@ -32,7 +32,7 @@ What the playbook sets up:
 | Welcome page with your endpoint and credentials | `templates/welcome.html` |
 | Host firewall rule for Pulsar's port | `templates/pulsar-firewall.*.j2`, `playbook.yml`, `group_vars/all.yml` (`pulsar_port`) |
 
-Secrets are generated at deploy time: a random Pulsar token (only used between `pulsar-proxy` and Pulsar) and a random password for the TES endpoint.
+Secrets are generated at deploy time: a random Pulsar token (only used between `pulsar-proxy` and Pulsar) and a random password for the TES endpoint. The Pulsar token is generated once and kept in `/etc/tesp-api/pulsar_token` (root, 0600), so re-running the playbook keeps it.
 
 ## Using the catalog item
 
@@ -184,7 +184,7 @@ tesp-api waits for each task until its SLURM job finishes, however long it queue
 
 To cap how long a task may queue and run, set `tesp_max_wait_seconds` in `group_vars/all.yml` (default `0`, no limit; `pulsar.status.max_wait_seconds` in `settings.toml`). The clock starts when the job is submitted to Pulsar, and tesp-api checks it after each status request, so up to a minute late. Past it tesp-api cancels the Pulsar job, and with it the SLURM job, and the task ends in `SYSTEM_ERROR`. A task with S3 outputs must also finish within `tesp_s3_output_presign_expiry_seconds` (1 day), or its uploads fail (see [Using S3](#using-s3)).
 
-**Known limitation:** tesp-api waits for tasks in its own process and doesn't pick them up again after a restart. Restarting it (for example by re-running the playbook, which rebuilds and restarts the tesp-api stack; see also [#9](https://github.com/mirelaminkova/TESP-src/issues/9)) loses every task that is queued or running: the task never gets its logs or final state (after a clean shutdown it shows `CANCELED`, after a crash it keeps its last state), and its Pulsar and SLURM job goes on. Redeploy only when no tasks are running.
+**Known limitation:** tesp-api waits for tasks in its own process and doesn't pick them up again after a restart. Restarting it (for example by re-running the playbook, which rebuilds and restarts the tesp-api stack) loses every task that is queued or running: the task never gets its logs or final state (after a clean shutdown it shows `CANCELED`, after a crash it keeps its last state), and its Pulsar and SLURM job goes on. Redeploy only when no tasks are running.
 
 ## Troubleshooting
 
@@ -208,6 +208,7 @@ squeue
 - **Container runtime:** `tesp_container_type: singularity` runs task images with Apptainer, using `singularity exec --no-eval`, which requires Apptainer 1.1 or newer. The `usegalaxy_eu.apptainer` role installs it from the Apptainer PPA, which provides 1.5.x for Ubuntu 22.04; it doesn't upgrade an apptainer that is already installed. The upstream `both` mode is broken (it leaves out the `docker://` image prefix), so don't use it.
 - **S3:** set from the `src_s3_*` component parameters (see [Using S3](#using-s3)). `settings.toml` (0640) holds the endpoint, region and addressing style. The key pair goes in `/etc/tesp-api/secrets.toml` (`tesp_secrets_file`, root, 0600), which is bind-mounted read-only as `/app/.secrets.toml` for tesp-api's Dynaconf to merge in. It is kept out of `/srv/tesp-api` because that directory is the image build context, and the image would otherwise contain it. The playbook validates the parameters before it installs anything. The presign lifetimes are `tesp_s3_presign_expiry_seconds` and `tesp_s3_output_presign_expiry_seconds` in `group_vars/all.yml`; the upload lifetime must cover a whole task run.
 - **Pulsar port:** Pulsar listens on `0.0.0.0:8913` because the `pulsar-proxy` container reaches it through `host.docker.internal` (the Docker bridge gateway). The `tesp-pulsar-firewall` systemd unit adds an iptables chain, `TESP-PULSAR`, that drops connections to 8913 unless they arrive on `lo`, `docker0` or a `br-*` Docker bridge. Pulsar requires that unit, so it won't start if the rule can't be applied. Check the rule with `iptables -S TESP-PULSAR`. If something rewrites the firewall later (`ufw reload`, `iptables-restore`), re-run `/usr/local/sbin/tesp-pulsar-firewall`.
+- **Pulsar token:** `tasks/pulsar-token.yml` generates the token on the first run and stores it in `tesp_pulsar_token_file` (`/etc/tesp-api/pulsar_token`); later runs read it back, so Pulsar's `app.yml` and `pulsar-token-proxy.conf` don't change and `pulsar-proxy` keeps a valid token. Whenever `pulsar-token-proxy.conf` does change, the playbook restarts the `pulsar-proxy` container, which reads the file only when it starts. To rotate the token, delete the file and re-run the playbook.
 - **MTU:** SRC needs a lower MTU on Docker networks (`tesp_network_mtu: 1442`).
 
 ## Checks

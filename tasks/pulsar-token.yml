@@ -1,0 +1,26 @@
+---
+# Sets pulsar_token. The token is generated on the first run and kept in
+# tesp_pulsar_token_file (0600, in the root-only tesp_secrets_dir), and later
+# runs read it back. Pulsar's app.yml and pulsar-token-proxy.conf therefore
+# stay the same on a re-run, so pulsar-proxy never holds an old token.
+# Delete the file and re-run the playbook to rotate the token.
+# Included by playbook.yml and tests/render-templates.yml.
+- name: Store a new Pulsar token unless one is stored already
+  ansible.builtin.copy:
+    content: >-
+      {{ lookup('community.general.random_string', base64=True, length=24) }}
+    dest: "{{ tesp_pulsar_token_file }}"
+    force: false
+    mode: '0600'
+  no_log: true
+
+- name: Read the stored Pulsar token
+  ansible.builtin.slurp:
+    src: "{{ tesp_pulsar_token_file }}"
+  register: tesp_pulsar_token_stored
+  no_log: true
+
+- name: Set the Pulsar token
+  ansible.builtin.set_fact:
+    pulsar_token: "{{ tesp_pulsar_token_stored.content | b64decode | trim }}"
+  no_log: true
