@@ -37,11 +37,7 @@ server {
     proxy_read_timeout 300s;
     proxy_send_timeout 300s;
 
-    # With and without a trailing slash, so tesp-api's hard-coded answer is
-    # never reachable. Exact locations, because alias needs captures in a
-    # regex one.
-{% for path in ['/v1/service-info', '/v1/service-info/'] %}
-    location = {{ path }} {
+    location = /v1/service-info {
         add_header Allow "GET, HEAD" always;
         if ($request_method !~ ^(GET|HEAD)$) {
             return 405;
@@ -50,7 +46,12 @@ server {
         alias /etc/nginx/conf.d/service-info.json;
     }
 
-{% endfor %}
+    # So tesp-api's hard-coded answer is never reachable. A rewrite, because
+    # nginx serves a URI ending in / as a directory.
+    location = /v1/service-info/ {
+        rewrite ^ /v1/service-info last;
+    }
+
     location ~ ^/(|swagger-ui\.html|openapi\.json|docs/oauth2-redirect)$ {
         proxy_pass $tesp_api_upstream;
     }

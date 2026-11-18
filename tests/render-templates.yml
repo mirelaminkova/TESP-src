@@ -387,7 +387,7 @@
             that:
               - "'location = /v1/service-info {' in conf"
               - "'location = /v1/service-info/ {' in conf"
-              - conf.count('alias /etc/nginx/conf.d/service-info.json;') == 2
+              - "'rewrite ^ /v1/service-info last;' in conf"
               # Re-resolved, so a recreated tesp-api container is found.
               - "'resolver 127.0.0.11' in conf"
               - "'set $tesp_api_upstream http://tesp-api:8080;' in conf"
