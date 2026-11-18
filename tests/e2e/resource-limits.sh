@@ -1,42 +1,62 @@
 #!/usr/bin/env bash
 # End-to-end check of how TES resource requests meet SLURM's limits (see
 # "Resource limits" in the README). Sends tasks to a deployed endpoint and
-# checks the state each one ends in. Needs bash, curl and python3; the node
-# must be able to pull the executor images from Docker Hub.
+# checks the state each one ends in. Needs bash 4.4+, curl and python3; the
+# node must be able to pull the executor images from Docker Hub. CI can't run
+# it (no SLURM): run it on a test workspace after deploying.
 #
-#   TES_URL=https://<fqdn>/tes TES_PASSWORD=... tests/e2e/resource-limits.sh [case...]
+#   read -rsp 'TES password: ' TES_PASSWORD && echo && export TES_PASSWORD
+#   TES_URL=https://<fqdn>/tes tests/e2e/resource-limits.sh [case...]
 #
 # Environment:
 #   TES_URL       the TES base URL, without /v1 (on the workspace itself:
 #                 http://127.0.0.1:8080)
 #   TES_USER      Basic auth user (default: tes)
 #   TES_PASSWORD  Basic auth password (the welcome page shows it). Required.
-#   CURL_OPTS     extra curl options, for example "--cacert /path/ca.crt"
+#                 Passed to curl in a config file descriptor, not on its
+#                 command line.
+#   CURL_OPTS     extra curl options, split on spaces (no quoting), for
+#                 example "--cacert /etc/ssl/certs/ca.crt"
 #   TIMEOUT       seconds to wait for each task to finish (default: 240)
+#   REJECT_SECONDS  seconds within which an oversize task must fail to count
+#                 as rejected at submission (default: 60)
 #
 # Cases (default: all, in this order):
-#   fits          cpu_cores 1, ram_gb 0.5: must reach COMPLETE
-#   cpu-too-big   cpu_cores 4096: must fail (EXECUTOR_ERROR/SYSTEM_ERROR),
-#                 not stay QUEUED/INITIALIZING/RUNNING (issue #21)
-#   ram-too-big   ram_gb 4096: must fail the same way
+#   fits          cpu_cores 1, ram_gb 0.5: must reach COMPLETE. Always runs
+#                 first, and counts in the summary: it is the control for the
+#                 cases that expect failure.
+#   cpu-too-big   cpu_cores 4096: must fail (EXECUTOR_ERROR/SYSTEM_ERROR)
+#                 within REJECT_SECONDS, not stay QUEUED/RUNNING (issue #21)
+#   ram-too-big   ram_gb 4096: the same. SLURM rejected oversize memory at
+#                 submission even before #21, so this case guards the memory
+#                 path, not the #21 fix.
+# tesp-api reports no reason for a rejection yet (mirelaminkova/tesp-api#66);
+# on the workspace, `sacct` and slurmctld's log show it.
 #
-# Exit status: 0 when every case passes, 1 otherwise. A task still running
-# when TIMEOUT expires is cancelled and its case fails.
+# Exit status: 0 when every case passes, 1 otherwise, 2 for an unknown case.
+# A task still running when TIMEOUT expires is cancelled and its case fails.
 set -euo pipefail
 
 : "${TES_URL:?set TES_URL, for example https://<fqdn>/tes}"
 : "${TES_PASSWORD:?set TES_PASSWORD (Basic auth password of user tes)}"
 TES_USER=${TES_USER:-tes}
 TIMEOUT=${TIMEOUT:-240}
+# A submission SLURM rejects fails within seconds; a later failure has some
+# other cause (image pull, Pulsar) and doesn't count as a rejection.
+REJECT_SECONDS=${REJECT_SECONDS:-60}
 read -r -a curl_opts <<<"${CURL_OPTS:-}"
 
 ALL_CASES=(fits cpu-too-big ram-too-big)
 FAILED_STATES=" EXECUTOR_ERROR SYSTEM_ERROR "
 failures=0
+control_ok=
 
-# Prints the response body; fails on an HTTP error.
+# Prints the response body; fails on an HTTP error. The credentials go
+# through a config file descriptor so they don't show up in ps.
 tes() {
-    curl -fsS "${curl_opts[@]}" -u "$TES_USER:$TES_PASSWORD" \
+    local u="$TES_USER:$TES_PASSWORD"
+    u=${u//\\/\\\\}; u=${u//\"/\\\"}  # curl config quoting: \ and "
+    curl -q -fsS "${curl_opts[@]}" -K <(printf 'user = "%s"\n' "$u") \
         -H 'Content-Type: application/json' "$@"
 }
 
@@ -61,24 +81,34 @@ print(json.dumps({
 EOF
 }
 
-# run <case> <task json>: submits it and waits; sets STATE, ID, DETAIL.
+# run <case> <task json>: submits it and waits. Sets ID, STATE (the final
+# state, or SUBMIT_ERROR / "<state>(timeout ...)"), SECONDS_TAKEN, DETAIL.
+# Never exits the script: a failed poll is retried until TIMEOUT.
 run() {
-    local t0 state
-    ID=$(tes -X POST -d "$2" "$TES_URL/v1/tasks" | json 'j["id"]')
+    local t0 state=UNKNOWN
+    ID='' STATE='' DETAIL='' SECONDS_TAKEN=0
     t0=$(date +%s)
+    if ! ID=$(tes -X POST -d "$2" "$TES_URL/v1/tasks" | json 'j["id"]'); then
+        STATE=SUBMIT_ERROR
+        echo "   $1: submitting the task failed"
+        return 0
+    fi
     while :; do
-        state=$(tes "$TES_URL/v1/tasks/$ID?view=MINIMAL" | json 'j["state"]')
+        state=$(tes "$TES_URL/v1/tasks/$ID?view=MINIMAL" | json 'j["state"]') \
+            || state=POLL_ERROR
         case "$state" in
             COMPLETE|EXECUTOR_ERROR|SYSTEM_ERROR|CANCELED|PREEMPTED) break ;;
         esac
         if (( $(date +%s) - t0 >= TIMEOUT )); then
             tes -X POST -d '{}' "$TES_URL/v1/tasks/$ID:cancel" >/dev/null || true
-            state="$state(timeout ${TIMEOUT}s, cancelled)"
+            echo "   $1: cancelled task $ID after ${TIMEOUT}s; check squeue for a left-over job"
+            state="$state(timeout ${TIMEOUT}s)"
             break
         fi
         sleep 5
     done
     STATE=$state
+    SECONDS_TAKEN=$(( $(date +%s) - t0 ))
     # What the task reports about why it ended: exit code, stdout, stderr and
     # system logs (tesp-api fills in little of this, mirelaminkova/tesp-api#66).
     DETAIL=$(tes "$TES_URL/v1/tasks/$ID?view=FULL" | python3 -c '
@@ -92,8 +122,8 @@ for log in j.get("logs") or []:
         parts += [e.get("stdout") or "", e.get("stderr") or ""]
 text = " | ".join(p.strip().replace("\n", " ") for p in parts if p and p.strip())
 print(text[-300:] if text else "no reason reported")
-')
-    echo "   $1: task $ID -> $STATE in $(( $(date +%s) - t0 ))s; $DETAIL"
+') || DETAIL="task logs unavailable"
+    echo "   $1: task $ID -> $STATE in ${SECONDS_TAKEN}s; $DETAIL"
 }
 
 pass() { echo "PASS $1"; }
@@ -103,24 +133,34 @@ expect_complete() {  # <case>
     if [ "$STATE" = COMPLETE ]; then pass "$1"; else fail "$1 (expected COMPLETE)"; fi
 }
 
-expect_failed() {  # <case>
-    if [[ "$FAILED_STATES" == *" $STATE "* ]]; then pass "$1"
-    else fail "$1 (expected EXECUTOR_ERROR or SYSTEM_ERROR)"; fi
+# The task must fail, and fast enough to be a rejection at submission. Without
+# a passing control (fits) a failure proves nothing about SLURM.
+expect_rejected() {  # <case>
+    if [ -z "$control_ok" ]; then
+        fail "$1 (inconclusive: the control task 'fits' didn't complete)"
+    elif [[ "$FAILED_STATES" != *" $STATE "* ]]; then
+        fail "$1 (expected EXECUTOR_ERROR or SYSTEM_ERROR)"
+    elif (( SECONDS_TAKEN > REJECT_SECONDS )); then
+        fail "$1 (failed after ${SECONDS_TAKEN}s > REJECT_SECONDS=$REJECT_SECONDS: not a rejection at submission)"
+    else
+        pass "$1"
+    fi
 }
 
 case_fits() {
     run fits "$(task 1 0.5 alpine:3.20 'echo fits')"
     expect_complete fits
+    if [ "$STATE" = COMPLETE ]; then control_ok=1; fi
 }
 
 case_cpu-too-big() {
     run cpu-too-big "$(task 4096 null alpine:3.20 'echo should not run')"
-    expect_failed cpu-too-big
+    expect_rejected cpu-too-big
 }
 
 case_ram-too-big() {
     run ram-too-big "$(task null 4096 alpine:3.20 'echo should not run')"
-    expect_failed ram-too-big
+    expect_rejected ram-too-big
 }
 
 cases=("$@")
@@ -130,8 +170,11 @@ for c in "${cases[@]}"; do
         echo "unknown case: $c (known: ${ALL_CASES[*]})" >&2
         exit 2
     fi
-    "case_$c"
 done
+# The control always runs, first and once.
+run_cases=(fits)
+for c in "${cases[@]}"; do [ "$c" = fits ] || run_cases+=("$c"); done
+for c in "${run_cases[@]}"; do "case_$c"; done
 
-echo "Summary: $(( ${#cases[@]} - failures )) passed, $failures failed"
+echo "Summary: $(( ${#run_cases[@]} - failures )) passed, $failures failed"
 [ "$failures" -eq 0 ]

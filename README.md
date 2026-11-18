@@ -172,7 +172,7 @@ A task's `resources.cpu_cores` and `resources.ram_gb` become SLURM options for i
 SLURM sees the workspace's CPUs (`CPUs`) and its memory minus `tesp_slurm_reserved_memory_mb` (2 GiB, at most half the node) for the OS, Docker and Pulsar (`RealMemory`). CPUs and memory are consumable resources (`SelectType=select/cons_tres`, `SelectTypeParameters=CR_CPU_Memory`), and a job without `--mem` gets `DefMemPerCPU`, its per-CPU share of `RealMemory`. What that means for tasks:
 
 - **Scheduling:** a job starts only when that many CPUs and that much memory are free; until then it waits in the queue (`squeue` shows it as pending). Tasks therefore don't oversubscribe the node, and tesp-api keeps waiting however long a task queues (see [Long tasks](#long-tasks)).
-- **Too large for the node:** a task asking for more CPUs or memory than the node has is rejected by SLURM at submission (`EnforcePartLimits=ALL`; without it the job would stay pending forever) and the task fails. Size the workspace for your largest task, or cap the requests in the client, for example with Nextflow's `process.resourceLimits = [cpus: 8, memory: 30.GB]`.
+- **Too large for the node:** a task asking for more CPUs or memory than the node has is rejected by SLURM at submission and the task fails. For memory SLURM always did this; for CPUs it takes `EnforcePartLimits=ALL`, without which the job would stay pending forever (#21). Size the workspace for your largest task, or cap the requests in the client, for example with Nextflow's `process.resourceLimits = [cpus: 8, memory: 30.GB]`.
 - **No hard limit at run time:** SLURM reserves the resources but doesn't confine the job to them. The role's `ProctrackType=proctrack/pgid` and the default task plugin don't use cgroups, so a task can use more CPU or memory than it asked for, at the cost of other tasks.
 - **Re-running the playbook:** a change to these SLURM settings restarts `slurmctld`, and changing `SelectType` on a running node loses SLURM's running and pending jobs. Re-run the playbook on an existing workspace only when no tasks are running.
 
@@ -244,10 +244,14 @@ ansible-lint runs offline against stand-ins for the roles and collections in `re
 ansible-playbook -i localhost, -c local tests/render-templates.yml
 ```
 
-`tests/e2e/` holds end-to-end checks that need a deployed endpoint, so CI doesn't run them; run them on a test workspace after deploying. `tests/e2e/resource-limits.sh` sends tasks that fit the node and tasks that ask for more CPUs or memory than any node has, and checks that the first complete and the others fail instead of staying queued (see [Resource limits](#resource-limits)). On the workspace itself, with the password from the welcome page:
+`tests/e2e/` holds end-to-end checks that need a deployed endpoint, so CI doesn't run them; run them on a test workspace after deploying. `tests/e2e/resource-limits.sh` checks that a task that fits the node completes and that tasks asking for more CPUs or memory than any node has fail at once instead of staying queued (see [Resource limits](#resource-limits)). Its header lists the options and cases. On the workspace itself, with the password from the welcome page:
 
 ```bash
-TES_URL=http://127.0.0.1:8080 TES_PASSWORD='<password>' tests/e2e/resource-limits.sh
+read -rsp 'TES password: ' TES_PASSWORD && echo && export TES_PASSWORD
+```
+
+```bash
+TES_URL=http://127.0.0.1:8080 tests/e2e/resource-limits.sh
 ```
 
 ## Credits and license
