@@ -244,6 +244,12 @@ ansible-lint runs offline against stand-ins for the roles and collections in `re
 ansible-playbook -i localhost, -c local tests/render-templates.yml
 ```
 
+`tests/e2e/` holds end-to-end checks that need a deployed endpoint, so CI doesn't run them; run them on a test workspace after deploying. `tests/e2e/resource-limits.sh` sends tasks that fit the node and tasks that ask for more CPUs or memory than any node has, and checks that the first complete and the others fail instead of staying queued (see [Resource limits](#resource-limits)). On the workspace itself, with the password from the welcome page:
+
+```bash
+TES_URL=http://127.0.0.1:8080 TES_PASSWORD='<password>' tests/e2e/resource-limits.sh
+```
+
 ## Credits and license
 
 This component started as a fork of [ErasmusMC-Bioinformatics/src-component-pulsar](https://github.com/ErasmusMC-Bioinformatics/src-component-pulsar) by Helena Rasche, and keeps its history. TES support comes from [CESNET/tesp-api](https://github.com/CESNET/tesp-api), via the fork named above.
