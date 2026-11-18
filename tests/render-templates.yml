@@ -272,6 +272,37 @@
           vars:
             welcome_src: "{{ lookup('file', templates_dir ~ '/welcome.html') }}"
 
+        # Issue #29: base64 tokens have +, / and =. Pulsar decodes the query
+        # string, so an unencoded + arrives as a space and every request fails.
+        # A fact, as in playbook.yml (task vars can't override facts).
+        - name: Use a base64 Pulsar token
+          ansible.builtin.set_fact:
+            plain_pulsar_token: "{{ pulsar_token }}"
+            pulsar_token: a+b/c=d+/==
+
+        - name: Render the Pulsar proxy with a base64 token
+          ansible.builtin.template:
+            src: "{{ templates_dir }}/tesp-api/pulsar-token-proxy.conf.j2"
+            dest: "{{ out.path }}/b64-pulsar-token-proxy.conf"
+            mode: '0600'
+
+        - name: Restore the test Pulsar token
+          ansible.builtin.set_fact:
+            pulsar_token: "{{ plain_pulsar_token }}"
+
+        - name: The token survives the query string, alone and after other args
+          ansible.builtin.assert:
+            that:
+              - query_values | length == 2
+              # urldecode is unquote_plus, as Pulsar's parse_qs: a raw +
+              # would read as a space.
+              - query_values | map('urldecode') | unique == ['a+b/c=d+/==']
+            fail_msg: "token in the query string: {{ query_values }}"
+          vars:
+            conf: "{{ lookup('file', out.path ~ '/b64-pulsar-token-proxy.conf') }}"
+            query_values: >-
+              {{ conf | regex_findall('private_token=([^";]*)') }}
+
         - name: Pulsar token goes only to the proxy, TES password to tesp-api
           ansible.builtin.assert:
             that:

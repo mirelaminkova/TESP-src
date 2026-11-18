@@ -15,9 +15,13 @@ upstream pulsar_host {
 }
 
 # Append the token to the existing query string (or create one if absent).
+# URL-encoded: Pulsar decodes the query string, so a + in a base64 token would
+# arrive as a space and every request would fail (issue #29). / is encoded
+# too (urlencode leaves it), so every character but letters and digits is.
+{% set token = pulsar_token | urlencode | replace('/', '%2F') %}
 map $args $tesp_pulsar_args {
-    ""      "private_token={{ pulsar_token }}";
-    default "$args&private_token={{ pulsar_token }}";
+    ""      "private_token={{ token }}";
+    default "$args&private_token={{ token }}";
 }
 
 server {
