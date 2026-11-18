@@ -5,60 +5,14 @@
   hosts: "{{ lookup('env', 'variable_host') | default('localhost', true) }}"
   gather_facts: false
   tasks:
-    # Keeps the secret out of the assert below, which then needs no no_log
-    # and can show its message.
-    - name: Check whether an S3 secret key is set
+    # The service info's createdAt on a first deploy (see "Service info" in
+    # the README).
+    - name: Record the deploy time
       ansible.builtin.set_fact:
-        tesp_s3_has_secret_key: "{{ tesp_s3_secret_access_key | length > 0 }}"
-      no_log: true
+        tesp_deploy_time: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
 
-    - name: Validate the S3 parameters (src_s3_*)
-      vars:
-        # scheme://host[:port][/path], ASCII only (no user:pass@). \Z, not
-        # $, which would let a trailing newline through.
-        url_re: 'https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?\Z'
-        region_re: '[A-Za-z0-9_-]+\Z'
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - tesp_s3_endpoint_url == '' or tesp_s3_endpoint_url is match(url_re)
-          - tesp_s3_addressing_style in ['path', 'virtual', 'auto']
-          - tesp_s3_region is match(region_re)
-          # A set parameter must leave a valid name ("s3://" alone doesn't).
-          - >-
-            (src_s3_bucket | default('') | trim) == ''
-            or (tesp_s3_bucket is match(tesp_s3_bucket_re)
-                and (tesp_s3_prefix == ''
-                     or tesp_s3_prefix is match(tesp_s3_prefix_re)))
-          - (tesp_s3_access_key_id != '') == (tesp_s3_has_secret_key | bool)
-          - tesp_s3_presign_expiry_seconds | int in range(1, 604801)
-          - tesp_s3_output_presign_expiry_seconds | int in range(1, 604801)
-        fail_msg: >-
-          Invalid S3 component parameters.
-          src_s3_endpoint_url must be empty (AWS S3) or an http:// or
-          https:// URL with a host and optional port and path, such as
-          https://s3.example.org;
-          src_s3_addressing_style must be path, virtual or auto;
-          src_s3_region may only contain letters, digits, _ and -;
-          src_s3_bucket must be empty or an S3 bucket name (lowercase
-          letters, digits, . and -, 3 to 63 characters), optionally as
-          s3://bucket or s3://bucket/prefix (prefix: letters, digits, ., _,
-          - and /);
-          src_s3_access_key_id and src_s3_secret_access_key must be set
-          together; tesp_s3_presign_expiry_seconds and
-          tesp_s3_output_presign_expiry_seconds must be between 1 and 604800.
-          See "Using S3" in the README.
-
-    # tesp-api would refuse to start on a negative value; | int in the
-    # template would silently turn a non-number into 0 (no limit).
-    - name: Validate tesp_max_wait_seconds
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - tesp_max_wait_seconds | string is match('[0-9]+$')
-        fail_msg: >-
-          tesp_max_wait_seconds must be a whole number of seconds, 0 for no
-          limit. See "Long tasks" in the README.
+    - name: Check component parameters and settings
+      ansible.builtin.include_tasks: tasks/check-parameters.yml
 
 - name: Install pre-requisites (SLURM, DRMAA, time sync)
   hosts: "{{ lookup('env', 'variable_host') | default('localhost', true) }}" # workaround because SRC needs localhost, but molecule needs specifc hostvars
@@ -291,6 +245,78 @@
              if not ansible_check_mode
              else tesp_pulsar_proxy_conf_stat.stat.checksum | default('check-mode') }}
 
+    # Issue #25. Outside tesp_install_dir, the image build context.
+    - name: Create the TES gateway directory
+      ansible.builtin.file:
+        path: "{{ tesp_gateway_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Template the TES gateway config
+      ansible.builtin.template:
+        src: templates/tesp-api/gateway.conf.j2
+        dest: "{{ tesp_gateway_dir }}/gateway.conf"
+        owner: root
+        group: root
+        mode: '0644'
+      register: tesp_gateway_conf
+
+    # Goes into a label of the gateway container, so a changed config
+    # recreates it (nginx reads its config only at start).
+    - name: Record the TES gateway config checksum
+      ansible.builtin.set_fact:
+        tesp_gateway_conf_checksum: "{{ tesp_gateway_conf.checksum }}"
+
+    # createdAt is the first deploy: keep it from the file a previous deploy
+    # wrote.
+    - name: Look for the service info of a previous deploy
+      ansible.builtin.stat:
+        path: "{{ tesp_gateway_dir }}/service-info.json"
+      register: tesp_previous_service_info_stat
+
+    - name: Read the service info of a previous deploy
+      ansible.builtin.slurp:
+        src: "{{ tesp_gateway_dir }}/service-info.json"
+      register: tesp_previous_service_info
+      when: tesp_previous_service_info_stat.stat.exists
+
+    # A missing file, one that isn't JSON or one without a valid createdAt
+    # counts as a first deploy.
+    - name: Keep the first deploy time
+      block:
+        - name: Take createdAt from the previous service info
+          ansible.builtin.set_fact:
+            tesp_first_deploy_time: >-
+              {{ (tesp_previous_service_info.content | b64decode
+                  | from_json).createdAt }}
+          when: tesp_previous_service_info_stat.stat.exists
+
+        - name: The previous createdAt is valid
+          ansible.builtin.assert:
+            that: tesp_first_deploy_time is match(tesp_time_re)
+            quiet: true
+          when: tesp_first_deploy_time is defined
+      rescue:
+        - name: Use this deploy's time instead
+          ansible.builtin.set_fact:
+            tesp_first_deploy_time: "{{ tesp_deploy_time }}"
+
+    - name: First deploy
+      ansible.builtin.set_fact:
+        tesp_first_deploy_time: "{{ tesp_deploy_time }}"
+      when: tesp_first_deploy_time is not defined
+
+    # Read by the nginx workers (not root) on every request.
+    - name: Template the TES service info
+      ansible.builtin.template:
+        src: templates/tesp-api/service-info.json.j2
+        dest: "{{ tesp_gateway_dir }}/service-info.json"
+        owner: root
+        group: root
+        mode: '0644'
+
     - name: Template TESP-API deployment compose file
       ansible.builtin.template:
         src: templates/tesp-api/docker-compose.yml.j2
@@ -306,6 +332,11 @@
           - docker-compose.deploy.yml
         build: always
         state: present
+
+    # A config nginx rejects would only show as a restarting container.
+    - name: Check the TES gateway config
+      ansible.builtin.command: docker exec tesp-gateway nginx -t
+      changed_when: false
 
   handlers:
     # Notified by the galaxyproject.pulsar role when its config changes

@@ -1,0 +1,75 @@
+---
+name: e2e
+
+# Issue #25: brings up the tesp-api stack as playbook.yml renders it (gateway,
+# tesp-api at the pinned commit, MongoDB; no Pulsar) and checks the gateway.
+# Needs no secrets; the password below is a throwaway test value.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      E2E_DIR: ${{ github.workspace }}/../e2e
+      E2E_TES_PASSWORD: e2e-tes-password-not-secret
+    steps:
+      - name: check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: install ansible-core
+        # Same version as in ci.yml and .pre-commit-config.yaml.
+        run: pip install "ansible-core==2.21.5"
+
+      - name: render the stack
+        run: ansible-playbook -i localhost, -c local tests/e2e/render-stack.yml -e "e2e_dir=$E2E_DIR"
+
+      - name: start the stack
+        working-directory: ${{ env.E2E_DIR }}/tesp-api
+        run: docker compose -f docker-compose.deploy.yml up -d --build
+
+      - name: wait for tesp-api behind the gateway
+        run: tests/e2e/wait-for-tesp-api.sh http://127.0.0.1:8080 tes "$E2E_TES_PASSWORD"
+
+      - name: check the gateway
+        run: tests/e2e/check-gateway.sh http://127.0.0.1:8080 tes "$E2E_TES_PASSWORD" "$E2E_DIR/gateway/service-info.json"
+
+      - name: the gateway finds a recreated tesp-api
+        # As after a redeploy that rebuilds tesp-api. A placeholder container
+        # takes tesp-api's old address, so the new one surely gets another,
+        # which the gateway must resolve again.
+        working-directory: ${{ env.E2E_DIR }}/tesp-api
+        run: |
+          old_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' tesp-api)
+          network=$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}' tesp-api)
+          docker compose -f docker-compose.deploy.yml rm -sf tesp-api
+          docker run -d --rm --name ip-placeholder --network "$network" --ip "$old_ip" \
+            --entrypoint sleep "$(docker inspect -f '{{.Config.Image}}' tesp-gateway)" 600
+          docker compose -f docker-compose.deploy.yml up -d --no-deps tesp-api
+          new_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' tesp-api)
+          echo "tesp-api moved from $old_ip to $new_ip"
+          test "$old_ip" != "$new_ip"
+          "$GITHUB_WORKSPACE/tests/e2e/wait-for-tesp-api.sh" http://127.0.0.1:8080 tes "$E2E_TES_PASSWORD"
+
+      - name: dump logs on failure
+        if: failure()
+        working-directory: ${{ env.E2E_DIR }}/tesp-api
+        run: docker compose -f docker-compose.deploy.yml logs --no-color --tail 200

@@ -3,7 +3,8 @@
 # Deployment compose for TESP-API (GA4GH TES -> Pulsar bridge).
 # Brought up with: docker compose -f docker-compose.deploy.yml up -d --build
 #
-#   TES client --HTTPS--> nginx (host, /tes/) --> tesp-api:8080
+#   TES client --HTTPS--> nginx (host, /tes/) --> gateway --> tesp-api:8080
+#   gateway answers /v1/service-info itself (issue #25)
 #   tesp-api --> pulsar-proxy (injects private_token) --> host Pulsar :8913 --> SLURM
 #   tesp-api --> tesp-db (MongoDB)
 #
@@ -27,9 +28,7 @@ services:
       - CONTAINER_TYPE={{ tesp_container_type }}
     # --root-path makes FastAPI/Swagger generate correct URLs behind the /tes/ proxy.
     command: ["uvicorn", "--host=0.0.0.0", "--port=8080", "--root-path={{ tesp_root_path }}", "tesp_api.tesp_api:app"]
-    # Only bound to localhost; public access goes through the host nginx at {{ tesp_root_path }}/.
-    ports:
-      - "127.0.0.1:{{ tesp_api_port }}:8080"
+    # No host port: reached only through the gateway, on the stack's network.
     depends_on:
       - tesp-db
       - pulsar-proxy
@@ -38,6 +37,24 @@ services:
       # Read by Dynaconf next to settings.toml. Kept outside ./ so that
       # `COPY . .` in the image build never picks it up.
       - {{ tesp_secrets_file }}:/app/.secrets.toml:ro
+
+  gateway:
+    image: {{ tesp_nginx_image }}
+    container_name: tesp-gateway
+    restart: unless-stopped
+    # nginx reads its config only at start. A changed config changes this
+    # label, so `docker compose up` recreates the container.
+    labels:
+      tesp.gateway-config-checksum: "{{ tesp_gateway_conf_checksum | default('') }}"
+    # Only bound to localhost; public access goes through the host nginx at {{ tesp_root_path }}/.
+    ports:
+      - "127.0.0.1:{{ tesp_api_port }}:8080"
+    depends_on:
+      - tesp-api
+    # The whole directory, not single files: Ansible replaces a file with a
+    # new one, which a single-file bind mount would not see.
+    volumes:
+      - {{ tesp_gateway_dir }}:/etc/nginx/conf.d:ro
 
   tesp-db:
     image: mongo:8.0
@@ -49,7 +66,7 @@ services:
       - ./docker/mongodb/data:/data/db
 
   pulsar-proxy:
-    image: nginx:1.27-alpine
+    image: {{ tesp_nginx_image }}
     container_name: tesp-pulsar-proxy
     restart: unless-stopped
     labels:

@@ -1,0 +1,92 @@
+---
+# Parameter checks, run by playbook.yml before anything is installed and by
+# tests/check-parameters.yml. Each check's fail_msg starts with its own
+# phrase, which the test matches.
+
+# Keeps the secret out of the assert below, which then needs no no_log
+# and can show its message.
+- name: Check whether an S3 secret key is set
+  ansible.builtin.set_fact:
+    tesp_s3_has_secret_key: "{{ tesp_s3_secret_access_key | length > 0 }}"
+  no_log: true
+
+- name: Validate the S3 parameters (src_s3_*)
+  vars:
+    # scheme://host[:port][/path], ASCII only (no user:pass@). \Z, not
+    # $, which would let a trailing newline through.
+    url_re: 'https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?\Z'
+    region_re: '[A-Za-z0-9_-]+\Z'
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - tesp_s3_endpoint_url == '' or tesp_s3_endpoint_url is match(url_re)
+      - tesp_s3_addressing_style in ['path', 'virtual', 'auto']
+      - tesp_s3_region is match(region_re)
+      # A set parameter must leave a valid name ("s3://" alone doesn't).
+      - >-
+        (src_s3_bucket | default('') | trim) == ''
+        or (tesp_s3_bucket is match(tesp_s3_bucket_re)
+            and (tesp_s3_prefix == ''
+                 or tesp_s3_prefix is match(tesp_s3_prefix_re)))
+      - (tesp_s3_access_key_id != '') == (tesp_s3_has_secret_key | bool)
+      - tesp_s3_presign_expiry_seconds | int in range(1, 604801)
+      - tesp_s3_output_presign_expiry_seconds | int in range(1, 604801)
+    fail_msg: >-
+      Invalid S3 component parameters.
+      src_s3_endpoint_url must be empty (AWS S3) or an http:// or
+      https:// URL with a host and optional port and path, such as
+      https://s3.example.org;
+      src_s3_addressing_style must be path, virtual or auto;
+      src_s3_region may only contain letters, digits, _ and -;
+      src_s3_bucket must be empty or an S3 bucket name (lowercase
+      letters, digits, . and -, 3 to 63 characters), optionally as
+      s3://bucket or s3://bucket/prefix (prefix: letters, digits, ., _,
+      - and /);
+      src_s3_access_key_id and src_s3_secret_access_key must be set
+      together; tesp_s3_presign_expiry_seconds and
+      tesp_s3_output_presign_expiry_seconds must be between 1 and 604800.
+      See "Using S3" in the README.
+
+# tesp-api would refuse to start on a negative value; | int in the
+# template would silently turn a non-number into 0 (no limit).
+- name: Validate tesp_max_wait_seconds
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - tesp_max_wait_seconds | string is match('[0-9]+$')
+    fail_msg: >-
+      tesp_max_wait_seconds must be a whole number of seconds, 0 for no
+      limit. See "Long tasks" in the README.
+
+# Issue #25: what the gateway serves at /v1/service-info. The ELIXIR Cloud
+# Registry accepts only https URLs; register only test or prod there.
+- name: Validate the service info (src_tes_*, tesp_service_info_*)
+  vars:
+    # A dotted host name of letters, digits and inner hyphens.
+    host_re: '[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+'
+    https_re: 'https://{{ host_re }}(:[0-9]+)?(/[A-Za-z0-9._~/%#?=&+-]*)?\Z'
+    mailto_re: 'mailto:[A-Za-z0-9._%+-]+@{{ host_re }}\Z'
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - tesp_service_info_id is match('[A-Za-z0-9][A-Za-z0-9._-]{0,199}\Z')
+      - tesp_service_info_name is search('[A-Za-z0-9]')
+      - tesp_service_info_name | length <= 200
+      - tesp_service_info_organization_name is search('[A-Za-z0-9]')
+      - tesp_service_info_organization_name | length <= 200
+      - tesp_service_info_organization_url is match(https_re)
+      - tesp_service_info_environment in ['test', 'prod', 'dev', 'staging']
+      - >-
+        tesp_service_info_contact_url is match(https_re)
+        or tesp_service_info_contact_url is match(mailto_re)
+      - tesp_service_info_documentation_url is match(https_re)
+      - tesp_service_info_created_at == '' or tesp_service_info_created_at is match(tesp_time_re)
+      - tesp_service_info_updated_at == '' or tesp_service_info_updated_at is match(tesp_time_re)
+    fail_msg: >-
+      Invalid service info. tesp_service_info_id may only contain letters,
+      digits, ., _ and - (at most 200); src_tes_service_name and
+      src_tes_organization_name need a letter or digit and at most 200
+      characters; src_tes_organization_url and the documentation URL must be
+      https:// URLs; src_tes_contact_url must be an https:// or mailto: URL;
+      src_tes_environment must be test, prod, dev or staging; the timestamps
+      must be empty or look like 2026-11-18T09:30:00Z. See "Service info" in the README.

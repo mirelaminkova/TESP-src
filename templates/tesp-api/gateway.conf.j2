@@ -1,0 +1,71 @@
+# Managed by Ansible (TESP-src). Do not edit by hand.
+#
+# TES gateway (issue #25), between the host nginx (/tes/, prefix stripped)
+# and tesp-api:
+#   - GET /v1/service-info is answered here, from service-info.json next to
+#     this file: tesp-api's own answer is hard-coded for another provider.
+#   - Swagger UI and the OpenAPI document go to tesp-api without credentials,
+#     as before.
+#   - Everything else goes to tesp-api unchanged, Authorization included;
+#     tesp-api checks the HTTP Basic credentials itself. A request without
+#     Basic credentials gets 401 here: tesp-api (c3a9f23) would answer it
+#     with a 500 (it reads the missing credentials' username).
+
+# Docker's embedded DNS. proxy_pass with a variable makes nginx resolve
+# tesp-api per request, so a recreated tesp-api container (new address) is
+# found. Without a URI part, the original request URI is passed on.
+resolver 127.0.0.11 valid=2s ipv6=off;
+
+# The scheme, one space and credentials, as tesp-api (FastAPI) parses them.
+map $http_authorization $tes_has_basic {
+    "~*^basic [^ ]"  1;
+    default          0;
+}
+
+server {
+    listen 8080;
+    server_name _;
+    server_tokens off;
+
+    # The host nginx in front enforces the request size limit.
+    client_max_body_size 0;
+
+    set $tesp_api_upstream http://tesp-api:8080;
+    proxy_http_version 1.1;
+    # The Host the host nginx sent, as tesp-api saw it before the gateway.
+    proxy_set_header Host $http_host;
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
+
+    # With and without a trailing slash, so tesp-api's hard-coded answer is
+    # never reachable. Exact locations, because alias needs captures in a
+    # regex one.
+{% for path in ['/v1/service-info', '/v1/service-info/'] %}
+    location = {{ path }} {
+        add_header Allow "GET, HEAD" always;
+        if ($request_method !~ ^(GET|HEAD)$) {
+            return 405;
+        }
+        default_type application/json;
+        alias /etc/nginx/conf.d/service-info.json;
+    }
+
+{% endfor %}
+    location ~ ^/(|swagger-ui\.html|openapi\.json|docs/oauth2-redirect)$ {
+        proxy_pass $tesp_api_upstream;
+    }
+
+    location / {
+        if ($tes_has_basic = 0) {
+            return 401;
+        }
+        proxy_pass $tesp_api_upstream;
+    }
+
+    error_page 401 = @unauthorized;
+    location @unauthorized {
+        add_header WWW-Authenticate 'Basic realm="tes"' always;
+        default_type application/json;
+        return 401 '{"detail": "Not authenticated"}';
+    }
+}
