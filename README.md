@@ -8,11 +8,12 @@ It is built on [TESP-API](https://github.com/CESNET/tesp-api) from CESNET, which
 
 ```
 TES client (curl, Nextflow, ...)
-   │  HTTPS + HTTP Basic auth
+   │  HTTPS + HTTP Basic auth, or an LS Login access token (optional)
    ▼
 nginx (host)            /tes/  →  127.0.0.1:8080
    ▼
-gateway (Docker)        answers /v1/service-info itself; everything else ↓
+gateway (Docker)        answers /v1/service-info itself; with tokens on, asks the
+   │                    validator (Docker) and swaps a valid token for tesp-api's Basic credentials
    ▼
 tesp-api (Docker)       ──►  MongoDB (Docker, task state); no host port
    ▼
@@ -81,7 +82,7 @@ When the workspace is running, click **Access**. After an SRAM login you see the
 - copy fields for the parameters of a [nextflow-tesp-src](https://github.com/mirelaminkova/nextflow-tesp-src) workspace (see [Using S3](#using-s3))
 - ready-to-copy `curl` commands and a Nextflow config snippet for other setups
 
-Only members of your CO can open this page. It shows the TES credentials, but not the Pulsar token or other deploy-time secrets. Anyone with the username and password can submit tasks, so don't share them.
+Only members of your CO can open this page. It shows the TES credentials, but not the Pulsar token or other deploy-time secrets. Anyone with the username and password can submit tasks, so don't share them. A workspace can also accept LS Login access tokens; see [Access with LS Login](#access-with-ls-login).
 
 ### 4. Run a task
 
@@ -193,6 +194,79 @@ curl -X POST "https://<registry>/ga4gh/registry/v1/services/import" \
 
 The import returns the values for a registration and stores nothing. Check them, then register them with `POST /services`. Since a workspace's name ends up in its domain name and `id`, register a workspace that stays.
 
+## Access with LS Login
+
+A workspace can accept [LS Login](https://lifescience-ri.eu/ls-login/) access tokens besides, or instead of, the Basic password. That way a portal such as Krini calls the TES with the user's own token, without any shared password; so can command-line users with a token of an allowed client. proTES can call it with its own service token. Tokens are off by default.
+
+The TES API is then open to the internet for anyone with an accepted token: there is no SRAM in front of `/tes/`. The welcome page stays behind SRAM, because it shows the Basic password. Basic is meant for the co-located Nextflow component of the same CO.
+
+With tokens on, the gateway asks a small validator container (`files/tes-validator/`) about every request except service info and Swagger UI. The validator accepts a token only if all of these hold:
+
+- the token's `iss` is exactly a configured issuer. The discovery document, keys (JWKS) and userinfo endpoint come from the configuration, never from the token;
+- it is signed with an allowed algorithm (`RS256` by default; never `none` or `HS*`), by a key the issuer publishes;
+- its header says `typ: at+jwt`, so it is an access token and not an ID token (RFC 9068);
+- `exp` and `nbf` hold, with 60 s leeway by default (`tesp_oauth_leeway_seconds`);
+- its `client_id` is one of the allowed clients;
+- `aud` is one of the configured audiences, if any are configured;
+- LS Login's userinfo response for the token lists a required entitlement in `eduperson_entitlement`: an exact value, or one starting with a configured prefix (which ends with `:`, so `…:ECP_CLN:` matches the subgroups of `ECP_CLN` but not `…:ECP_CLN_OTHER`). Exempt clients skip this check: a service such as proTES, which checks the user itself.
+
+Everything else gets `401`. For a valid token the gateway replaces the client's `Authorization` header with tesp-api's own Basic credentials, so tesp-api stays as it is. Basic credentials are passed to tesp-api unchanged, as before, unless Basic is switched off. The validator caches keys and userinfo answers (by a hash of the token, never the token; 5 minutes by default, `tesp_oauth_userinfo_cache_seconds`, and never past the token's expiry). Every call to LS Login has a timeout. When LS Login can't be reached, known keys stay in use, and a failed fetch is retried at most once a minute. The validator never logs tokens.
+
+**Audit of service clients.** When an exempt client such as proTES submits a task, the user it acts for is named only in the task's `tags` ([proTES#254](https://github.com/elixir-cloud-aai/proTES/issues/254), [generic-issues#108](https://github.com/elixir-cloud-aai/generic-issues/issues/108)). The gateway sends a copy of every task submission to the validator. For exempt clients only, the validator logs the client and the tags listed in `tesp_oauth_audit_tag_keys`, and nothing else of the task:
+
+```
+audit: task from exempt client <proTES client id> for <tag>=<user>
+```
+
+Which tags proTES sets is not decided yet, so the list is empty by default. The log then names only the tags such tasks carry, without their values; set the list once the tags are agreed.
+
+> [!WARNING]
+> **No per-user task isolation.** tesp-api sees every request as its one Basic user. Everyone who is let in can list, read and cancel every task on the workspace, including other users'. That is fine for a demonstrator; don't put secrets in tasks.
+
+Other limits to know about:
+
+- **Basic bypasses the entitlement check.** Every CO member sees the Basic password on the welcome page. With Basic on, the entitlement check limits only token users. Switch Basic off (`src_tes_basic_auth_enabled = false`) where only token users should get in.
+- **Audience.** Without `audiences`, any LS Login access token of an allowed client is accepted, including one that the client obtained for another service. Such a service could replay the token here. Set `audiences` in `tesp_oauth_issuers` once LS Login's `aud` value for these clients is known.
+- **Revocation.** Tokens aren't introspected, so a revoked token works until it expires. A removed entitlement keeps working for up to the userinfo cache time.
+
+Component parameters (all optional):
+
+| Parameter | Default | Meaning |
+| --- | --- | --- |
+| `src_tes_oauth_enabled` | `false` | accept LS Login access tokens |
+| `src_tes_basic_auth_enabled` | `true` | accept the Basic password (the Nextflow component uses it); not both off |
+| `src_tes_oauth_client_ids` | empty | comma-separated client ids whose tokens count; required with tokens on |
+| `src_tes_oauth_exempt_client_ids` | empty | clients that skip the entitlement check; must also be allowed |
+| `src_tes_oauth_entitlements` | empty | comma-separated `eduperson_entitlement` values, any one of which is enough |
+| `src_tes_oauth_entitlement_prefixes` | empty | comma-separated prefixes ending with `:`, for subgroups |
+
+Take the entitlement values from a real userinfo response of a member for that client. Don't guess them. From [generic-issues#46](https://github.com/elixir-cloud-aai/generic-issues/issues/46):
+
+- the values come from userinfo, not from the token;
+- LS Login releases a group only to clients whose Perun facility it is assigned to, so the parent `ECP_CLN` value arrives for some clients and not others;
+- match the subgroups you need, for example `urn:geant:lifescience-ri.eu:group:elixir:ECP_CLN:EOC-Compute#aai.lifescience-ri.eu` for compute users and `…:ECP_CLN:ADMIN#aai.lifescience-ri.eu` for admins, or use a prefix;
+- each value also arrives in an `…elixir-europe.org…#perun.elixir-czech.cz` form, so match the `lifescience-ri.eu` form, or list both forms explicitly.
+
+Krini's client id is recorded in [generic-issues#48](https://github.com/elixir-cloud-aai/generic-issues/issues/48), and proTES's service client id in [#47](https://github.com/elixir-cloud-aai/generic-issues/issues/47); proTES belongs in `src_tes_oauth_exempt_client_ids` too. With tokens on, the playbook stops before installing anything unless there is at least one allowed client and one entitlement (or prefix). The parameters fill one LS Login entry in `tesp_oauth_issuers` in `group_vars/all.yml`. For other issuers, audiences or algorithms, set that list directly; its comment describes each field. For a test issuer with its own CA, point `tesp_oauth_ca_bundle` at a CA bundle on the workspace that includes it, for example `/etc/ssl/certs/ca-certificates.crt` after adding the CA to the system. The bundle replaces the validator's own trust store, so it must also hold the public CAs if LS Login stays configured.
+
+Call the TES with a token:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" https://<workspace-fqdn>/tes/v1/tasks
+```
+
+`401` answers carry `WWW-Authenticate: Bearer realm="tes", error="invalid_token"` for a rejected token. The validator's log (`docker logs tesp-validator`) says why, without the token.
+
+**Trying it on a workspace.** You need an LS Login access token for one of the allowed clients, for an account with the entitlement.
+
+1. Create the workspace with `src_tes_oauth_enabled = true`, the client id(s) and the entitlement value(s). Or set them in `group_vars/all.yml` and re-run the playbook.
+2. Check that service info is still public: `curl https://<workspace-fqdn>/tes/v1/service-info`.
+3. Check that a request without credentials is refused: `curl -i https://<workspace-fqdn>/tes/v1/tasks` gives `401`.
+4. Get an access token from the client, for example with its device-code flow, and put it in `$TOKEN` without echoing it.
+5. `curl -H "Authorization: Bearer $TOKEN" https://<workspace-fqdn>/tes/v1/tasks` gives `200`. Submit a task as in [Run a task](#4-run-a-task), with `-H "Authorization: Bearer $TOKEN"` instead of `-u`.
+6. With an account without the entitlement, or a token of another client, the same call gives `401`; `docker logs tesp-validator` on the workspace says which check failed.
+7. If Basic is still on, check that the Basic password still works, for example from the Nextflow component.
+
 ## Resource limits
 
 A task's `resources.cpu_cores` and `resources.ram_gb` become SLURM options for its job: tesp-api fills in `pulsar.native_specification.*` in `settings.toml` and Pulsar hands the result to SLURM through DRMAA. A task with `"cpu_cores": 2, "ram_gb": 1.5` runs as a job with `--cpus-per-task=2 --mem=1536` (MiB, rounded up). A task that leaves a resource out gets no option for it. The option formats are `tesp_native_spec_cpu_cores` and `tesp_native_spec_ram_gb` in `group_vars/all.yml`; set one to `""` to stop passing that resource to SLURM.
@@ -257,15 +331,19 @@ squeue
 - **Roles and collections:** `requirements.yml` pins every role and collection, including `community.docker`'s dependency, so a new upstream release can't change what a new workspace installs (`tests/requirements-pinned.yml` checks this). SRC's catalog item runs Ansible 9.1.0 (its `remote_ansible_version`; the external plugin's default is 11.1.0), which is ansible-core ~=2.16.1, so the Galaxy collections are the newest releases whose `requires_ansible` covers 2.16 (versions and the cut-off in `requirements.yml`). Before bumping one, check its `requires_ansible` on Galaxy or in its `meta/runtime.yml`, and raise past 2.16 only together with SRC's Ansible version.
 
   CI's `src-ansible-core` job installs the pinned collections under ansible-core 2.16 and fails if one of them excludes that version (`tests/check-collections.sh`; needs network access). The unit tests run under 2.16 in the `unit` matrix.
-
+- **Validator:** with tokens on, the compose service `validator` (container `tesp-validator`) is built from `files/tes-validator/`, copied to `tesp_validator_dir` (`/srv/tesp-validator`): a pinned Python base image and dependencies installed by hash (`requirements.txt`, generated from `requirements.in` with `pip-compile --generate-hashes`). It runs as `nobody` with a read-only file system and no capabilities, and has no port. Its configuration is `/etc/tesp-gateway/validator/config.json`, rendered from `tesp_oauth_*` and `tesp_basic_auth_enabled`. With tokens on, `gateway.conf` holds tesp-api's Basic credentials, so it is readable by root only.
 - **Gateway:** the compose service `gateway` (container `tesp-gateway`) runs nginx. Its config `gateway.conf` and `service-info.json` live in `tesp_gateway_dir` (`/etc/tesp-gateway`), mounted as `/etc/nginx/conf.d`, outside the image build context. It is the only container with a host port (`127.0.0.1:8080`, `tesp_api_port`); tesp-api is reachable only inside the stack. A changed `gateway.conf` changes a label on the container, so the playbook's `docker compose up` recreates it; `service-info.json` is read on every request. The gateway resolves `tesp-api` through Docker's DNS on each request, so it finds a rebuilt tesp-api container without a restart. The gateway and `pulsar-proxy` share one nginx image, `tesp_nginx_image`, pinned by digest.
 
 ## Checks
 
-CI (`.github/workflows/ci.yml`) runs on every pull request and every push to `main`. Its `lint` job runs the [pre-commit](https://pre-commit.com/) hooks in `.pre-commit-config.yaml`: yamllint, shellcheck, ansible-lint, ast-grep with the rules in `.ast-grep/`, and semgrep. Its `unit` jobs run `tests/run.sh`, which runs every playbook test in `tests/`, on ansible-core 2.16.20 (what SRC's plugin installs), 2.18.1 and 2.21.5; a job named `unit` sums them up for branch protection. The `src-ansible-core` job checks the pinned collections against ansible-core 2.16. `.github/workflows/e2e.yml` brings up the tesp-api stack as the playbook renders it (`tests/e2e/render-stack.yml`, without Pulsar) and checks the gateway with `tests/e2e/check-gateway.sh`: public service info, `401` without credentials, Basic auth through to tesp-api, and no host port for tesp-api. The workflow then recreates tesp-api with a new address and checks that the gateway finds it. Run the same checks locally before you push:
+CI (`.github/workflows/ci.yml`) runs on every pull request and every push to `main`. Its `lint` job runs the [pre-commit](https://pre-commit.com/) hooks in `.pre-commit-config.yaml`: yamllint, shellcheck, ansible-lint, ast-grep with the rules in `.ast-grep/`, and semgrep. Its `unit` jobs run `tests/run.sh`, which runs every test in `tests/` (the validator's unit tests, `tests/test_tes_validator.py`, pytest, 100% line and branch coverage required, and the playbook tests), on ansible-core 2.16.20 (what SRC's plugin installs), 2.18.1 and 2.21.5; a job named `unit` sums them up for branch protection. The `src-ansible-core` job checks the pinned collections against ansible-core 2.16. `.github/workflows/e2e.yml` brings up the tesp-api stack as the playbook renders it (`tests/e2e/render-stack.yml`, without Pulsar) and checks the gateway with `tests/e2e/check-gateway.sh`: public service info, `401` without credentials, Basic auth through to tesp-api, and no host port for tesp-api. The workflow then recreates tesp-api with a new address and checks that the gateway finds it. It runs twice: with Basic only, and with tokens on against a mock LS Login over https (`tests/e2e/idp/`, `tests/e2e/check-oauth.sh`). Run the same checks locally before you push:
 
 ```bash
-pip install pre-commit==4.7.0 ansible-core==2.21.5
+pip install pre-commit==4.7.0 ansible-core==2.21.5 -r tests/requirements.txt
+```
+
+```bash
+pip install --require-hashes --only-binary=:all: --no-deps -r files/tes-validator/requirements.txt
 ```
 
 ```bash

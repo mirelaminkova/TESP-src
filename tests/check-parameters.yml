@@ -66,6 +66,90 @@
       - why: an organization URL with a bad host
         expect: Invalid service info
         vars: {src_tes_organization_url: 'https://-/'}
+    # Issue #26. A valid issuer, varied by the cases below.
+    valid_issuer:
+      issuer: https://login.example.org/oidc/
+      allowed_client_ids: [portal, cli, service]
+      exempt_client_ids: [service]
+      entitlements: {any_of: ['urn:example:group:ECP_CLN#example.org']}
+    valid_issuers: ["{{ valid_issuer }}"]
+    oauth_cases:
+      - why: both Basic and tokens switched off
+        expect: Invalid access settings
+        vars: {tesp_basic_auth_enabled: false, tesp_oauth_enabled: false}
+      - why: src_tes_oauth_enabled that is not a boolean
+        expect: Invalid access settings
+        vars: {src_tes_oauth_enabled: maybe}
+      - why: a typo in src_tes_basic_auth_enabled
+        expect: Invalid access settings
+        vars: {src_tes_basic_auth_enabled: flase}
+      - why: audit tag keys given as a string
+        expect: Invalid token settings
+        vars: {tesp_oauth_enabled: true, tesp_oauth_audit_tag_keys: user_sub}
+      - why: a relative CA bundle path
+        expect: Invalid token settings
+        vars: {tesp_oauth_enabled: true, tesp_oauth_ca_bundle: certs/ca.pem}
+      - why: tokens on without issuers
+        expect: Invalid token issuers
+        vars: {tesp_oauth_enabled: true, tesp_oauth_issuers: []}
+      - why: the same issuer twice
+        expect: Invalid token issuers
+        vars:
+          tesp_oauth_enabled: true
+          tesp_oauth_issuers: ["{{ valid_issuer }}", "{{ valid_issuer }}"]
+      - why: the default LS Login entry without client ids
+        expect: Invalid token issuer https://login.aai.lifescience-ri.eu/oidc/
+        vars:
+          tesp_oauth_enabled: true
+          tesp_oauth_issuers: "{{ default_issuers }}"
+      - why: an http issuer
+        expect: Invalid token issuer http://
+        vars:
+          tesp_oauth_enabled: true
+          tesp_oauth_issuers:
+            - "{{ valid_issuer | combine({'issuer': 'http://login.example.org/oidc/'}) }}"
+      - why: an exempt client that is not allowed
+        expect: Invalid token issuer
+        vars:
+          tesp_oauth_enabled: true
+          tesp_oauth_issuers:
+            - "{{ valid_issuer | combine({'exempt_client_ids': ['other']}) }}"
+      - why: a symmetric algorithm
+        expect: Invalid token issuer
+        vars:
+          tesp_oauth_enabled: true
+          tesp_oauth_issuers:
+            - "{{ valid_issuer | combine({'algorithms': ['RS256', 'HS256']}) }}"
+      - why: no entitlements
+        expect: Invalid token issuer
+        vars:
+          tesp_oauth_enabled: true
+          tesp_oauth_issuers:
+            - "{{ valid_issuer | combine({'entitlements': {'any_of': []}}) }}"
+      - why: an entitlement prefix without a boundary
+        expect: Invalid token issuer
+        vars:
+          tesp_oauth_enabled: true
+          tesp_oauth_issuers:
+            - "{{ valid_issuer | combine({'entitlements': {'prefix_any_of': ['urn:x:ECP_CLN']}}) }}"
+      - why: an unknown key (a typo)
+        expect: Invalid token issuer
+        vars:
+          tesp_oauth_enabled: true
+          tesp_oauth_issuers:
+            - "{{ valid_issuer | combine({'alowed_client_ids': ['x']}) }}"
+      - why: an http JWKS URL
+        expect: Invalid token issuer
+        vars:
+          tesp_oauth_enabled: true
+          tesp_oauth_issuers:
+            - "{{ valid_issuer | combine({'jwks_uri': 'http://login.example.org/jwk'}) }}"
+      - why: client ids given as a string
+        expect: Invalid token issuer
+        vars:
+          tesp_oauth_enabled: true
+          tesp_oauth_issuers:
+            - "{{ valid_issuer | combine({'allowed_client_ids': 'portal'}) }}"
     other_cases:
       - why: an S3 endpoint without a scheme
         expect: Invalid S3 component parameters
@@ -74,6 +158,10 @@
         expect: tesp_max_wait_seconds must be
         vars: {tesp_max_wait_seconds: -1}
   tasks:
+    - name: Keep the default issuer list for a case
+      ansible.builtin.set_fact:
+        default_issuers: "{{ tesp_oauth_issuers }}"
+
     - name: The defaults pass
       ansible.builtin.include_tasks: ../tasks/check-parameters.yml
 
@@ -111,9 +199,45 @@
         src_tes_environment: prod
         src_tes_contact_url: mailto:support@example.org
 
+    - name: Token settings from SRC component parameters
+      ansible.builtin.assert:
+        that:
+          - tesp_oauth_enabled is true
+          - tesp_basic_auth_enabled is false
+          - tesp_oauth_issuers | length == 1
+          - issuer.issuer == 'https://login.aai.lifescience-ri.eu/oidc/'
+          - issuer.allowed_client_ids == ['portal', 'cli', 'service']
+          - issuer.exempt_client_ids == ['service']
+          - issuer.entitlements.any_of == ['urn:a', 'urn:b']
+          - issuer.entitlements.prefix_any_of == ['urn:a:']
+      vars:
+        src_tes_oauth_enabled: 'True'
+        src_tes_basic_auth_enabled: ' false '
+        src_tes_oauth_client_ids: ' portal, cli,service ,'
+        src_tes_oauth_exempt_client_ids: service
+        src_tes_oauth_entitlements: 'urn:a,urn:b'
+        src_tes_oauth_entitlement_prefixes: 'urn:a:'
+        issuer: "{{ tesp_oauth_issuers[0] }}"
+
+    - name: Those token settings pass the checks
+      ansible.builtin.include_tasks: ../tasks/check-parameters.yml
+      vars:
+        src_tes_oauth_enabled: 'true'
+        src_tes_oauth_client_ids: portal,cli,service
+        src_tes_oauth_exempt_client_ids: service
+        src_tes_oauth_entitlement_prefixes: 'urn:a:'
+
+    - name: An issuer without entitlements passes when they are switched off
+      ansible.builtin.include_tasks: ../tasks/check-parameters.yml
+      vars:
+        tesp_oauth_enabled: true
+        tesp_oauth_issuers:
+          - "{{ valid_issuer | combine({'entitlements': {},
+                                       'require_entitlement': false}) }}"
+
     - name: Each invalid case is rejected by its check
       ansible.builtin.include_tasks: include/expect-invalid.yml
-      loop: "{{ service_info_cases + other_cases }}"
+      loop: "{{ service_info_cases + oauth_cases + other_cases }}"
       loop_control:
         loop_var: case
         label: "{{ case.why }}"

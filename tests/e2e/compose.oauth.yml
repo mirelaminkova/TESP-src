@@ -1,0 +1,20 @@
+---
+# e2e only (issue #26): a mock LS Login at https://idp.e2e.test:8443/ on the
+# stack's network. The validator trusts its throwaway CA through
+# tesp_oauth_ca_bundle. Paths come from the environment (e2e.yml).
+services:
+  idp:
+    image: ${E2E_PYTHON_IMAGE}
+    user: "65534:65534"
+    command: ["python", "/idp/mock_idp.py", "/keys"]
+    volumes:
+      - ${E2E_IDP_SRC}:/idp:ro
+      - ${E2E_IDP_KEYS}:/keys:ro
+    networks:
+      default:
+        aliases:
+          - idp.e2e.test
+
+  validator:
+    depends_on:
+      - idp

@@ -70,8 +70,12 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: install ansible-core
-        run: pip install "ansible-core==${{ matrix.ansible-core }}"
+      - name: install ansible-core and the Python test dependencies
+        # The validator's dependencies are installed with their hashes, as in
+        # its image.
+        run: |
+          pip install "ansible-core==${{ matrix.ansible-core }}" -r tests/requirements.txt
+          pip install --require-hashes --only-binary=:all: --no-deps -r files/tes-validator/requirements.txt
 
       - name: run unit tests
         run: tests/run.sh

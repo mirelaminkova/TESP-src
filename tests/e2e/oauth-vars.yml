@@ -1,0 +1,12 @@
+---
+# Extra vars for tests/e2e/render-stack.yml in the e2e job with tokens on
+# (issue #26): the mock identity provider of tests/e2e/compose.oauth.yml.
+tesp_oauth_enabled: true
+tesp_oauth_issuers:
+  - issuer: https://idp.e2e.test:8443/
+    allowed_client_ids: [e2e-portal, e2e-service]
+    exempt_client_ids: [e2e-service]
+    entitlements:
+      any_of: ["urn:e2e:group:ECP_CLN"]
+# The tag e2e tasks of the exempt client name their user in.
+tesp_oauth_audit_tag_keys: [user_sub]

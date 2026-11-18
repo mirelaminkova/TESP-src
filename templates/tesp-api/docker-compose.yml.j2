@@ -51,11 +51,50 @@ services:
       - "127.0.0.1:{{ tesp_api_port }}:8080"
     depends_on:
       - tesp-api
+{% if tesp_oauth_enabled | bool %}
+      - validator
+    networks:
+      - default
+      - auth
+{% endif %}
     # The whole directory, not single files: Ansible replaces a file with a
     # new one, which a single-file bind mount would not see.
     volumes:
       - {{ tesp_gateway_dir }}:/etc/nginx/conf.d:ro
 
+{% if tesp_oauth_enabled | bool %}
+  # Checks OAuth2 access tokens for the gateway (issue #26). Built from
+  # files/tes-validator, copied to {{ tesp_validator_dir }}. No port: only
+  # the gateway calls it, on the stack's network.
+  validator:
+    build:
+      context: {{ tesp_validator_dir }}
+    image: tesp-validator
+    container_name: tesp-validator
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    labels:
+      tesp.validator-config-checksum: "{{ tesp_validator_conf_checksum | default('') }}"
+    # Only the gateway can reach it (its own network, with internet access for
+    # the issuer); tesp-api and pulsar-proxy can't.
+    networks:
+      - auth
+    volumes:
+      - {{ tesp_gateway_dir }}/validator:/etc/tes-validator:ro
+{% if tesp_oauth_ca_bundle %}
+      # The directory, not the file: an updated bundle is a new file, which a
+      # single-file mount would not see.
+      - {{ tesp_oauth_ca_bundle | dirname }}:/etc/tes-validator-ca:ro
+    environment:
+      # Python's ssl (urllib) reads it instead of the image's bundle.
+      - SSL_CERT_FILE=/etc/tes-validator-ca/{{ tesp_oauth_ca_bundle | basename }}
+{% endif %}
+
+{% endif %}
   tesp-db:
     image: mongo:8.0
     container_name: tesp-db
@@ -85,3 +124,9 @@ networks:
     driver: bridge
     driver_opts:
       com.docker.network.driver.mtu: {{ tesp_network_mtu }}
+{% if tesp_oauth_enabled | bool %}
+  auth:
+    driver: bridge
+    driver_opts:
+      com.docker.network.driver.mtu: {{ tesp_network_mtu }}
+{% endif %}

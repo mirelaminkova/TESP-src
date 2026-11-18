@@ -1,0 +1,15 @@
+{#- Managed by Ansible (TESP-src). Configuration of the token validator
+    (files/tes-validator/tes_validator.py), issue #26. tasks/check-parameters.yml
+    rejects unknown keys in tesp_oauth_issuers before this is rendered; the
+    filter is a second guard, so a stray key can't reach the validator. #}
+{% set issuers = tesp_oauth_issuers | map('dict2items')
+                 | map('selectattr', 'key', 'in', tesp_oauth_issuer_keys)
+                 | map('items2dict') | list %}
+{{ {
+  'basic_auth_enabled': tesp_basic_auth_enabled | bool,
+  'leeway_seconds': tesp_oauth_leeway_seconds | int,
+  'http_timeout_seconds': tesp_oauth_http_timeout_seconds | float,
+  'userinfo_cache_seconds': tesp_oauth_userinfo_cache_seconds | int,
+  'audit_tag_keys': tesp_oauth_audit_tag_keys,
+  'issuers': issuers,
+} | to_nice_json(indent=2) }}

@@ -96,3 +96,130 @@
       Registry accepts); workspace_fqdn (set by SRC) must be the workspace's
       domain name; the timestamps
       must be empty or look like 2026-11-18T09:30:00Z. See "Service info" in the README.
+
+# Issue #26: who may use the TES API.
+- name: Validate the access settings (tesp_*_enabled)
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - tesp_basic_auth_param in ['true', 'false']
+      - tesp_oauth_param in ['true', 'false']
+      # For values set directly instead of through the parameters.
+      - tesp_basic_auth_enabled | string | lower in ['true', 'false']
+      - tesp_oauth_enabled | string | lower in ['true', 'false']
+      - tesp_basic_auth_enabled | bool or tesp_oauth_enabled | bool
+    fail_msg: >-
+      Invalid access settings. tesp_basic_auth_enabled
+      (src_tes_basic_auth_enabled) and tesp_oauth_enabled
+      (src_tes_oauth_enabled) must be true or false, and not both false. See
+      "Access with LS Login" in the README.
+
+- name: Validate the list of token issuers (tesp_oauth_issuers)
+  when: tesp_oauth_enabled | bool
+  vars:
+    names: "{{ tesp_oauth_issuers | map(attribute='issuer', default='') | list }}"
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - tesp_oauth_issuers is sequence and tesp_oauth_issuers is not string
+      - tesp_oauth_issuers | length > 0
+      - tesp_oauth_issuers | select('mapping') | list | length == tesp_oauth_issuers | length
+      - names | unique | length == names | length
+    fail_msg: >-
+      Invalid token issuers. With tesp_oauth_enabled, tesp_oauth_issuers must
+      be a list of at least one issuer, each issuer listed once. See "Access
+      with LS Login" in the README.
+
+- name: Validate each token issuer's address and keys
+  when: tesp_oauth_enabled | bool
+  loop: "{{ tesp_oauth_issuers }}"
+  loop_control:
+    label: "{{ item.issuer | default('?') }}"
+  vars:
+    host_re: '[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+'
+    https_re: 'https://{{ host_re }}(:[0-9]+)?(/[A-Za-z0-9._~/%-]*)?\Z'
+    urls: >-
+      {{ [item.discovery_url | default(''), item.jwks_uri | default(''),
+          item.userinfo_endpoint | default('')] | select | list }}
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - item.keys() | difference(tesp_oauth_issuer_keys) | length == 0
+      - item.issuer | default('') is match(https_re)
+      - urls | reject('match', https_re) | list | length == 0
+    fail_msg: >-
+      Invalid token issuer {{ item.issuer | default('?') }}: the issuer,
+      discovery_url, jwks_uri and userinfo_endpoint must be https:// URLs,
+      and an entry may only have the keys {{ tesp_oauth_issuer_keys | join(', ') }}.
+      See "Access with LS Login" in the README.
+
+- name: Validate each token issuer's clients
+  when: tesp_oauth_enabled | bool
+  loop: "{{ tesp_oauth_issuers }}"
+  loop_control:
+    label: "{{ item.issuer | default('?') }}"
+  vars:
+    allowed: "{{ item.allowed_client_ids | default([]) }}"
+    exempt: "{{ item.exempt_client_ids | default([]) }}"
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - allowed is sequence and allowed is not string and allowed | length > 0
+      - allowed | select('string') | select | list | length == allowed | length
+      - exempt is sequence and exempt is not string
+      - exempt | difference(allowed) | length == 0
+    fail_msg: >-
+      Invalid token issuer {{ item.issuer | default('?') }}: allowed_client_ids
+      (src_tes_oauth_client_ids) must be a non-empty list of client ids, and
+      include every exempt_client_ids entry (src_tes_oauth_exempt_client_ids).
+      See "Access with LS Login" in the README.
+
+- name: Validate each token issuer's algorithms and entitlements
+  when: tesp_oauth_enabled | bool
+  loop: "{{ tesp_oauth_issuers }}"
+  loop_control:
+    label: "{{ item.issuer | default('?') }}"
+  vars:
+    # As ASYMMETRIC_ALGORITHMS in files/tes-validator/tes_validator.py.
+    asymmetric: [RS256, RS384, RS512, PS256, PS384, PS512, ES256, ES384, ES512]
+    algorithms: "{{ item.algorithms | default(['RS256']) }}"
+    entitlements: "{{ item.entitlements | default({}) }}"
+    any_of: "{{ entitlements.any_of | default([]) }}"
+    prefixes: "{{ entitlements.prefix_any_of | default([]) }}"
+    audiences: "{{ item.audiences | default([]) }}"
+    require_entitlement: "{{ item.require_entitlement | default(true) }}"
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - algorithms is sequence and algorithms is not string
+      - algorithms | length > 0 and algorithms | difference(asymmetric) | length == 0
+      - require_entitlement is boolean
+      - entitlements is mapping
+      - entitlements.keys() | difference(['any_of', 'prefix_any_of']) | length == 0
+      - any_of is sequence and any_of is not string
+      - any_of | select('string') | select | list | length == any_of | length
+      - prefixes is sequence and prefixes is not string
+      - prefixes | select('string') | select('match', '.*:\Z') | list | length == prefixes | length
+      - audiences is sequence and audiences is not string
+      - audiences | select('string') | select | list | length == audiences | length
+      - not require_entitlement or (any_of + prefixes) | length > 0
+    fail_msg: >-
+      Invalid token issuer {{ item.issuer | default('?') }}: algorithms must be
+      RS*, PS* or ES*; entitlements (any_of: src_tes_oauth_entitlements,
+      prefix_any_of: src_tes_oauth_entitlement_prefixes) and audiences must
+      be lists of strings, every prefix ending with ':' (a group and its
+      subgroups), and the entitlements not all empty unless
+      require_entitlement is false. See "Access with LS Login" in the
+      README.
+
+- name: Validate the audit tags and CA bundle
+  when: tesp_oauth_enabled | bool
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - tesp_oauth_audit_tag_keys is sequence and tesp_oauth_audit_tag_keys is not string
+      - tesp_oauth_audit_tag_keys | select('string') | select | list | length == tesp_oauth_audit_tag_keys | length
+      - tesp_oauth_ca_bundle == '' or tesp_oauth_ca_bundle is match('/[A-Za-z0-9._/-]+\Z')
+    fail_msg: >-
+      Invalid token settings: tesp_oauth_audit_tag_keys must be a list of tag
+      names, tesp_oauth_ca_bundle empty or an absolute path.
