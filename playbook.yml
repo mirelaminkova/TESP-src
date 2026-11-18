@@ -74,17 +74,17 @@
           - chrony
         state: present
 
-    - name: deploy chrony.conf template
-      template:
-       src: templates/chrony.conf
-       dest: /etc/chrony.conf
-       owner: root
-       group: root
-       mode: 0644
-       backup: yes
+    - name: Deploy chrony.conf template
+      ansible.builtin.template:
+        src: templates/chrony.conf
+        dest: /etc/chrony.conf
+        owner: root
+        group: root
+        mode: '0644'
+        backup: true
 
     - name: Restart chronyd
-      service:
+      ansible.builtin.service:
         name: chronyd
         state: restarted
 
@@ -99,11 +99,11 @@
         name: uusrc.general.fact_regular_users
 
     - name: Generate password
-      set_fact:
+      ansible.builtin.set_fact:
         pulsar_token: "{{ lookup('community.general.random_string', base64=True, length=24) }}"
 
     - name: Generate TESP-API basic auth password
-      set_fact:
+      ansible.builtin.set_fact:
         tesp_basic_auth_password: "{{ lookup('community.general.random_string', base64=True, length=24) }}"
 
     - name: Install Dependencies
@@ -159,13 +159,13 @@
 
   post_tasks:
     - name: Create directory /srv/static/
-      file:
+      ansible.builtin.file:
         path: /srv/static/
         state: directory
         mode: '0755'
 
     - name: Template out the welcome
-      template:
+      ansible.builtin.template:
         src: templates/welcome.html
         dest: /srv/static/index.html
         owner: www-data
@@ -197,6 +197,8 @@
         group: root
         mode: '0640'
 
+    # The rule matches the variable name; the path itself is not secret.
+    # ast-grep-ignore: secret-needs-no-log
     - name: Create the TESP-API secrets directory
       ansible.builtin.file:
         path: "{{ tesp_secrets_dir }}"

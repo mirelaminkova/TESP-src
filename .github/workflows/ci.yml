@@ -1,0 +1,70 @@
+---
+name: ci
+
+# Issue #24. Needs no repository secrets. Job names (lint, unit) are stable so
+# branch protection can require them.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # Cancel superseded PR runs; keep every run on main.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: install pre-commit
+        run: pip install "pre-commit==4.7.0"
+
+      - name: cache pre-commit environments
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-py3.12-${{ hashFiles('.pre-commit-config.yaml') }}
+
+      - name: commit-stage hooks (linters; ansible-lint includes the syntax check)
+        # The unit job runs the unit tests.
+        env:
+          SKIP: unit-tests
+        run: pre-commit run --all-files --show-diff-on-failure
+
+      - name: push-stage hooks (ast-grep, semgrep)
+        run: pre-commit run --all-files --hook-stage pre-push
+
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: install ansible-core
+        # Same version as the local hooks in .pre-commit-config.yaml.
+        run: pip install "ansible-core==2.21.5"
+
+      - name: run unit tests
+        run: tests/run.sh

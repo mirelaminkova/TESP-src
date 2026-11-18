@@ -1,0 +1,13 @@
+---
+id: no-ignore-errors
+language: yaml
+severity: error
+message: >-
+  ignore_errors hides real failures on the workspace. Use failed_when with the
+  exact condition that is acceptable.
+rule:
+  kind: block_mapping_pair
+  all:
+    - has: {field: key, regex: '^ignore_errors$'}
+    - not:
+        has: {field: value, regex: '^(false|no|False)$'}

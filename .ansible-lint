@@ -1,0 +1,17 @@
+---
+profile: production
+offline: true
+exclude_paths:
+  - .github/
+# The roles and collections in requirements.yml are installed by SRC at deploy
+# time, not here; lint against stand-ins.
+mock_roles:
+  - geerlingguy.docker
+  - usegalaxy_eu.apptainer
+  - galaxyproject.pulsar
+  - galaxyproject.repos
+  - galaxyproject.slurm
+  - uusrc.general.fact_regular_users
+  - uusrc.general.nginx_reverse_proxy
+mock_modules:
+  - community.docker.docker_compose_v2

@@ -212,7 +212,25 @@ squeue
 
 ## Checks
 
-`tests/render-templates.yml` renders every template with test values and checks, among other things, that the welcome page doesn't leak the Pulsar token or dump variables, and that the S3 key pair ends up only in the secrets file. It needs only `ansible-core`, not root, Docker or the roles from `requirements.yml`:
+CI (`.github/workflows/ci.yml`) runs on every pull request and every push to `main`. Its `lint` job runs the [pre-commit](https://pre-commit.com/) hooks in `.pre-commit-config.yaml`: yamllint, shellcheck, ansible-lint, ast-grep with the rules in `.ast-grep/`, and semgrep. Its `unit` job runs `tests/run.sh`, which runs every test in `tests/`. Run the same checks locally before you push:
+
+```bash
+pip install pre-commit==4.7.0 ansible-core==2.21.5
+```
+
+```bash
+pre-commit install
+```
+
+`pre-commit install` sets up both stages. The linters run on `git commit`, and so do the unit tests when the commit touches `playbook.yml`, `group_vars/`, `templates/`, `tests/` or the workflows. ast-grep and semgrep run on `git push`. To run everything on demand:
+
+```bash
+pre-commit run --all-files && pre-commit run --all-files --hook-stage pre-push
+```
+
+ansible-lint runs offline against stand-ins for the roles and collections in `requirements.yml` (`mock_roles` and `mock_modules` in `.ansible-lint`); add new ones there.
+
+`tests/render-templates.yml` renders every template with test values and checks, among other things, that the welcome page doesn't leak the Pulsar token or dump variables, and that the S3 key pair ends up only in the secrets file. It needs only `ansible-core`, not root, Docker or the roles from `requirements.yml`. `tests/run.sh` runs it; to run it alone:
 
 ```bash
 ansible-playbook -i localhost, -c local tests/render-templates.yml
