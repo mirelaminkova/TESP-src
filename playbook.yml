@@ -393,6 +393,11 @@
           - docker-compose.deploy.yml
         build: always
         state: present
+        # Until every container runs and the validator is healthy.
+        wait: true
+        wait_timeout: 300
+        # Drops the validator when tokens are switched off.
+        remove_orphans: true
 
     # A config nginx rejects would only show as a restarting container.
     - name: Check the TES gateway config

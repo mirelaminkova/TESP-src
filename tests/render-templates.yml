@@ -448,6 +448,8 @@
               - "'auth_request' not in files['gateway.conf']"
               - "'id=\"oauth\"' not in files['welcome.html']"
               - "'tes.basicPassword' in files['welcome.html']"
+              # Basic from anywhere, as before.
+              - "'    default 1;' in files['gateway.conf']"
           vars:
             compose: "{{ files['docker-compose.yml'] | from_yaml }}"
 
@@ -469,6 +471,10 @@
             src_tes_oauth_client_ids: krini-client, cli-client, protes-service
             src_tes_oauth_exempt_client_ids: protes-service
             src_tes_oauth_entitlement_prefixes: 'urn:example:ECP_CLN:'
+            src_tes_oauth_audiences: tes.example.org
+            src_tes_oauth_entitlements: urn:example:ECP_CLN:EOC-Compute#example.org
+            # Basic only from the Nextflow workspace.
+            src_tes_basic_auth_sources: 145.38.1.2
 
         - name: Tokens are checked by the validator; tesp-api gets Basic
           ansible.builtin.assert:
@@ -484,7 +490,8 @@
               - "'auth_request_set $tes_auth_kind $upstream_http_x_tes_auth_kind;' in conf"
               # Public locations pass no credentials at all.
               - "'proxy_set_header Authorization \"\";' in conf"
-              - "'tes_has_basic' not in conf"
+              # Tokens decide here, not the Basic-only check.
+              - "'if ($tes_has_basic = 0)' not in conf"
               - tesp_basic_auth_password not in conf
               # Exempt clients' task submissions go to the audit log too,
               # with the validator's answer, not the client's headers.
@@ -496,7 +503,16 @@
               # Forged gateway headers never reach tesp-api.
               - conf.count('proxy_set_header X-Tes-Auth-Exempt \"\";') == 2
               - conf.count('auth_request /_tes_auth;') == 2
-              - conf is search('WWW-Authenticate \$tes_auth_challenge always')
+              # nginx copies the validator's challenge; not added twice.
+              - "'tes_auth_challenge' not in conf"
+              # Basic from elsewhere is refused before the validator.
+              - "'if ($tes_basic_refused) {' in conf"
+              - "'real_ip_header X-Real-IP;' in conf"
+              - "'set_real_ip_from 172.16.0.0/12;' in conf"
+              - "'geo $tes_basic_source {' in conf"
+              # The issuer can't be reached: 503, not a misleading 401.
+              - "'error_page 500 = @auth_error;' in conf"
+              - "'if ($tes_auth_status = 503) {' in conf"
               - conf is search('WWW-Authenticate .Basic realm')
           vars:
             conf: "{{ lookup('file', out.path ~ '/oauth-gateway.conf') }}"
@@ -515,14 +531,18 @@
                   'allowed_client_ids': ['krini-client', 'cli-client',
                                          'protes-service'],
                   'exempt_client_ids': ['protes-service'],
-                  'entitlements': {'any_of': [],
-                                   'prefix_any_of': ['urn:example:ECP_CLN:']}}
-              - tesp_basic_auth_password not in raw
-              - basic_b64 not in raw
-              - pulsar_token not in raw
+                  'audiences': ['tes.example.org'],
+                  'entitlements': {
+                    'any_of': ['urn:example:ECP_CLN:EOC-Compute#example.org'],
+                    'prefix_any_of': ['urn:example:ECP_CLN:']}}
+              # Basic stays on: sources are set.
+              - config.basic_auth_enabled is true
+              - tesp_basic_auth_password not in lookup('file', path)
+              - basic_b64 not in lookup('file', path)
+              - pulsar_token not in lookup('file', path)
           vars:
-            raw: "{{ lookup('file', out.path ~ '/oauth-validator.json') }}"
-            config: "{{ raw | from_json }}"
+            path: "{{ out.path }}/oauth-validator.json"
+            config: "{{ lookup('file', path) | from_json }}"
             basic_b64: "{{ ('tes:' ~ tesp_basic_auth_password) | b64encode }}"
 
         - name: The validator runs locked down, reachable only by the gateway
@@ -541,6 +561,7 @@
                 validator.labels['tesp.validator-config-checksum']
                 == '4567cdef'
               - "'validator' in compose.services.gateway.depends_on"
+              - "'/healthz' in validator.healthcheck.test | join(' ')"
               - "'environment' not in validator"
               # Only the gateway shares a network with the validator.
               - validator.networks == ['auth']
@@ -559,7 +580,7 @@
                 ('<pre id="tes-bearer">curl -H "Authorization: Bearer $TOKEN" https://'
                  ~ workspace_fqdn ~ '/tes/v1/tasks</pre>') in page
               - "'No per-user task isolation.' in page"
-              - "'HTTP Basic or an LS Login access token' in page"
+              - "'HTTP Basic (only from 145.38.1.2) or an LS Login access token' in page"
               # Basic is still on, so its fields stay.
               - tesp_basic_auth_password in page
               - basic_b64 not in page
@@ -578,7 +599,8 @@
           loop: *oauth_templates
           vars:
             <<: *oauth_vars
-            tesp_basic_auth_enabled: false
+            # Tokens on and no Basic sources: Basic is off.
+            src_tes_basic_auth_sources: ''
             tesp_oauth_ca_bundle: /etc/ssl/certs/ca-certificates.crt
 
         - name: With Basic off, nothing offers the password
@@ -592,6 +614,8 @@
                 '<pre id="tes-get">curl -H "Authorization: Bearer $TOKEN" '
                 in page
               - "'Basic realm' not in conf"
+              # Every Basic request is refused at the gateway.
+              - "'    default 0;' in conf"
               - (lookup('file', out.path ~ '/bearer-validator.json')
                  | from_json).basic_auth_enabled is false
               # A test issuer's CA, through the system bundle.

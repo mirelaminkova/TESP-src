@@ -122,6 +122,8 @@ class IdP:
             "allowed_client_ids": [CLIENT, EXEMPT],
             "exempt_client_ids": [EXEMPT],
             "entitlements": {"any_of": [ENTITLEMENT]},
+            # Required with an exempt client; the test tokens' aud.
+            "audiences": ["tes"],
         }
         issuer.update(overrides.pop("issuer_overrides", {}))
         d = {"issuers": [issuer], "basic_auth_enabled": True, **overrides}
@@ -329,10 +331,43 @@ def test_entitlement_of_wrong_type_is_ignored(idp):
 def test_userinfo_down_refuses_and_is_not_cached(idp):
     idp.userinfo_status = 503
     v = tv.Validator(idp.config())
-    denied(v, "Bearer " + idp.token(), "userinfo failed")
+    with pytest.raises(tv.Unavailable, match="userinfo failed"):
+        check(v, idp.token())
     # Not cached: works once userinfo is back.
     idp.userinfo_status = 200
     assert check(v, idp.token()).kind == "bearer"
+
+
+def test_userinfo_refusing_the_token_is_a_denial_not_an_outage(idp):
+    idp.userinfo_status = 401
+    v = tv.Validator(idp.config())
+    with pytest.raises(tv.Denied, match="userinfo failed") as e:
+        check(v, idp.token())
+    assert not isinstance(e.value, tv.Unavailable)
+
+
+def test_issuer_outages_are_unavailable(idp):
+    idp.jwks_status = 503
+    v = tv.Validator(idp.config())
+    with pytest.raises(tv.Unavailable, match="JWKS fetch failed"):
+        check(v, idp.token())
+    v = tv.Validator(idp.config(issuer_overrides={
+        "discovery_url": idp.base + "/missing"}))
+    with pytest.raises(tv.Unavailable, match="discovery failed"):
+        check(v, idp.token())
+
+
+def test_exempt_client_needs_an_audience(idp):
+    with pytest.raises(ValueError, match="exempt_client_ids need audiences"):
+        idp.config(issuer_overrides={"audiences": []})
+    # Without exempt clients, no audience is required.
+    idp.config(issuer_overrides={"audiences": [], "exempt_client_ids": []})
+
+
+def test_exempt_token_for_another_service_is_refused(idp):
+    v = tv.Validator(idp.config())
+    denied(v, "Bearer " + idp.token(client_id=EXEMPT, aud="other-backend"),
+           "InvalidAudience")
 
 
 def test_userinfo_for_another_subject_is_refused(idp):
@@ -777,6 +812,14 @@ def test_audit_line(body, keys, expected):
     assert line.startswith("task from exempt client svc? ")
     assert expected in line
     assert "\n" not in line
+
+
+def test_http_issuer_outage_is_503(idp, service, caplog):
+    idp.jwks_status = 503
+    with caplog.at_level("INFO", logger="tes-validator"):
+        status, headers = call(service + "/auth", "Bearer " + idp.token())
+    assert status == 503 and "WWW-Authenticate" not in headers
+    assert "unavailable: JWKS fetch failed" in caplog.text
 
 
 def test_http_denied(idp, service, caplog):

@@ -12,7 +12,7 @@
 #   - Every other request is checked by the validator container first
 #     (auth_request). A valid OAuth2 access token is replaced by tesp-api's
 #     own Basic credentials.{% if basic %} Basic credentials go to tesp-api unchanged,
-#     which checks them.{% endif %} Anything else gets 401.
+#     which checks them, from the allowed sources only.{% endif %} Anything else gets 401.
 #
 # Holds tesp-api's Basic credentials (base64), so the file is root-only.
 {% else %}
@@ -45,13 +45,29 @@ map $tes_auth_kind $tes_upstream_authorization {
     bearer   "Basic {{ (tesp_basic_auth_user ~ ':' ~ tesp_basic_auth_password) | b64encode }}";
     default  $http_authorization;
 }
-{% else %}
+{% endif %}
 # The scheme, one space and credentials, as tesp-api (FastAPI) parses them.
 map $http_authorization $tes_has_basic {
     "~*^basic [^ ]"  1;
     default          0;
 }
-{% endif %}
+
+# Who may use Basic: tesp_basic_auth_sources, by the client's address (from
+# X-Real-IP, below). With no sources: everyone while tokens are off, no one
+# while they are on.
+geo $tes_basic_source {
+    default {{ 1 if (basic and not tesp_basic_auth_sources) else 0 }};
+{% for source in tesp_basic_auth_sources %}
+    {{ source }} 1;
+{% endfor %}
+}
+
+# Basic credentials from elsewhere: refused here, before tesp-api (or the
+# validator) sees them.
+map "$tes_has_basic:$tes_basic_source" $tes_basic_refused {
+    "1:0"    1;
+    default  0;
+}
 
 server {
     listen 8080;
@@ -60,6 +76,15 @@ server {
 
     # The host nginx in front enforces the request size limit.
     client_max_body_size 0;
+
+    # The client's address, as the host nginx saw it: it sets X-Real-IP to
+    # $remote_addr (SRC's reverse-proxy role). Only connections from Docker's
+    # ranges, where the host's connections to the published (127.0.0.1-only)
+    # port arrive from, may set it.
+{% for proxy in tesp_gateway_trusted_proxies %}
+    set_real_ip_from {{ proxy }};
+{% endfor %}
+    real_ip_header X-Real-IP;
 
     set $tesp_api_upstream http://tesp-api:8080;
     proxy_http_version 1.1;
@@ -105,11 +130,18 @@ server {
     }
 
 {% macro protected() %}
+        if ($tes_basic_refused) {
+            return 401;
+        }
         auth_request /_tes_auth;
         auth_request_set $tes_auth_kind $upstream_http_x_tes_auth_kind;
         auth_request_set $tes_auth_client $upstream_http_x_tes_auth_client;
         auth_request_set $tes_auth_exempt $upstream_http_x_tes_auth_exempt;
-        auth_request_set $tes_auth_challenge $upstream_http_www_authenticate;
+        auth_request_set $tes_auth_status $upstream_status;
+        # nginx answers any other status of the validator with 500. An
+        # error_page here replaces the server's, so 401 is repeated.
+        error_page 500 = @auth_error;
+        error_page 401 = @unauthorized;
         proxy_set_header Host $http_host;
         # Replaces every Authorization header the client sent.
         proxy_set_header Authorization $tes_upstream_authorization;
@@ -159,17 +191,32 @@ server {
         if ($tes_has_basic = 0) {
             return 401;
         }
+        if ($tes_basic_refused) {
+            return 401;
+        }
         proxy_set_header Host $http_host;
         proxy_pass $tesp_api_upstream;
     }
 {% endif %}
 
+{% if oauth %}
+    # The validator answers 503 when the issuer can't be reached: then the
+    # client gets 503, not a 401 that would look like bad credentials.
+    location @auth_error {
+        if ($tes_auth_status = 503) {
+            return 503 '{"detail": "Token check unavailable, try again later"}';
+        }
+        return 500 '{"detail": "Internal error"}';
+    }
+
+{% endif %}
     error_page 401 = @unauthorized;
     location @unauthorized {
 {% if oauth %}
-        add_header WWW-Authenticate $tes_auth_challenge always;
+        # The validator's Bearer challenge: nginx copies it from a 401 of the
+        # auth subrequest.
 {% endif %}
-{% if basic or not oauth %}
+{% if basic %}
         add_header WWW-Authenticate 'Basic realm="tes"' always;
 {% endif %}
         default_type application/json;

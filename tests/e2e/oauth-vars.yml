@@ -6,7 +6,12 @@ tesp_oauth_issuers:
   - issuer: https://idp.e2e.test:8443/
     allowed_client_ids: [e2e-portal, e2e-service]
     exempt_client_ids: [e2e-service]
+    # The test tokens' aud; required with an exempt client.
+    audiences: [tes]
     entitlements:
       any_of: ["urn:e2e:group:ECP_CLN"]
+# The runner reaches the gateway's published port from Docker's bridge, so
+# Basic is allowed from there; check-oauth.sh sends X-Real-IP to be elsewhere.
+tesp_basic_auth_sources: [172.16.0.0/12]
 # The tag e2e tasks of the exempt client name their user in.
 tesp_oauth_audit_tag_keys: [user_sub]

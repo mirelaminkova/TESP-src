@@ -212,55 +212,57 @@ tesp_service_info_updated_at: ""
 tesp_time_re: '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z'
 
 # Access to the TES API (issue #26; see "Access with LS Login" in the README).
-# HTTP Basic: the deploy-time password of tesp_basic_auth_user, checked by
-# tesp-api. The Nextflow component (nf-ga4gh) uses it.
-# The parameter as given; tasks/check-parameters.yml accepts only true/false,
-# so a typo can't silently switch Basic off.
-tesp_basic_auth_param: >-
-  {{ src_tes_basic_auth_enabled | default('') | string | trim | lower
-     | default('true', true) }}
-tesp_basic_auth_enabled: "{{ tesp_basic_auth_param == 'true' }}"
+# The comma-separated component parameters below take no spaces.
+#
 # OAuth2 access tokens (Bearer), checked by the gateway's validator container
-# against tesp_oauth_issuers. Off by default: then the gateway passes Basic
-# straight to tesp-api, as before.
+# against tesp_oauth_issuers. Off by default: then only Basic is used, as
+# before. tasks/check-parameters.yml accepts only true/false.
 tesp_oauth_param: >-
   {{ src_tes_oauth_enabled | default('') | string | trim | lower
      | default('false', true) }}
 tesp_oauth_enabled: "{{ tesp_oauth_param == 'true' }}"
+# HTTP Basic: the deploy-time password of tesp_basic_auth_user, checked by
+# tesp-api; for the co-located Nextflow component (nf-ga4gh). Addresses (IP
+# or CIDR) that may use it, from src_tes_basic_auth_sources, e.g. the
+# Nextflow workspace's address. Empty: from anywhere while tokens are off,
+# from nowhere (Basic off) while they are on, so a registered, token-protected
+# workspace takes tokens only.
+tesp_basic_auth_sources: >-
+  {{ (src_tes_basic_auth_sources | default('') | string).split(',')
+     | map('trim') | select | list }}
+tesp_basic_auth_enabled: >-
+  {{ not (tesp_oauth_enabled | bool) or tesp_basic_auth_sources | length > 0 }}
+# Where the gateway takes the client's address from X-Real-IP, which the host
+# nginx (SRC's reverse-proxy role) sets: Docker's address ranges, from which
+# the host's connections to the gateway's published port arrive.
+tesp_gateway_trusted_proxies: [172.16.0.0/12, 192.168.0.0/16]
 # Issuers whose access tokens are accepted. Each entry:
 #   issuer               exact "iss" (https); also where discovery is read,
 #                        unless discovery_url is set. Never taken from a token.
 #   allowed_client_ids   clients (token claim client_id) whose tokens count
 #   exempt_client_ids    clients that skip the entitlement check, e.g. a
 #                        service client that checked the user itself; must
-#                        also be in allowed_client_ids
-#   entitlements         any_of: exact values; prefix_any_of: prefixes; matched
-#                        against eduperson_entitlement from userinfo
+#                        also be in allowed_client_ids, and need audiences
+#   entitlements         any_of: exact values; prefix_any_of: prefixes ending
+#                        with ':'; matched against eduperson_entitlement from
+#                        userinfo
 #   require_entitlement  default true; false accepts every user of the clients
 #   algorithms           default [RS256]; RS*, PS* or ES* only
-#   audiences            optional; checked against "aud" when set
+#   audiences            checked against "aud" when set; required with
+#                        exempt_client_ids
 #   discovery_url, jwks_uri, userinfo_endpoint   optional overrides (https)
 # The default is one LS Login entry filled from the component parameters
 # src_tes_oauth_client_ids, src_tes_oauth_exempt_client_ids,
-# src_tes_oauth_entitlements and src_tes_oauth_entitlement_prefixes
-# (comma-separated). Every prefix must end with ':' (a group's subgroups).
-# Take the values from LS Login's userinfo for the client in question, not
-# from the token, and don't rely on the parent ECP_CLN value: whether it is
-# released depends on the client (elixir-cloud-aai/generic-issues#46). Client
-# ids: Krini in generic-issues#48, proTES's service client in #47. Written
-# out, an entry for ELIXIR On-Cloud looks like this:
-#
-# tesp_oauth_issuers:
-#   - issuer: https://login.aai.lifescience-ri.eu/oidc/
-#     allowed_client_ids: [<Krini client id, #48>, <proTES client id, #47>]
-#     exempt_client_ids: [<proTES client id, #47>]
-#     entitlements:
-#       # Compute users and admins (lifescience-ri.eu form, see #46).
-#       any_of:
-#         - urn:geant:lifescience-ri.eu:group:elixir:ECP_CLN:EOC-Compute#aai.lifescience-ri.eu
-#         - urn:geant:lifescience-ri.eu:group:elixir:ECP_CLN:ADMIN#aai.lifescience-ri.eu
-#     # Once LS Login's "aud" for these clients is known (see the README):
-#     # audiences: [<aud>]
+# src_tes_oauth_audiences, src_tes_oauth_entitlements and
+# src_tes_oauth_entitlement_prefixes. Client ids: Krini in
+# elixir-cloud-aai/generic-issues#48, proTES's service client in #47.
+# Entitlements come from LS Login's userinfo, per client; match the
+# subgroups, not the parent ECP_CLN value, whose release depends on the
+# client (generic-issues#46). Without src_tes_oauth_entitlements, the exact
+# values below (compute users and admins, lifescience-ri.eu form) apply.
+tesp_oauth_default_entitlements:
+  - urn:geant:lifescience-ri.eu:group:elixir:ECP_CLN:EOC-Compute#aai.lifescience-ri.eu
+  - urn:geant:lifescience-ri.eu:group:elixir:ECP_CLN:ADMIN#aai.lifescience-ri.eu
 tesp_oauth_issuers:
   - issuer: https://login.aai.lifescience-ri.eu/oidc/
     allowed_client_ids: >-
@@ -269,10 +271,14 @@ tesp_oauth_issuers:
     exempt_client_ids: >-
       {{ (src_tes_oauth_exempt_client_ids | default('') | string).split(',')
          | map('trim') | select | list }}
+    audiences: >-
+      {{ (src_tes_oauth_audiences | default('') | string).split(',')
+         | map('trim') | select | list }}
     entitlements:
       any_of: >-
         {{ (src_tes_oauth_entitlements | default('') | string).split(',')
-           | map('trim') | select | list }}
+           | map('trim') | select | list
+           or tesp_oauth_default_entitlements }}
       prefix_any_of: >-
         {{ (src_tes_oauth_entitlement_prefixes | default('') | string).split(',')
            | map('trim') | select | list }}

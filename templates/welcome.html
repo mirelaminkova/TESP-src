@@ -127,7 +127,7 @@
 {% endif %}
 {{ field('field-fqdn', 'Workspace FQDN', fqdn) }}
       </div>
-      <p id="auth-methods">Auth is {% if basic_on %}HTTP Basic{% endif %}{% if basic_on and oauth_on %} or {% endif %}{% if oauth_on %}an LS Login access token (see below){% endif %}.
+      <p id="auth-methods">Auth is {% if basic_on %}HTTP Basic{% if tesp_basic_auth_sources | default([]) %} (only from {{ tesp_basic_auth_sources | join(', ') }}){% endif %}{% endif %}{% if basic_on and oauth_on %} or {% endif %}{% if oauth_on %}an LS Login access token (see below){% endif %}.
         The API documentation (Swagger UI) is at
         <a href="{{ tes_url }}/swagger-ui.html">{{ tes_url }}/swagger-ui.html</a>.</p>
 

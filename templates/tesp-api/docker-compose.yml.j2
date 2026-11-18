@@ -73,6 +73,14 @@ services:
     container_name: tesp-validator
     restart: unless-stopped
     read_only: true
+    # The playbook waits for it (wait: true), so a validator that doesn't start
+    # fails the deploy instead of every request.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     cap_drop:
       - ALL
     security_opt:

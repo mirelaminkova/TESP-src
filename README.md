@@ -198,7 +198,9 @@ The import returns the values for a registration and stores nothing. Check them,
 
 A workspace can accept [LS Login](https://lifescience-ri.eu/ls-login/) access tokens besides, or instead of, the Basic password. That way a portal such as Krini calls the TES with the user's own token, without any shared password; so can command-line users with a token of an allowed client. proTES can call it with its own service token. Tokens are off by default.
 
-The TES API is then open to the internet for anyone with an accepted token: there is no SRAM in front of `/tes/`. The welcome page stays behind SRAM, because it shows the Basic password. Basic is meant for the co-located Nextflow component of the same CO.
+The TES API is then open to the internet for anyone with an accepted token: there is no SRAM in front of `/tes/`. With tokens on, **Basic is off unless you name the addresses that may use it** (`src_tes_basic_auth_sources`), for the co-located Nextflow component of the same CO. A workspace registered at the ELIXIR Cloud Registry runs token-only: every TES call except service info needs an LS Login token ([generic-issues#108](https://github.com/elixir-cloud-aai/generic-issues/issues/108)). The welcome page stays behind SRAM, because it shows the Basic password.
+
+The gateway takes the client's address from `X-Real-IP`, which the host nginx sets to the address it was connected from. It trusts that header only from Docker's address ranges (`tesp_gateway_trusted_proxies`), where the host's connections to the gateway arrive. The Nextflow workspace's address is the one it reaches this workspace's public name from.
 
 With tokens on, the gateway asks a small validator container (`files/tes-validator/`) about every request except service info and Swagger UI. The validator accepts a token only if all of these hold:
 
@@ -207,10 +209,10 @@ With tokens on, the gateway asks a small validator container (`files/tes-validat
 - its header says `typ: at+jwt`, so it is an access token and not an ID token (RFC 9068);
 - `exp` and `nbf` hold, with 60 s leeway by default (`tesp_oauth_leeway_seconds`);
 - its `client_id` is one of the allowed clients;
-- `aud` is one of the configured audiences, if any are configured;
+- `aud` is one of the configured audiences, if any are configured (required when there are exempt clients);
 - LS Login's userinfo response for the token lists a required entitlement in `eduperson_entitlement`: an exact value, or one starting with a configured prefix (which ends with `:`, so `…:ECP_CLN:` matches the subgroups of `ECP_CLN` but not `…:ECP_CLN_OTHER`). Exempt clients skip this check: a service such as proTES, which checks the user itself.
 
-Everything else gets `401`. For a valid token the gateway replaces the client's `Authorization` header with tesp-api's own Basic credentials, so tesp-api stays as it is. Basic credentials are passed to tesp-api unchanged, as before, unless Basic is switched off. The validator caches keys and userinfo answers (by a hash of the token, never the token; 5 minutes by default, `tesp_oauth_userinfo_cache_seconds`, and never past the token's expiry). Every call to LS Login has a timeout. When LS Login can't be reached, known keys stay in use, and a failed fetch is retried at most once a minute. The validator never logs tokens.
+Everything else gets `401`. If LS Login can't be reached and the token can't be checked, the answer is `503`, and the validator logs `unavailable: …`. For a valid token the gateway replaces the client's `Authorization` header with tesp-api's own Basic credentials, so tesp-api stays as it is. Basic credentials from an allowed address are passed to tesp-api unchanged, which checks them. The validator caches keys and userinfo answers (by a hash of the token, never the token; 5 minutes by default, `tesp_oauth_userinfo_cache_seconds`, and never past the token's expiry). Every call to LS Login has a timeout. When LS Login can't be reached, known keys stay in use, and a failed fetch is retried at most once a minute. The validator never logs tokens.
 
 **Audit of service clients.** When an exempt client such as proTES submits a task, the user it acts for is named only in the task's `tags` ([proTES#254](https://github.com/elixir-cloud-aai/proTES/issues/254), [generic-issues#108](https://github.com/elixir-cloud-aai/generic-issues/issues/108)). The gateway sends a copy of every task submission to the validator. For exempt clients only, the validator logs the client and the tags listed in `tesp_oauth_audit_tag_keys`, and nothing else of the task:
 
@@ -218,27 +220,29 @@ Everything else gets `401`. For a valid token the gateway replaces the client's 
 audit: task from exempt client <proTES client id> for <tag>=<user>
 ```
 
-Which tags proTES sets is not decided yet, so the list is empty by default. The log then names only the tags such tasks carry, without their values; set the list once the tags are agreed.
+**Known gap:** which tags proTES sets is not decided yet, so the list is empty by default and the end user behind proTES is **not** logged. The log then names only the tags such tasks carry, without their values. Set the list once the tags are agreed in proTES#254.
 
 > [!WARNING]
 > **No per-user task isolation.** tesp-api sees every request as its one Basic user. Everyone who is let in can list, read and cancel every task on the workspace, including other users'. That is fine for a demonstrator; don't put secrets in tasks.
 
 Other limits to know about:
 
-- **Basic bypasses the entitlement check.** Every CO member sees the Basic password on the welcome page. With Basic on, the entitlement check limits only token users. Switch Basic off (`src_tes_basic_auth_enabled = false`) where only token users should get in.
-- **Audience.** Without `audiences`, any LS Login access token of an allowed client is accepted, including one that the client obtained for another service. Such a service could replay the token here. Set `audiences` in `tesp_oauth_issuers` once LS Login's `aud` value for these clients is known.
+- **Basic bypasses the entitlement check.** Every CO member sees the Basic password on the welcome page. From the addresses in `src_tes_basic_auth_sources`, the entitlement check limits only token users. Leave the parameter empty where only token users should get in.
+- **Audience.** Without `audiences`, any LS Login access token of an allowed client is accepted, including one that the client obtained for another service, which could replay it here. Set `src_tes_oauth_audiences` once LS Login's `aud` value for these clients is known. It is required for exempt clients: a proTES service token for another backend would otherwise work here too, without any user check. Without an agreed audience, configure no exempt client.
+- **Entitlement prefixes** admit every subgroup under them, including ones created later. Prefer the exact values; the default is the two below.
 - **Revocation.** Tokens aren't introspected, so a revoked token works until it expires. A removed entitlement keeps working for up to the userinfo cache time.
 
-Component parameters (all optional):
+Component parameters (all optional). Lists are comma-separated **without spaces**: depending on how SRC passes parameters, a space can split a value.
 
 | Parameter | Default | Meaning |
 | --- | --- | --- |
 | `src_tes_oauth_enabled` | `false` | accept LS Login access tokens |
-| `src_tes_basic_auth_enabled` | `true` | accept the Basic password (the Nextflow component uses it); not both off |
-| `src_tes_oauth_client_ids` | empty | comma-separated client ids whose tokens count; required with tokens on |
-| `src_tes_oauth_exempt_client_ids` | empty | clients that skip the entitlement check; must also be allowed |
-| `src_tes_oauth_entitlements` | empty | comma-separated `eduperson_entitlement` values, any one of which is enough |
-| `src_tes_oauth_entitlement_prefixes` | empty | comma-separated prefixes ending with `:`, for subgroups |
+| `src_tes_basic_auth_sources` | empty | IPs or CIDRs that may use the Basic password, e.g. the Nextflow workspace's address. Empty: anywhere with tokens off, nowhere with tokens on |
+| `src_tes_oauth_client_ids` | empty | client ids whose tokens count (Krini: generic-issues#48); required with tokens on |
+| `src_tes_oauth_exempt_client_ids` | empty | service clients that skip the entitlement check (proTES: #47); must also be allowed, and need audiences |
+| `src_tes_oauth_audiences` | empty | values of the token's `aud` to accept; required with exempt clients |
+| `src_tes_oauth_entitlements` | EOC-Compute and ADMIN (below) | `eduperson_entitlement` values, any one of which is enough |
+| `src_tes_oauth_entitlement_prefixes` | empty | prefixes ending with `:`, for subgroups |
 
 Take the entitlement values from a real userinfo response of a member for that client. Don't guess them. From [generic-issues#46](https://github.com/elixir-cloud-aai/generic-issues/issues/46):
 
@@ -247,7 +251,7 @@ Take the entitlement values from a real userinfo response of a member for that c
 - match the subgroups you need, for example `urn:geant:lifescience-ri.eu:group:elixir:ECP_CLN:EOC-Compute#aai.lifescience-ri.eu` for compute users and `…:ECP_CLN:ADMIN#aai.lifescience-ri.eu` for admins, or use a prefix;
 - each value also arrives in an `…elixir-europe.org…#perun.elixir-czech.cz` form, so match the `lifescience-ri.eu` form, or list both forms explicitly.
 
-Krini's client id is recorded in [generic-issues#48](https://github.com/elixir-cloud-aai/generic-issues/issues/48), and proTES's service client id in [#47](https://github.com/elixir-cloud-aai/generic-issues/issues/47); proTES belongs in `src_tes_oauth_exempt_client_ids` too. With tokens on, the playbook stops before installing anything unless there is at least one allowed client and one entitlement (or prefix). The parameters fill one LS Login entry in `tesp_oauth_issuers` in `group_vars/all.yml`. For other issuers, audiences or algorithms, set that list directly; its comment describes each field. For a test issuer with its own CA, point `tesp_oauth_ca_bundle` at a CA bundle on the workspace that includes it, for example `/etc/ssl/certs/ca-certificates.crt` after adding the CA to the system. The bundle replaces the validator's own trust store, so it must also hold the public CAs if LS Login stays configured.
+Krini's client id is recorded in [generic-issues#48](https://github.com/elixir-cloud-aai/generic-issues/issues/48), and proTES's service client id in [#47](https://github.com/elixir-cloud-aai/generic-issues/issues/47); proTES belongs in `src_tes_oauth_exempt_client_ids` too. With tokens on, the playbook stops before installing anything unless there is at least one allowed client, and audiences if there are exempt clients. Without `src_tes_oauth_entitlements`, these two exact values apply: `urn:geant:lifescience-ri.eu:group:elixir:ECP_CLN:EOC-Compute#aai.lifescience-ri.eu` and `urn:geant:lifescience-ri.eu:group:elixir:ECP_CLN:ADMIN#aai.lifescience-ri.eu` (`tesp_oauth_default_entitlements`). After the deploy, the playbook waits until the validator answers its health check. The parameters fill one LS Login entry in `tesp_oauth_issuers` in `group_vars/all.yml`. For other issuers, audiences or algorithms, set that list directly; its comment describes each field. For a test issuer with its own CA, point `tesp_oauth_ca_bundle` at a CA bundle on the workspace that includes it, for example `/etc/ssl/certs/ca-certificates.crt` after adding the CA to the system. The bundle replaces the validator's own trust store, so it must also hold the public CAs if LS Login stays configured.
 
 Call the TES with a token:
 
@@ -265,7 +269,7 @@ curl -H "Authorization: Bearer $TOKEN" https://<workspace-fqdn>/tes/v1/tasks
 4. Get an access token from the client, for example with its device-code flow, and put it in `$TOKEN` without echoing it.
 5. `curl -H "Authorization: Bearer $TOKEN" https://<workspace-fqdn>/tes/v1/tasks` gives `200`. Submit a task as in [Run a task](#4-run-a-task), with `-H "Authorization: Bearer $TOKEN"` instead of `-u`.
 6. With an account without the entitlement, or a token of another client, the same call gives `401`; `docker logs tesp-validator` on the workspace says which check failed.
-7. If Basic is still on, check that the Basic password still works, for example from the Nextflow component.
+7. If `src_tes_basic_auth_sources` is set, check that the Basic password works from the Nextflow component, and that `curl -i -u 'tes:<password>' https://<workspace-fqdn>/tes/v1/tasks` from anywhere else gives `401`.
 
 ## Resource limits
 

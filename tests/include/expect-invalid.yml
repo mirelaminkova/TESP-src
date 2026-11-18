@@ -28,7 +28,7 @@
         tesp_oauth_enabled: "{{ case.vars.tesp_oauth_enabled | default(false) }}"
         tesp_oauth_issuers: "{{ case.vars.tesp_oauth_issuers | default(valid_issuers) }}"
         src_tes_oauth_enabled: "{{ case.vars.src_tes_oauth_enabled | default('') }}"
-        src_tes_basic_auth_enabled: "{{ case.vars.src_tes_basic_auth_enabled | default('') }}"
+        src_tes_basic_auth_sources: "{{ case.vars.src_tes_basic_auth_sources | default('') }}"
         tesp_oauth_audit_tag_keys: "{{ case.vars.tesp_oauth_audit_tag_keys | default([]) }}"
         tesp_oauth_ca_bundle: "{{ case.vars.tesp_oauth_ca_bundle | default('') }}"
 

@@ -18,12 +18,13 @@ parser.add_argument("--sub", default="entitled-user")
 parser.add_argument("--client", default="e2e-portal")
 parser.add_argument("--typ", default="at+jwt")
 parser.add_argument("--exp-in", type=int, default=300)
+parser.add_argument("--aud", default="tes")
 parser.add_argument("--other-key", action="store_true",
                     help="sign with a key the issuer doesn't publish")
 args = parser.parse_args()
 now = int(time.time())
 key = (args.keys / ("other.key" if args.other_key else "signing.key")).read_bytes()
 print(jwt.encode(
-    {"iss": ISSUER, "sub": args.sub, "client_id": args.client, "aud": "tes",
+    {"iss": ISSUER, "sub": args.sub, "client_id": args.client, "aud": args.aud,
      "iat": now, "exp": now + args.exp_in, "scope": "openid"},
     key, algorithm="RS256", headers={"typ": args.typ, "kid": "e2e-1"}))

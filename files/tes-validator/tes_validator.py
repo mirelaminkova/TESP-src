@@ -66,8 +66,24 @@ class Denied(Exception):
     """The request is not authorised. The message is logged, never sent."""
 
 
+class Unavailable(Denied):
+    """The issuer can't be reached, so the token can't be checked (503)."""
+
+
 class FetchError(Exception):
-    """An identity provider endpoint could not be read."""
+    """An identity provider endpoint could not be read.
+
+    status is the HTTP status the endpoint answered with, None if it didn't.
+    """
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
+
+    @property
+    def unavailable(self) -> bool:
+        """The endpoint is down or broken, rather than refusing the token."""
+        return self.status is None or self.status >= 500
 
 
 def _https_only(url: str, what: str, allow_http: bool) -> str:
@@ -130,6 +146,12 @@ class IssuerConfig:
             raise ValueError(
                 f"{issuer}: exempt_client_ids must also be in allowed_client_ids"
             )
+        audiences = _string_list(d.get("audiences"), "audiences")
+        # Exempt (service) clients skip the user checks, so their tokens must
+        # be bound to this service: one meant for another backend of the same
+        # client must not work here.
+        if exempt and not audiences:
+            raise ValueError(f"{issuer}: exempt_client_ids need audiences")
         ents = d.get("entitlements") or {}
         any_of = frozenset(_string_list(ents.get("any_of"), "entitlements.any_of"))
         prefixes = _string_list(
@@ -160,7 +182,7 @@ class IssuerConfig:
             entitlements_any_of=any_of,
             entitlements_prefix_any_of=prefixes,
             require_entitlement=require,
-            audiences=_string_list(d.get("audiences"), "audiences"),
+            audiences=audiences,
             jwks_uri=_https_only(jwks_uri, "jwks_uri", allow_http)
             if jwks_uri else None,
             userinfo_endpoint=_https_only(userinfo, "userinfo_endpoint", allow_http)
@@ -236,7 +258,9 @@ def fetch_json(url: str, timeout: float, token: str | None = None) -> Any:
             body = response.read(MAX_RESPONSE_BYTES + 1)
     except (urllib.error.URLError, OSError, ValueError) as e:
         # HTTPError is a URLError; its message has the status, not the token.
-        raise FetchError(f"{url}: {type(e).__name__} {getattr(e, 'code', '')}") from None
+        status = getattr(e, "code", None)
+        raise FetchError(f"{url}: {type(e).__name__} {status or ''}",
+                         status if isinstance(status, int) else None) from None
     if len(body) > MAX_RESPONSE_BYTES:
         raise FetchError(f"{url}: response too large")
     try:
@@ -396,7 +420,7 @@ class Validator:
                 doc = self._fetch(issuer.discovery_url,
                                   self.config.http_timeout_seconds)
             except FetchError as e:
-                raise Denied(f"discovery failed: {e}") from None
+                raise Unavailable(f"discovery failed: {e}") from None
             if not isinstance(doc, dict) or doc.get("issuer") != issuer.issuer:
                 raise Denied("discovery document is for another issuer")
             jwks_uri = jwks_uri or doc.get("jwks_uri")
@@ -463,19 +487,19 @@ class Validator:
             except (Denied, FetchError) as e:
                 log.warning("JWKS refresh of %s failed: %s", issuer.issuer, e)
                 if not state.keys:
-                    raise Denied(f"JWKS fetch failed: {e}") from None
+                    raise Unavailable(f"JWKS fetch failed: {e}") from None
             else:
                 state.keys = keys
                 state.fetched_at = now
         elif state.fetched_at is None:
             # The first fetch failed and the backoff holds.
-            raise Denied("JWKS fetch failed recently; retrying after "
+            raise Unavailable("JWKS fetch failed recently; retrying after "
                          f"{self.config.jwks_min_refresh_seconds}s")
         # Keys the issuer couldn't confirm for too long are dropped: one it
         # revoked must not stay valid through a long outage.
         if now - state.fetched_at >= self.config.jwks_max_stale_seconds:
             state.keys = {}
-            raise Denied("JWKS too old and the issuer can't be reached")
+            raise Unavailable("JWKS too old and the issuer can't be reached")
         return state.keys.get(kid)
 
     def _parse_jwks(self, jwks: Any) -> dict[str | None, Any]:
@@ -508,7 +532,9 @@ class Validator:
             info = self._fetch(endpoint, self.config.http_timeout_seconds,
                                token=token)
         except FetchError as e:
-            raise Denied(f"userinfo failed: {e}") from None
+            # A 4xx: the issuer refuses this token (e.g. revoked).
+            error = Unavailable if e.unavailable else Denied
+            raise error(f"userinfo failed: {e}") from None
         if not isinstance(info, dict) or info.get("sub") != claims["sub"]:
             raise Denied("userinfo is for another subject")
         values = info.get("eduperson_entitlement") or []
@@ -563,6 +589,12 @@ class Handler(BaseHTTPRequestHandler):
         authorization = self.headers.get("Authorization")
         try:
             decision = self.validator.check(authorization)
+        except Unavailable as e:
+            # Not the client's fault: 503, which nginx turns into its own
+            # answer (see gateway.conf).
+            log.warning("unavailable: %s", e)
+            self._send(503)
+            return
         except Denied as e:
             log.info("denied: %s", e)
             self._send(401, {"WWW-Authenticate": _challenge(authorization)})

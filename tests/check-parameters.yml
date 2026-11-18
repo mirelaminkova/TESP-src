@@ -71,6 +71,7 @@
       issuer: https://login.example.org/oidc/
       allowed_client_ids: [portal, cli, service]
       exempt_client_ids: [service]
+      audiences: [tes.example.org]
       entitlements: {any_of: ['urn:example:group:ECP_CLN#example.org']}
     valid_issuers: ["{{ valid_issuer }}"]
     oauth_cases:
@@ -80,9 +81,18 @@
       - why: src_tes_oauth_enabled that is not a boolean
         expect: Invalid access settings
         vars: {src_tes_oauth_enabled: maybe}
-      - why: a typo in src_tes_basic_auth_enabled
+      - why: a Basic source that is a host name
         expect: Invalid access settings
-        vars: {src_tes_basic_auth_enabled: flase}
+        vars: {src_tes_basic_auth_sources: 'nextflow.example.org'}
+      - why: Basic sources with a space (as SRC would split them)
+        expect: Invalid access settings
+        vars: {src_tes_basic_auth_sources: '10.0.0.1 10.0.0.2'}
+      - why: an exempt client without audiences
+        expect: Invalid token issuer
+        vars:
+          tesp_oauth_enabled: true
+          tesp_oauth_issuers:
+            - "{{ valid_issuer | combine({'audiences': []}) }}"
       - why: audit tag keys given as a string
         expect: Invalid token settings
         vars: {tesp_oauth_enabled: true, tesp_oauth_audit_tag_keys: user_sub}
@@ -203,18 +213,21 @@
       ansible.builtin.assert:
         that:
           - tesp_oauth_enabled is true
-          - tesp_basic_auth_enabled is false
+          - tesp_basic_auth_enabled is true
+          - tesp_basic_auth_sources == ['145.38.1.2', '10.0.0.0/8']
           - tesp_oauth_issuers | length == 1
           - issuer.issuer == 'https://login.aai.lifescience-ri.eu/oidc/'
           - issuer.allowed_client_ids == ['portal', 'cli', 'service']
           - issuer.exempt_client_ids == ['service']
+          - issuer.audiences == ['tes.example.org']
           - issuer.entitlements.any_of == ['urn:a', 'urn:b']
           - issuer.entitlements.prefix_any_of == ['urn:a:']
       vars:
         src_tes_oauth_enabled: 'True'
-        src_tes_basic_auth_enabled: ' false '
+        src_tes_basic_auth_sources: '145.38.1.2,10.0.0.0/8'
         src_tes_oauth_client_ids: ' portal, cli,service ,'
         src_tes_oauth_exempt_client_ids: service
+        src_tes_oauth_audiences: tes.example.org
         src_tes_oauth_entitlements: 'urn:a,urn:b'
         src_tes_oauth_entitlement_prefixes: 'urn:a:'
         issuer: "{{ tesp_oauth_issuers[0] }}"
@@ -225,7 +238,27 @@
         src_tes_oauth_enabled: 'true'
         src_tes_oauth_client_ids: portal,cli,service
         src_tes_oauth_exempt_client_ids: service
+        src_tes_oauth_audiences: tes.example.org
         src_tes_oauth_entitlement_prefixes: 'urn:a:'
+        src_tes_basic_auth_sources: '145.38.1.2,2001:610:108::/48'
+
+    # Issue #26 audit: the registered workspace takes tokens only.
+    - name: With tokens on and no Basic sources, Basic is off; defaults apply
+      ansible.builtin.assert:
+        that:
+          - tesp_basic_auth_enabled is false
+          - tesp_oauth_issuers[0].exempt_client_ids == []
+          - tesp_oauth_issuers[0].entitlements.any_of == tesp_oauth_default_entitlements
+          - tesp_oauth_default_entitlements is not search('ECP_CLN#')
+      vars:
+        src_tes_oauth_enabled: 'true'
+        src_tes_oauth_client_ids: portal
+
+    - name: With tokens off, Basic is on from anywhere
+      ansible.builtin.assert:
+        that:
+          - tesp_basic_auth_enabled is true
+          - tesp_basic_auth_sources == []
 
     - name: An issuer without entitlements passes when they are switched off
       ansible.builtin.include_tasks: ../tasks/check-parameters.yml

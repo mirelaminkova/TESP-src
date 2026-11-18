@@ -99,7 +99,14 @@ expect "expired token" 401 -H "$(bearer "$(mint --exp-in -600)")" "$base/v1/task
 expect "ID token (typ JWT)" 401 -H "$(bearer "$(mint --typ JWT)")" "$base/v1/tasks"
 expect "signed with another key" 401 -H "$(bearer "$(mint --other-key)")" "$base/v1/tasks"
 
-expect "Basic still works" 200 -u "$user:$password" "$base/v1/tasks"
+expect "Basic still works from an allowed source" 200 -u "$user:$password" "$base/v1/tasks"
+# The runner's connection comes from a Docker range the gateway trusts for
+# X-Real-IP (in production only the host nginx sets it).
+expect "Basic from a source not allowed" 401 -u "$user:$password" \
+    -H 'X-Real-IP: 203.0.113.9' "$base/v1/tasks"
+expect "exempt client's token for another service" 401 \
+    -H "$(bearer "$(mint --client e2e-service --sub service-account --aud other-backend)")" \
+    "$base/v1/tasks"
 expect "wrong Basic password" 401 -u "$user:wrong-$password" "$base/v1/tasks"
 # Two Authorization headers: a token of a user without the entitlement, and
 # Basic credentials. nginx rejects the request (400) or the validator sees
