@@ -34,6 +34,17 @@ slurm_config:
   # one node) has. With the default NO, sbatch accepts it and it stays pending
   # forever as (PartitionConfig). Oversize --mem is rejected either way.
   EnforcePartLimits: ALL
+  # Run-time limits (issue #13). No cgroups: SLURM 21.08, the version in
+  # Ubuntu 22.04, has only a cgroup v1 plugin, and SRC's 22.04 image mounts
+  # cgroup v2 only, so task/cgroup or proctrack/cgroup would stop slurmd.
+  # No task/affinity either: it binds to logical CPU numbers and fails the
+  # job (and drains the node) where the node's CPUs aren't 0..N-1.
+  # Sample each job's memory every 10 s and kill a job that uses more than
+  # its --mem (ram_gb, or DefMemPerCPU per CPU without it). Polling, not a
+  # hard limit: a task that grows faster than that can still reach the node.
+  JobAcctGatherType: jobacct_gather/linux
+  JobAcctGatherFrequency: task=10
+  JobAcctGatherParams: OverMemoryKill
 # Online CPUs, as slurmd counts them; more than slurmd finds drains the node.
 tesp_slurm_cpus: >-
   {{ [ansible_facts['processor_vcpus'] | int,

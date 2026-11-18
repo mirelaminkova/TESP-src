@@ -30,6 +30,9 @@
 #   ram-too-big   ram_gb 4096: the same. SLURM rejected oversize memory at
 #                 submission even before #21, so this case guards the memory
 #                 path, not the #21 fix.
+#   ram-within    ram_gb 1, holds 256 MiB for 30 s: must reach COMPLETE
+#   ram-overuse   ram_gb 0.5, holds 1.5 GiB for 90 s: must be killed
+#                 (EXECUTOR_ERROR/SYSTEM_ERROR), not COMPLETE (issue #13)
 # tesp-api reports no reason for a rejection yet (mirelaminkova/tesp-api#66);
 # on the workspace, `sacct` and slurmctld's log show it.
 #
@@ -46,7 +49,10 @@ TIMEOUT=${TIMEOUT:-240}
 REJECT_SECONDS=${REJECT_SECONDS:-60}
 read -r -a curl_opts <<<"${CURL_OPTS:-}"
 
-ALL_CASES=(fits cpu-too-big ram-too-big)
+ALL_CASES=(fits cpu-too-big ram-too-big ram-within ram-overuse)
+# hog <MiB> <seconds>: a command holding that much memory, every page touched
+HOG_IMAGE=python:3.13-alpine
+hog() { echo "python3 -c 'import time; b = b\"x\" * ($1 << 20); time.sleep($2); print(\"held $1 MiB\")'"; }
 FAILED_STATES=" EXECUTOR_ERROR SYSTEM_ERROR "
 failures=0
 control_ok=
@@ -133,6 +139,14 @@ expect_complete() {  # <case>
     if [ "$STATE" = COMPLETE ]; then pass "$1"; else fail "$1 (expected COMPLETE)"; fi
 }
 
+# The task must fail (at any time). Gated on the control like expect_rejected.
+expect_failed() {  # <case>
+    if [ -z "$control_ok" ]; then
+        fail "$1 (inconclusive: the control task 'fits' didn't complete)"
+    elif [[ "$FAILED_STATES" == *" $STATE "* ]]; then pass "$1"
+    else fail "$1 (expected EXECUTOR_ERROR or SYSTEM_ERROR)"; fi
+}
+
 # The task must fail, and fast enough to be a rejection at submission. Without
 # a passing control (fits) a failure proves nothing about SLURM.
 expect_rejected() {  # <case>
@@ -161,6 +175,16 @@ case_cpu-too-big() {
 case_ram-too-big() {
     run ram-too-big "$(task null 4096 alpine:3.20 'echo should not run')"
     expect_rejected ram-too-big
+}
+
+case_ram-within() {
+    run ram-within "$(task 1 1 "$HOG_IMAGE" "$(hog 256 30)")"
+    expect_complete ram-within
+}
+
+case_ram-overuse() {
+    run ram-overuse "$(task 1 0.5 "$HOG_IMAGE" "$(hog 1536 90)")"
+    expect_failed ram-overuse
 }
 
 cases=("$@")
