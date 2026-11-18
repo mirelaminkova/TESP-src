@@ -119,6 +119,29 @@ case $got in
     *) echo "FAIL two Authorization headers: got $got" >&2; fail=1 ;;
 esac
 
+# CORS for a browser portal (Krini): only the configured origin.
+portal=https://portal.e2e.test
+before=$(docker logs tesp-validator 2>&1 | wc -l)
+expect "CORS preflight of the portal" 204 -X OPTIONS -H "Origin: $portal" \
+    -H 'Access-Control-Request-Method: POST' \
+    -H 'Access-Control-Request-Headers: authorization,content-type' "$base/v1/tasks"
+for h in "Access-Control-Allow-Origin: $portal" 'Access-Control-Allow-Methods: GET, POST, OPTIONS' \
+         'Access-Control-Allow-Headers: authorization, content-type' 'Vary: Origin'; do
+    grep -qiF "$h" "$tmp/headers" || { echo "FAIL preflight lacks $h" >&2; fail=1; }
+done
+grep -qi '^Access-Control-Allow-Credentials' "$tmp/headers" && { echo "FAIL credentials allowed" >&2; fail=1; }
+if [ "$(docker logs tesp-validator 2>&1 | wc -l)" != "$before" ]; then
+    echo "FAIL the preflight reached the validator" >&2
+    fail=1
+fi
+expect "CORS preflight of another origin" 401 -X OPTIONS -H 'Origin: https://evil.e2e.test' \
+    -H 'Access-Control-Request-Method: POST' "$base/v1/tasks"
+grep -qi '^Access-Control-Allow-Origin' "$tmp/headers" && { echo "FAIL another origin got CORS headers" >&2; fail=1; }
+expect "token call from the portal" 200 -H "Origin: $portal" -H "$(bearer "$(mint)")" "$base/v1/tasks"
+grep -qiF "Access-Control-Allow-Origin: $portal" "$tmp/headers" || { echo "FAIL no CORS header on 200" >&2; fail=1; }
+expect "401 for the portal" 401 -H "Origin: $portal" "$base/v1/tasks"
+grep -qiF "Access-Control-Allow-Origin: $portal" "$tmp/headers" || { echo "FAIL no CORS header on 401" >&2; fail=1; }
+
 # No token may end up in the logs.
 docker logs tesp-validator > "$tmp/validator.log" 2>&1
 docker logs tesp-gateway > "$tmp/gateway.log" 2>&1

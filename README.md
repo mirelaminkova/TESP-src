@@ -243,6 +243,7 @@ Component parameters (all optional). Lists are comma-separated **without spaces*
 | `src_tes_oauth_audiences` | empty | values of the token's `aud` to accept; required with exempt clients |
 | `src_tes_oauth_entitlements` | EOC-Compute and ADMIN (below) | `eduperson_entitlement` values, any one of which is enough |
 | `src_tes_oauth_entitlement_prefixes` | empty | prefixes ending with `:`, for subgroups |
+| `src_tes_cors_origins` | empty | browser origins (`https://host[:port]`) that may call the API, e.g. `https://krini.rahtiapp.fi` |
 
 Take the entitlement values from a real userinfo response of a member for that client. Don't guess them. From [generic-issues#46](https://github.com/elixir-cloud-aai/generic-issues/issues/46):
 
@@ -252,6 +253,8 @@ Take the entitlement values from a real userinfo response of a member for that c
 - each value also arrives in an `…elixir-europe.org…#perun.elixir-czech.cz` form, so match the `lifescience-ri.eu` form, or list both forms explicitly.
 
 Krini's client id is recorded in [generic-issues#48](https://github.com/elixir-cloud-aai/generic-issues/issues/48), and proTES's service client id in [#47](https://github.com/elixir-cloud-aai/generic-issues/issues/47); proTES belongs in `src_tes_oauth_exempt_client_ids` too. With tokens on, the playbook stops before installing anything unless there is at least one allowed client, and audiences if there are exempt clients. Without `src_tes_oauth_entitlements`, these two exact values apply: `urn:geant:lifescience-ri.eu:group:elixir:ECP_CLN:EOC-Compute#aai.lifescience-ri.eu` and `urn:geant:lifescience-ri.eu:group:elixir:ECP_CLN:ADMIN#aai.lifescience-ri.eu` (`tesp_oauth_default_entitlements`). After the deploy, the playbook waits until the validator answers its health check. The parameters fill one LS Login entry in `tesp_oauth_issuers` in `group_vars/all.yml`. For other issuers, audiences or algorithms, set that list directly; its comment describes each field. For a test issuer with its own CA, point `tesp_oauth_ca_bundle` at a CA bundle on the workspace that includes it, for example `/etc/ssl/certs/ca-certificates.crt` after adding the CA to the system. The bundle replaces the validator's own trust store, so it must also hold the public CAs if LS Login stays configured.
+
+**Browser portals (CORS).** Krini's Cloud Components call the TES from the user's browser, so every call is cross-origin. List the portal's exact origins in `src_tes_cors_origins` (comma-separated, no spaces), today `https://krini.rahtiapp.fi`; the production address comes with [generic-issues#55](https://github.com/elixir-cloud-aai/generic-issues/issues/55). For those origins only, the gateway answers the browser's `OPTIONS` preflight itself (`204`, without auth) and adds `Access-Control-Allow-Origin` to every answer, errors included, so the portal can show them. It never sends a wildcard or `Access-Control-Allow-Credentials` (Krini sends a Bearer header, not cookies). Empty, the default: no CORS headers, as before.
 
 Call the TES with a token:
 

@@ -232,6 +232,15 @@ tesp_basic_auth_sources: >-
      | map('trim') | select | list }}
 tesp_basic_auth_enabled: >-
   {{ not (tesp_oauth_enabled | bool) or tesp_basic_auth_sources | length > 0 }}
+# Browser origins (https://host[:port]) that may call the TES API across
+# origins (CORS), from src_tes_cors_origins: Krini's Cloud Components call it
+# from the user's browser, e.g. https://krini.rahtiapp.fi (the production
+# address comes with elixir-cloud-aai/generic-issues#55). Empty: no CORS
+# headers. Exact origins only, never a wildcard, no credentials (Krini sends
+# a Bearer header, not cookies).
+tesp_cors_origins: >-
+  {{ (src_tes_cors_origins | default('') | string).split(',')
+     | map('trim') | select | list }}
 # Where the gateway takes the client's address from X-Real-IP, which the host
 # nginx (SRC's reverse-proxy role) sets: Docker's address ranges, from which
 # the host's connections to the gateway's published port arrive.

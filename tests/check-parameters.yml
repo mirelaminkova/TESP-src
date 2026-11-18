@@ -160,6 +160,23 @@
           tesp_oauth_enabled: true
           tesp_oauth_issuers:
             - "{{ valid_issuer | combine({'allowed_client_ids': 'portal'}) }}"
+    # Krini calls the TES from the browser: exact https origins only.
+    cors_cases:
+      - why: a CORS wildcard
+        expect: Invalid CORS origins
+        vars: {src_tes_cors_origins: '*'}
+      - why: an http CORS origin
+        expect: Invalid CORS origins
+        vars: {src_tes_cors_origins: 'http://krini.example.org'}
+      - why: a CORS origin with a path
+        expect: Invalid CORS origins
+        vars: {src_tes_cors_origins: 'https://krini.example.org/app'}
+      - why: a CORS origin with a trailing slash
+        expect: Invalid CORS origins
+        vars: {src_tes_cors_origins: 'https://krini.example.org/'}
+      - why: CORS origins with a space
+        expect: Invalid CORS origins
+        vars: {src_tes_cors_origins: 'https://a.example.org https://b.example.org'}
     other_cases:
       - why: an S3 endpoint without a scheme
         expect: Invalid S3 component parameters
@@ -254,6 +271,18 @@
         src_tes_oauth_enabled: 'true'
         src_tes_oauth_client_ids: portal
 
+    - name: CORS origins from the component parameter pass the checks
+      ansible.builtin.include_tasks: ../tasks/check-parameters.yml
+      vars:
+        src_tes_cors_origins: https://krini.rahtiapp.fi,https://krini.example.org:8443
+
+    - name: CORS origins are parsed
+      ansible.builtin.assert:
+        that:
+          - tesp_cors_origins == ['https://krini.rahtiapp.fi', 'https://krini.example.org:8443']
+      vars:
+        src_tes_cors_origins: https://krini.rahtiapp.fi,https://krini.example.org:8443
+
     - name: With tokens off, Basic is on from anywhere
       ansible.builtin.assert:
         that:
@@ -270,7 +299,7 @@
 
     - name: Each invalid case is rejected by its check
       ansible.builtin.include_tasks: include/expect-invalid.yml
-      loop: "{{ service_info_cases + oauth_cases + other_cases }}"
+      loop: "{{ service_info_cases + oauth_cases + cors_cases + other_cases }}"
       loop_control:
         loop_var: case
         label: "{{ case.why }}"

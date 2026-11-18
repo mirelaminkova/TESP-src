@@ -444,6 +444,8 @@
         - name: With OAuth off there is no validator
           ansible.builtin.assert:
             that:
+              # No CORS origins configured: no CORS headers.
+              - "'Access-Control' not in files['gateway.conf']"
               - "'validator' not in compose.services"
               - "'auth_request' not in files['gateway.conf']"
               - "'id=\"oauth\"' not in files['welcome.html']"
@@ -475,6 +477,7 @@
             src_tes_oauth_entitlements: urn:example:ECP_CLN:EOC-Compute#example.org
             # Basic only from the Nextflow workspace.
             src_tes_basic_auth_sources: 145.38.1.2
+            src_tes_cors_origins: https://krini.rahtiapp.fi
 
         - name: Tokens are checked by the validator; tesp-api gets Basic
           ansible.builtin.assert:
@@ -510,6 +513,21 @@
               - "'real_ip_header X-Real-IP;' in conf"
               - "'set_real_ip_from 172.16.0.0/12;' in conf"
               - "'geo $tes_basic_source {' in conf"
+              # CORS for Krini (browser): the exact origin only, echoed;
+              # preflights answered before any auth; headers on errors too.
+              - "'\"https://krini.rahtiapp.fi\" $http_origin;' in conf"
+              - "'Access-Control-Allow-Origin $tes_cors_origin always;' in conf"
+              - "'Access-Control-Allow-Credentials' not in conf"
+              - conf is not search('Allow-Origin[^;]*\\*')
+              - "'if ($tes_cors_preflight) {' in conf"
+              - >-
+                conf.index('if ($tes_cors_preflight) {')
+                < conf.index('auth_request /_tes_auth;')
+              # Every client-facing location sends them (add_header in a
+              # location replaces the server's): service-info, the public
+              # docs, /, /v1/tasks and the two error locations. Not the
+              # internal /_tes_auth and /_tes_audit, nor the rewrite.
+              - conf.count('add_header Access-Control-Allow-Origin') == 6
               # The issuer can't be reached: 503, not a misleading 401.
               - "'error_page 500 = @auth_error;' in conf"
               - "'if ($tes_auth_status = 503) {' in conf"

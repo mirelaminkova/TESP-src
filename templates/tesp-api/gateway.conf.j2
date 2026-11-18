@@ -1,5 +1,25 @@
 {% set oauth = tesp_oauth_enabled | bool %}
 {% set basic = tesp_basic_auth_enabled | bool %}
+{% set cors = tesp_cors_origins | default([]) | length > 0 %}
+{# CORS headers, in every client-facing location: an add_header there
+   replaces the ones of the server level. Empty values aren't sent. #}
+{% macro cors_headers() %}
+{% if cors %}
+        add_header Access-Control-Allow-Origin $tes_cors_origin always;
+        add_header Vary Origin always;
+        add_header Access-Control-Allow-Methods $tes_cors_methods always;
+        add_header Access-Control-Allow-Headers $tes_cors_headers always;
+        add_header Access-Control-Max-Age $tes_cors_max_age always;
+{% endif %}
+{%- endmacro %}
+{# A preflight of an allowed origin is answered here, before any auth. #}
+{% macro cors_preflight() %}
+{% if cors %}
+        if ($tes_cors_preflight) {
+            return 204;
+        }
+{% endif %}
+{%- endmacro %}
 # Managed by Ansible (TESP-src). Do not edit by hand.
 #
 # TES gateway (issues #25, #26), between the host nginx (/tes/, prefix
@@ -69,6 +89,37 @@ map "$tes_has_basic:$tes_basic_source" $tes_basic_refused {
     default  0;
 }
 
+{% if cors %}
+# CORS (Krini calls the TES from the browser): only these exact origins are
+# echoed; any other gets no CORS headers. No credentials, no wildcard.
+map $http_origin $tes_cors_origin {
+    default  "";
+{% for origin in tesp_cors_origins %}
+    "{{ origin }}" $http_origin;
+{% endfor %}
+}
+
+# A preflight: OPTIONS from an allowed origin.
+map "$request_method:$tes_cors_origin" $tes_cors_preflight {
+    "~^OPTIONS:https://"  1;
+    default               0;
+}
+
+# Only on preflight answers.
+map $tes_cors_preflight $tes_cors_methods {
+    1        "GET, POST, OPTIONS";
+    default  "";
+}
+map $tes_cors_preflight $tes_cors_headers {
+    1        "authorization, content-type";
+    default  "";
+}
+map $tes_cors_preflight $tes_cors_max_age {
+    1        "600";
+    default  "";
+}
+
+{% endif %}
 server {
     listen 8080;
     server_name _;
@@ -92,7 +143,9 @@ server {
     proxy_send_timeout 300s;
 
     location = /v1/service-info {
+{{ cors_preflight() }}
         add_header Allow "GET, HEAD" always;
+{{ cors_headers() }}
         if ($request_method !~ ^(GET|HEAD)$) {
             return 405;
         }
@@ -109,6 +162,8 @@ server {
     # proxy_set_header in a location replaces all inherited ones, so each
     # location sets Host (as the host nginx sent it) itself.
     location ~ ^/(|swagger-ui\.html|redoc|openapi\.json|docs/oauth2-redirect)$ {
+{{ cors_preflight() }}
+{{ cors_headers() }}
         proxy_set_header Host $http_host;
         # Public: no credentials, not even a token, go to tesp-api.
         proxy_set_header Authorization "";
@@ -130,6 +185,8 @@ server {
     }
 
 {% macro protected() %}
+{{ cors_preflight() }}
+{{ cors_headers() }}
         if ($tes_basic_refused) {
             return 401;
         }
@@ -188,6 +245,8 @@ server {
     }
 {% else %}
     location / {
+{{ cors_preflight() }}
+{{ cors_headers() }}
         if ($tes_has_basic = 0) {
             return 401;
         }
@@ -203,6 +262,7 @@ server {
     # The validator answers 503 when the issuer can't be reached: then the
     # client gets 503, not a 401 that would look like bad credentials.
     location @auth_error {
+{{ cors_headers() }}
         if ($tes_auth_status = 503) {
             return 503 '{"detail": "Token check unavailable, try again later"}';
         }
@@ -212,6 +272,7 @@ server {
 {% endif %}
     error_page 401 = @unauthorized;
     location @unauthorized {
+{{ cors_headers() }}
 {% if oauth %}
         # The validator's Bearer challenge: nginx copies it from a 401 of the
         # auth subrequest.

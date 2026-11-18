@@ -13,5 +13,7 @@ tesp_oauth_issuers:
 # The runner reaches the gateway's published port from Docker's bridge, so
 # Basic is allowed from there; check-oauth.sh sends X-Real-IP to be elsewhere.
 tesp_basic_auth_sources: [172.16.0.0/12]
+# A browser portal such as Krini.
+tesp_cors_origins: ["https://portal.e2e.test"]
 # The tag e2e tasks of the exempt client name their user in.
 tesp_oauth_audit_tag_keys: [user_sub]

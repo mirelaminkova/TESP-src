@@ -118,6 +118,21 @@
       145.38.1.2 or 145.38.0.0/16), comma-separated without spaces. See
       "Access with LS Login" in the README.
 
+- name: Validate the CORS origins (src_tes_cors_origins)
+  vars:
+    host_re: '[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+'
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        tesp_cors_origins | reject('match', 'https://' ~ host_re ~ '(:[0-9]{1,5})?\Z')
+        | list | length == 0
+    fail_msg: >-
+      Invalid CORS origins. src_tes_cors_origins must be exact browser
+      origins, https://host or https://host:port (no path, no trailing slash,
+      no wildcard), comma-separated without spaces. See "Access with LS
+      Login" in the README.
+
 - name: Validate the list of token issuers (tesp_oauth_issuers)
   when: tesp_oauth_enabled | bool
   vars:
