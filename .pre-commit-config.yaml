@@ -1,0 +1,66 @@
+---
+# Adopted from mirelaminkova/nextflow-tesp-src (issue #24).
+# `pre-commit install` sets up both the commit and the push stage.
+# ansible-core is pinned here (unit-tests) and in .github/workflows/ci.yml;
+# keep them the same. There is no separate `ansible-playbook --syntax-check`
+# hook as in nextflow-tesp-src: playbook.yml needs the roles from
+# requirements.yml, which aren't installed here, and ansible-lint already runs
+# the syntax check against the stand-ins in .ansible-lint.
+default_install_hook_types: [pre-commit, pre-push]
+default_stages: [pre-commit]
+default_language_version:
+  python: python3
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # frozen: v6.0.0
+    hooks:
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-merge-conflict
+      - id: detect-private-key
+  - repo: https://github.com/adrienverge/yamllint
+    rev: cba56bcde1fdd01c1deb3f945e69764c291a6530  # frozen: v1.38.0
+    hooks:
+      - id: yamllint
+        args: [--strict]
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: a6564f5d57444e123433a5c9af733e3975c77229  # frozen: v0.11.0.1-1
+    hooks:
+      - id: shellcheck
+  - repo: https://github.com/ansible/ansible-lint
+    rev: 9bce2bfb8f4a984e6b13767bc0d6bf0a49492164  # frozen: v26.10.1
+    hooks:
+      - id: ansible-lint
+        # The hook asks for python3.14 by default.
+        language_version: python3
+  - repo: local
+    hooks:
+      - id: unit-tests
+        name: unit tests (tests/)
+        entry: tests/run.sh
+        language: python
+        additional_dependencies: [ansible-core==2.21.5]
+        pass_filenames: false
+        files: ^(playbook\.yml|group_vars/|templates/|tests/|\.github/workflows/)
+      # Static analysis on every push; a finding blocks the push.
+      - id: ast-grep
+        name: ast-grep scan (+ rule tests)
+        entry: bash -c 'ast-grep test --skip-snapshot-tests && ast-grep scan'
+        language: python
+        additional_dependencies: [ast-grep-cli==0.51.0]
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+      # The registry rule packs aren't pinned: semgrep fetches the current
+      # p/github-actions and p/secrets on every run.
+      - id: semgrep
+        name: semgrep (GitHub Actions + secrets rules)
+        entry: >-
+          semgrep scan --metrics=off --disable-version-check --quiet --error
+          --config p/github-actions --config p/secrets
+        language: python
+        additional_dependencies: [semgrep==1.182.1]
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]

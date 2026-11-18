@@ -1,14 +1,15 @@
+---
 # NGINX
 nginx_reverse_proxy_locations:
-- name: about
-  location: '=/'
-  auth: sram
-  root: /srv/static/
-  try_files: $uri/index.html =404
-- name: tes
-  location: /tes/
-  proxy_pass: "http://127.0.0.1:8080/"
-  auth: noauth
+  - name: about
+    location: '=/'
+    auth: sram
+    root: /srv/static/
+    try_files: $uri/index.html =404
+  - name: tes
+    location: /tes/
+    proxy_pass: "http://127.0.0.1:8080/"
+    auth: noauth
 # Pulsar is not published through nginx: only tesp-api talks to it, via the
 # token-injecting pulsar-proxy sidecar (templates/tesp-api/).
 
@@ -18,9 +19,9 @@ nginx_reverse_proxy_locations:
 # for more. See "Resource limits" in the README.
 slurm_roles: ['controller', 'exec']
 slurm_nodes:
-- name: localhost
-  CPUs: "{{ tesp_slurm_cpus }}"
-  RealMemory: "{{ tesp_slurm_real_memory_mb }}"
+  - name: localhost
+    CPUs: "{{ tesp_slurm_cpus }}"
+    RealMemory: "{{ tesp_slurm_real_memory_mb }}"
 slurm_config:
   SelectType: select/cons_tres
   # CPU, not Core: --cpus-per-task counts logical CPUs, the same as CPUs above.
@@ -51,7 +52,7 @@ pulsar_systemd: true
 pulsar_systemd_runner: uwsgi
 
 pulsar_systemd_environment:
-- DRMAA_LIBRARY_PATH=/usr/lib/slurm-drmaa/lib/libdrmaa.so.1
+  - DRMAA_LIBRARY_PATH=/usr/lib/slurm-drmaa/lib/libdrmaa.so.1
 
 pulsar_create_user: true
 pulsar_user: {name: pulsar, shell: /bin/bash}

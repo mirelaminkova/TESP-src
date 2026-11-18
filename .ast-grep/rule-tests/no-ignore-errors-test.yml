@@ -1,0 +1,16 @@
+---
+id: no-ignore-errors
+valid:
+  - |
+    - name: Probe
+      ansible.builtin.command: "true"
+      failed_when: false
+  - |
+    - name: Probe
+      ansible.builtin.command: "true"
+      ignore_errors: false
+invalid:
+  - |
+    - name: Probe
+      ansible.builtin.command: "true"
+      ignore_errors: true
