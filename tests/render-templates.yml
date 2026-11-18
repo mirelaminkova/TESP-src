@@ -473,7 +473,7 @@
             src_tes_oauth_client_ids: krini-client, cli-client, protes-service
             src_tes_oauth_exempt_client_ids: protes-service
             src_tes_oauth_entitlement_prefixes: 'urn:example:ECP_CLN:'
-            src_tes_oauth_audiences: tes.example.org
+            src_tes_oauth_exempt_audiences: tes.example.org
             src_tes_oauth_entitlements: urn:example:ECP_CLN:EOC-Compute#example.org
             # Basic only from the Nextflow workspace.
             src_tes_basic_auth_sources: 145.38.1.2
@@ -549,7 +549,8 @@
                   'allowed_client_ids': ['krini-client', 'cli-client',
                                          'protes-service'],
                   'exempt_client_ids': ['protes-service'],
-                  'audiences': ['tes.example.org'],
+                  'audiences': [],
+                  'exempt_audiences': ['tes.example.org'],
                   'entitlements': {
                     'any_of': ['urn:example:ECP_CLN:EOC-Compute#example.org'],
                     'prefix_any_of': ['urn:example:ECP_CLN:']}}

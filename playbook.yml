@@ -386,6 +386,15 @@
         group: root
         mode: '0644'
 
+    # Before the stack starts: a config nginx rejects would otherwise show
+    # only as a gateway that keeps restarting, after the old one is gone.
+    - name: Check the TES gateway config
+      ansible.builtin.command: >-
+        docker run --rm --entrypoint nginx
+        -v {{ tesp_gateway_dir }}:/etc/nginx/conf.d:ro
+        {{ tesp_nginx_image }} -t
+      changed_when: false
+
     - name: Build and start the TESP-API stack
       community.docker.docker_compose_v2:
         project_src: "{{ tesp_install_dir }}"
@@ -398,11 +407,6 @@
         wait_timeout: 300
         # Drops the validator when tokens are switched off.
         remove_orphans: true
-
-    # A config nginx rejects would only show as a restarting container.
-    - name: Check the TES gateway config
-      ansible.builtin.command: docker exec tesp-gateway nginx -t
-      changed_when: false
 
   handlers:
     # Notified by the galaxyproject.pulsar role when its config changes

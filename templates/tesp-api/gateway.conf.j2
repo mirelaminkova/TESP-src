@@ -58,6 +58,18 @@ log_format tes_gateway '$remote_addr - $remote_user [$time_local] "$request" '
                        '"$http_user_agent" request_id=$request_id';
 access_log /var/log/nginx/access.log tes_gateway;
 
+# Only for a 503 of the validator (the issuer can't be reached).
+map $tes_auth_status $tes_retry_after {
+    503      "30";
+    default  "";
+}
+
+# Basic refused at the gateway gets the challenge the validator would send.
+map $tes_basic_refused $tes_refused_challenge {
+    1        'Bearer realm="tes"';
+    default  "";
+}
+
 # What the validator decided (its X-Tes-Auth-Kind header): "bearer" for a
 # valid access token, "basic" for Basic credentials. Only "bearer" gets
 # tesp-api's credentials; anything else keeps the client's header.
@@ -263,6 +275,8 @@ server {
     # client gets 503, not a 401 that would look like bad credentials.
     location @auth_error {
 {{ cors_headers() }}
+        add_header Retry-After $tes_retry_after always;
+        default_type application/json;
         if ($tes_auth_status = 503) {
             return 503 '{"detail": "Token check unavailable, try again later"}';
         }
@@ -275,7 +289,8 @@ server {
 {{ cors_headers() }}
 {% if oauth %}
         # The validator's Bearer challenge: nginx copies it from a 401 of the
-        # auth subrequest.
+        # auth subrequest. Refused Basic never reaches the validator.
+        add_header WWW-Authenticate $tes_refused_challenge always;
 {% endif %}
 {% if basic %}
         add_header WWW-Authenticate 'Basic realm="tes"' always;

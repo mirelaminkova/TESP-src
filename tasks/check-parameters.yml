@@ -99,15 +99,18 @@
 
 # Issue #26: who may use the TES API.
 - name: Validate the access settings (tesp_*_enabled)
+  vars:
+    octet: '(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
+    ipv4_re: '({{ octet }}\.){3}{{ octet }}(/([1-9]|[12][0-9]|3[0-2]))?\Z'
+    # Hex groups with at least two colons, optionally ::; prefix 1-128.
+    ipv6_re: '(?!.*:::)(?=[0-9A-Fa-f:]*:[0-9A-Fa-f:]*:)[0-9A-Fa-f]{0,4}(:[0-9A-Fa-f]{0,4}){2,7}(/([1-9]|[1-9][0-9]|1[01][0-9]|12[0-8]))?\Z'
   ansible.builtin.assert:
     quiet: true
     that:
       - tesp_oauth_param in ['true', 'false']
-      # IPv4 or IPv6 addresses, optionally with a prefix length.
-      - >-
-        tesp_basic_auth_sources | reject('match',
-          '([0-9]{1,3}\\.){3}[0-9]{1,3}(/[0-9]{1,2})?\\Z|[0-9A-Fa-f:]*:[0-9A-Fa-f:.]*(/[0-9]{1,3})?\\Z')
-        | list | length == 0
+      # IPv4 or IPv6 addresses, optionally with a prefix length (not /0).
+      - tesp_basic_auth_sources is sequence and tesp_basic_auth_sources is not string
+      - tesp_basic_auth_sources | reject('match', ipv4_re ~ '|' ~ ipv6_re) | list | length == 0
       # For values set directly instead of through the parameters.
       - tesp_basic_auth_enabled | string | lower in ['true', 'false']
       - tesp_oauth_enabled | string | lower in ['true', 'false']
@@ -180,6 +183,7 @@
   vars:
     allowed: "{{ item.allowed_client_ids | default([]) }}"
     exempt: "{{ item.exempt_client_ids | default([]) }}"
+    exempt_audiences: "{{ item.exempt_audiences | default([]) }}"
   ansible.builtin.assert:
     quiet: true
     that:
@@ -188,13 +192,17 @@
       - exempt is sequence and exempt is not string
       - exempt | difference(allowed) | length == 0
       # A service token must be bound to this service (aud), or a token of
-      # the same client meant for another backend would work here.
-      - exempt | length == 0 or item.audiences | default([]) | length > 0
+      # the same client meant for another backend would work here. A client
+      # id would bind nothing: every token of that client carries it.
+      - exempt | length == 0 or exempt_audiences | length > 0
+      - exempt_audiences is sequence and exempt_audiences is not string
+      - exempt_audiences | intersect(allowed) | length == 0
     fail_msg: >-
       Invalid token issuer {{ item.issuer | default('?') }}: allowed_client_ids
       (src_tes_oauth_client_ids) must be a non-empty list of client ids, and
       include every exempt_client_ids entry (src_tes_oauth_exempt_client_ids);
-      exempt clients need audiences (src_tes_oauth_audiences).
+      exempt clients need exempt_audiences (src_tes_oauth_exempt_audiences),
+      which name this TES and are no client id.
       See "Access with LS Login" in the README.
 
 - name: Validate each token issuer's algorithms and entitlements

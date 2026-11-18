@@ -6,8 +6,8 @@ tesp_oauth_issuers:
   - issuer: https://idp.e2e.test:8443/
     allowed_client_ids: [e2e-portal, e2e-service]
     exempt_client_ids: [e2e-service]
-    # The test tokens' aud; required with an exempt client.
-    audiences: [tes]
+    # The test tokens' aud; required for the exempt client's tokens.
+    exempt_audiences: [tes]
     entitlements:
       any_of: ["urn:e2e:group:ECP_CLN"]
 # The runner reaches the gateway's published port from Docker's bridge, so

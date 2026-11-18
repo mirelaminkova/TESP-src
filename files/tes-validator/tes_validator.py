@@ -83,7 +83,8 @@ class FetchError(Exception):
     @property
     def unavailable(self) -> bool:
         """The endpoint is down or broken, rather than refusing the token."""
-        return self.status is None or self.status >= 500
+        # 429: the issuer rate-limits us; not the token's fault.
+        return self.status is None or self.status >= 500 or self.status == 429
 
 
 def _https_only(url: str, what: str, allow_http: bool) -> str:
@@ -119,6 +120,7 @@ class IssuerConfig:
     entitlements_prefix_any_of: tuple[str, ...]
     require_entitlement: bool
     audiences: tuple[str, ...] = ()
+    exempt_audiences: frozenset[str] = frozenset()
     jwks_uri: str | None = None
     userinfo_endpoint: str | None = None
 
@@ -148,10 +150,17 @@ class IssuerConfig:
             )
         audiences = _string_list(d.get("audiences"), "audiences")
         # Exempt (service) clients skip the user checks, so their tokens must
-        # be bound to this service: one meant for another backend of the same
-        # client must not work here.
-        if exempt and not audiences:
-            raise ValueError(f"{issuer}: exempt_client_ids need audiences")
+        # be bound to this service: one the same client got for another
+        # backend must not work here. Checked on exempt tokens only, so user
+        # tokens needn't carry it; and never a client id, which every token
+        # of that client would carry.
+        exempt_audiences = frozenset(
+            _string_list(d.get("exempt_audiences"), "exempt_audiences"))
+        if exempt and not exempt_audiences:
+            raise ValueError(f"{issuer}: exempt_client_ids need exempt_audiences")
+        if exempt_audiences & allowed:
+            raise ValueError(
+                f"{issuer}: exempt_audiences must name this service, not a client")
         ents = d.get("entitlements") or {}
         any_of = frozenset(_string_list(ents.get("any_of"), "entitlements.any_of"))
         prefixes = _string_list(
@@ -183,6 +192,7 @@ class IssuerConfig:
             entitlements_prefix_any_of=prefixes,
             require_entitlement=require,
             audiences=audiences,
+            exempt_audiences=exempt_audiences,
             jwks_uri=_https_only(jwks_uri, "jwks_uri", allow_http)
             if jwks_uri else None,
             userinfo_endpoint=_https_only(userinfo, "userinfo_endpoint", allow_http)
@@ -396,6 +406,8 @@ class Validator:
                 client_id not in issuer.allowed_client_ids:
             raise Denied("client not allowed")
         if client_id in issuer.exempt_client_ids:
+            if not _audiences(claims.get("aud")) & issuer.exempt_audiences:
+                raise Denied(f"exempt client {client_id}: token not for this service (aud)")
             return Decision("bearer", f"exempt client {client_id}",
                             client_id, exempt=True)
         if not issuer.require_entitlement:
@@ -549,6 +561,15 @@ class Validator:
         return result
 
 
+def _audiences(claim: Any) -> set[str]:
+    """The aud claim as a set: a string or a list of strings (RFC 7519)."""
+    if isinstance(claim, str):
+        return {claim}
+    if isinstance(claim, list):
+        return {a for a in claim if isinstance(a, str)}
+    return set()
+
+
 def _is_basic_credentials(credentials: str) -> bool:
     try:
         decoded = base64.b64decode(credentials, validate=True)
@@ -574,7 +595,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404)
             return
         # At most MAX_CONCURRENT_CHECKS at once; more wait briefly, then get
-        # 503 (nginx answers the client with 500), so a flood can't start
+        # 503 (the gateway passes it on), so a flood can't start
         # unbounded threads and calls to the issuer.
         if not self.slots.acquire(timeout=5):
             log.warning("too many concurrent checks")

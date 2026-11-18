@@ -71,7 +71,7 @@
       issuer: https://login.example.org/oidc/
       allowed_client_ids: [portal, cli, service]
       exempt_client_ids: [service]
-      audiences: [tes.example.org]
+      exempt_audiences: [tes.example.org]
       entitlements: {any_of: ['urn:example:group:ECP_CLN#example.org']}
     valid_issuers: ["{{ valid_issuer }}"]
     oauth_cases:
@@ -84,15 +84,33 @@
       - why: a Basic source that is a host name
         expect: Invalid access settings
         vars: {src_tes_basic_auth_sources: 'nextflow.example.org'}
+      - why: a Basic source with an octet over 255
+        expect: Invalid access settings
+        vars: {src_tes_basic_auth_sources: '999.1.1.1'}
+      - why: a Basic source with a prefix over 32
+        expect: Invalid access settings
+        vars: {src_tes_basic_auth_sources: '10.0.0.0/33'}
+      - why: Basic from everywhere (/0)
+        expect: Invalid access settings
+        vars: {src_tes_basic_auth_sources: '0.0.0.0/0'}
+      - why: a Basic source that is only colons
+        expect: Invalid access settings
+        vars: {src_tes_basic_auth_sources: ':::'}
       - why: Basic sources with a space (as SRC would split them)
         expect: Invalid access settings
         vars: {src_tes_basic_auth_sources: '10.0.0.1 10.0.0.2'}
-      - why: an exempt client without audiences
+      - why: an exempt client without exempt_audiences
         expect: Invalid token issuer
         vars:
           tesp_oauth_enabled: true
           tesp_oauth_issuers:
-            - "{{ valid_issuer | combine({'audiences': []}) }}"
+            - "{{ valid_issuer | combine({'exempt_audiences': []}) }}"
+      - why: an exempt audience that is a client id
+        expect: Invalid token issuer
+        vars:
+          tesp_oauth_enabled: true
+          tesp_oauth_issuers:
+            - "{{ valid_issuer | combine({'exempt_audiences': ['service']}) }}"
       - why: audit tag keys given as a string
         expect: Invalid token settings
         vars: {tesp_oauth_enabled: true, tesp_oauth_audit_tag_keys: user_sub}
@@ -236,7 +254,9 @@
           - issuer.issuer == 'https://login.aai.lifescience-ri.eu/oidc/'
           - issuer.allowed_client_ids == ['portal', 'cli', 'service']
           - issuer.exempt_client_ids == ['service']
-          - issuer.audiences == ['tes.example.org']
+          - issuer.exempt_audiences == ['tes.example.org']
+          - issuer.audiences == []
+          - tesp_oauth_audit_tag_keys == ['user_sub']
           - issuer.entitlements.any_of == ['urn:a', 'urn:b']
           - issuer.entitlements.prefix_any_of == ['urn:a:']
       vars:
@@ -244,7 +264,8 @@
         src_tes_basic_auth_sources: '145.38.1.2,10.0.0.0/8'
         src_tes_oauth_client_ids: ' portal, cli,service ,'
         src_tes_oauth_exempt_client_ids: service
-        src_tes_oauth_audiences: tes.example.org
+        src_tes_oauth_exempt_audiences: tes.example.org
+        src_tes_oauth_audit_tag_keys: user_sub
         src_tes_oauth_entitlements: 'urn:a,urn:b'
         src_tes_oauth_entitlement_prefixes: 'urn:a:'
         issuer: "{{ tesp_oauth_issuers[0] }}"
@@ -255,7 +276,7 @@
         src_tes_oauth_enabled: 'true'
         src_tes_oauth_client_ids: portal,cli,service
         src_tes_oauth_exempt_client_ids: service
-        src_tes_oauth_audiences: tes.example.org
+        src_tes_oauth_exempt_audiences: tes.example.org
         src_tes_oauth_entitlement_prefixes: 'urn:a:'
         src_tes_basic_auth_sources: '145.38.1.2,2001:610:108::/48'
 

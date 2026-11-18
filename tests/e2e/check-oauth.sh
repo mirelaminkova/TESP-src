@@ -142,6 +142,11 @@ grep -qiF "Access-Control-Allow-Origin: $portal" "$tmp/headers" || { echo "FAIL 
 expect "401 for the portal" 401 -H "Origin: $portal" "$base/v1/tasks"
 grep -qiF "Access-Control-Allow-Origin: $portal" "$tmp/headers" || { echo "FAIL no CORS header on 401" >&2; fail=1; }
 
+# The issuer down: a token that needs userinfo gets 503, not 401.
+docker stop -t 2 "$(docker ps -qf name=idp)" >/dev/null
+expect "issuer down: 503, not 401" 503 -H "$(bearer "$(mint --sub entitled-new-user)")" "$base/v1/tasks"
+grep -qi '^Retry-After: 30' "$tmp/headers" || { echo "FAIL no Retry-After on 503" >&2; fail=1; }
+
 # No token may end up in the logs.
 docker logs tesp-validator > "$tmp/validator.log" 2>&1
 docker logs tesp-gateway > "$tmp/gateway.log" 2>&1

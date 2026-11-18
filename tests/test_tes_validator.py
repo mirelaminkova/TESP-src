@@ -123,7 +123,7 @@ class IdP:
             "exempt_client_ids": [EXEMPT],
             "entitlements": {"any_of": [ENTITLEMENT]},
             # Required with an exempt client; the test tokens' aud.
-            "audiences": ["tes"],
+            "exempt_audiences": ["tes"],
         }
         issuer.update(overrides.pop("issuer_overrides", {}))
         d = {"issuers": [issuer], "basic_auth_enabled": True, **overrides}
@@ -358,16 +358,33 @@ def test_issuer_outages_are_unavailable(idp):
 
 
 def test_exempt_client_needs_an_audience(idp):
-    with pytest.raises(ValueError, match="exempt_client_ids need audiences"):
-        idp.config(issuer_overrides={"audiences": []})
+    with pytest.raises(ValueError, match="need exempt_audiences"):
+        idp.config(issuer_overrides={"exempt_audiences": []})
     # Without exempt clients, no audience is required.
-    idp.config(issuer_overrides={"audiences": [], "exempt_client_ids": []})
+    idp.config(issuer_overrides={"exempt_audiences": [], "exempt_client_ids": []})
+
+
+def test_exempt_audience_must_not_be_a_client_id(idp):
+    with pytest.raises(ValueError, match="not a client"):
+        idp.config(issuer_overrides={"exempt_audiences": [EXEMPT]})
 
 
 def test_exempt_token_for_another_service_is_refused(idp):
     v = tv.Validator(idp.config())
     denied(v, "Bearer " + idp.token(client_id=EXEMPT, aud="other-backend"),
-           "InvalidAudience")
+           "not for this service")
+    denied(v, "Bearer " + idp.token(client_id=EXEMPT, aud=None),
+           "not for this service")
+    assert check(v, idp.token(client_id=EXEMPT, aud=["x", "tes"])).exempt
+    # User tokens needn't carry the exempt audience.
+    assert check(v, idp.token(aud="something-else")).kind == "bearer"
+
+
+def test_userinfo_rate_limit_is_unavailable(idp):
+    idp.userinfo_status = 429
+    v = tv.Validator(idp.config())
+    with pytest.raises(tv.Unavailable):
+        check(v, idp.token())
 
 
 def test_userinfo_for_another_subject_is_refused(idp):
