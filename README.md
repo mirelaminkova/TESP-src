@@ -178,10 +178,10 @@ These optional component parameters set it; blank means the default:
 | `src_tes_service_name` | `TESP on SURF Research Cloud` | `name` |
 | `src_tes_organization_name` | `SURF` | `organization.name` |
 | `src_tes_organization_url` | `https://www.surf.nl/` | `organization.url` (https only) |
-| `src_tes_environment` | `test` | `environment`: `test`, `prod`, `dev` or `staging` |
+| `src_tes_environment` | `test` | `environment`: `test` or `prod`, what the registry accepts |
 | `src_tes_contact_url` | this repository's issues | `contactUrl` (`https://` or `mailto:`) |
 
-The other fields come from `tesp_service_info_*` in `group_vars/all.yml`: `id` is the workspace's domain name reversed, plus `.tes` (for example `nl.surf-hosted.src.<workspace>.tes`). `type` is `org.ga4gh` / `tes` / `1.0.0`, the TES version tesp-api reports. `version` is `tesp-api-<commit>`. `createdAt` is the time of the first deploy, which later deploys keep. `updatedAt` is left out, so a redeploy that changes nothing leaves the file as it is. The playbook stops before installing anything if a value is invalid.
+The other fields come from `tesp_service_info_*` in `group_vars/all.yml`: `id` is the workspace's domain name reversed, plus `.tes` (for example `nl.surf-hosted.src.<workspace>.tes`); the playbook stops if SRC hasn't set the domain name (`workspace_fqdn`). `type` is `org.ga4gh` / `tes` / `1.0.0`, the TES version tesp-api reports. `version` is `tesp-api-<commit>`. `createdAt` is the time of the first deploy, which later deploys keep. `updatedAt` is left out, so a redeploy that changes nothing leaves the file as it is. The playbook stops before installing anything if a value is invalid.
 
 **Registering at the ELIXIR Cloud Registry.** The registry reads only public service info and accepts only `https` URLs. Each deployment sets the environments it accepts; its `GET /service-info` lists them in `registrationRules`. ELIXIR On-Cloud registers `test` and `prod` services, so set `src_tes_environment` to one of those, and set the organization to whoever runs the workspace. Then log in to the registry (LS Login) and import the service info, in its web front end or with the API:
 

@@ -69,13 +69,17 @@
   ansible.builtin.assert:
     quiet: true
     that:
+      # The id is built from it, so it must be a real domain name.
+      - workspace_fqdn | default('') is match(host_re ~ '\Z')
+      - workspace_fqdn | default('') is search('[A-Za-z]')
       - tesp_service_info_id is match('[A-Za-z0-9][A-Za-z0-9._-]{0,199}\Z')
       - tesp_service_info_name is search('[A-Za-z0-9]')
       - tesp_service_info_name | length <= 200
       - tesp_service_info_organization_name is search('[A-Za-z0-9]')
       - tesp_service_info_organization_name | length <= 200
       - tesp_service_info_organization_url is match(https_re)
-      - tesp_service_info_environment in ['test', 'prod', 'dev', 'staging']
+      # What the ELIXIR Cloud Registry's rules allow.
+      - tesp_service_info_environment in ['test', 'prod']
       - >-
         tesp_service_info_contact_url is match(https_re)
         or tesp_service_info_contact_url is match(mailto_re)
@@ -88,5 +92,7 @@
       src_tes_organization_name need a letter or digit and at most 200
       characters; src_tes_organization_url and the documentation URL must be
       https:// URLs; src_tes_contact_url must be an https:// or mailto: URL;
-      src_tes_environment must be test, prod, dev or staging; the timestamps
+      src_tes_environment must be test or prod (what the ELIXIR Cloud
+      Registry accepts); workspace_fqdn (set by SRC) must be the workspace's
+      domain name; the timestamps
       must be empty or look like 2026-11-18T09:30:00Z. See "Service info" in the README.

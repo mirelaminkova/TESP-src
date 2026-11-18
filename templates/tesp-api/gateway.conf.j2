@@ -13,7 +13,10 @@
 
 # Docker's embedded DNS. proxy_pass with a variable makes nginx resolve
 # tesp-api per request, so a recreated tesp-api container (new address) is
-# found. Without a URI part, the original request URI is passed on.
+# found. Without a URI part, the request URI goes on as received, still
+# percent-encoded; the host nginx in front has normalised it already. Not
+# $uri: it is decoded and nginx doesn't re-encode it, so %0d%0a in a path
+# would reach tesp-api as a raw line break (header injection).
 resolver 127.0.0.11 valid=2s ipv6=off;
 
 # The scheme, one space and credentials, as tesp-api (FastAPI) parses them.

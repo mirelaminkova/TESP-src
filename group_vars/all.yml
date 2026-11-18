@@ -178,8 +178,9 @@ tesp_gateway_dir: /etc/tesp-gateway
 # University, environment dev). Set from the optional src_tes_* component
 # parameters; blank counts as unset.
 # Reverse domain name of the workspace, e.g. nl.surf-hosted.src.<ws>.tes.
+# tasks/check-parameters.yml requires workspace_fqdn to be a domain name.
 tesp_service_info_id: >-
-  {{ (workspace_fqdn | default('localhost', true)).split('.') | reverse
+  {{ (workspace_fqdn | default('') | lower).split('.') | reverse
      | join('.') }}.tes
 tesp_service_info_name: >-
   {{ src_tes_service_name | default('') | trim
@@ -192,8 +193,7 @@ tesp_service_info_organization_name: >-
 tesp_service_info_organization_url: >-
   {{ src_tes_organization_url | default('') | trim
      | default('https://www.surf.nl/', true) }}
-# test | prod | dev | staging. Register only test or prod at the ELIXIR
-# Cloud Registry (see the README).
+# test | prod: what the ELIXIR Cloud Registry accepts (see the README).
 tesp_service_info_environment: >-
   {{ src_tes_environment | default('') | trim | default('test', true) }}
 tesp_service_info_contact_url: >-

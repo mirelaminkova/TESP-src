@@ -391,7 +391,9 @@
               # Re-resolved, so a recreated tesp-api container is found.
               - "'resolver 127.0.0.11' in conf"
               - "'set $tesp_api_upstream http://tesp-api:8080;' in conf"
-              - "'proxy_pass $tesp_api_upstream;' in conf"
+              - conf.count('proxy_pass $tesp_api_upstream;') == 2
+              # Never the decoded $uri: it would pass %0d%0a on as a line break.
+              - conf is not search('proxy_pass [^;]*\\$uri')
               # Requests without Basic credentials get 401 at the gateway.
               - "'if ($tes_has_basic = 0)' in conf"
               - "'add_header Allow \"GET, HEAD\" always;' in conf"

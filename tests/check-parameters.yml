@@ -20,6 +20,25 @@
       - why: an unknown environment
         expect: Invalid service info
         vars: {src_tes_environment: production}
+      # The ELIXIR Cloud Registry's rules allow only these two.
+      - why: environment dev
+        expect: Invalid service info
+        vars: {src_tes_environment: dev}
+      - why: environment staging
+        expect: Invalid service info
+        vars: {src_tes_environment: staging}
+      - why: no workspace_fqdn (the id would be localhost.tes)
+        expect: Invalid service info
+        vars: {workspace_fqdn: ''}
+      - why: workspace_fqdn localhost
+        expect: Invalid service info
+        vars: {workspace_fqdn: localhost}
+      - why: workspace_fqdn with a trailing dot
+        expect: Invalid service info
+        vars: {workspace_fqdn: tesp.example.src.surf-hosted.nl.}
+      - why: workspace_fqdn that is an IP address
+        expect: Invalid service info
+        vars: {workspace_fqdn: 127.0.0.1}
       - why: an http organization URL
         expect: Invalid service info
         vars: {src_tes_organization_url: 'http://www.surf.nl/'}

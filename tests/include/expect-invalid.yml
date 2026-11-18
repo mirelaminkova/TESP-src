@@ -9,6 +9,7 @@
       # Every variable a case may set; the rest keep a valid value.
       vars:
         src_s3_endpoint_url: "{{ case.vars.src_s3_endpoint_url | default('') }}"
+        workspace_fqdn: "{{ case.vars.workspace_fqdn | default('tesp.example.src.surf-hosted.nl') }}"
         tesp_max_wait_seconds: "{{ case.vars.tesp_max_wait_seconds | default(0) }}"
         src_tes_service_name: "{{ case.vars.src_tes_service_name | default('') }}"
         src_tes_organization_name: "{{ case.vars.src_tes_organization_name | default('') }}"
