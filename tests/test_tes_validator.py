@@ -310,6 +310,29 @@ def test_token_not_yet_valid_is_refused(idp):
            "ImmatureSignature")
 
 
+def test_user_without_entitlement_is_forbidden_not_unauthenticated(idp):
+    idp.userinfo["eduperson_entitlement"] = ["urn:example:group:vo:other"]
+    v = tv.Validator(idp.config())
+    with pytest.raises(tv.Forbidden, match="no matching entitlement"):
+        check(v, idp.token())
+
+
+def test_userinfo_without_entitlement_claim_is_logged(idp, caplog):
+    del idp.userinfo["eduperson_entitlement"]
+    v = tv.Validator(idp.config())
+    with caplog.at_level("WARNING", logger="tes-validator"):
+        with pytest.raises(tv.Forbidden):
+            check(v, idp.token())
+    assert "userinfo has no eduperson_entitlement" in caplog.text
+    assert CLIENT in caplog.text
+
+
+def test_http_missing_group_is_403(idp, service):
+    idp.userinfo["eduperson_entitlement"] = []
+    status, headers = call(service + "/auth", "Bearer " + idp.token())
+    assert status == 403 and "WWW-Authenticate" not in headers
+
+
 def test_user_without_entitlement_is_refused(idp):
     idp.userinfo["eduperson_entitlement"] = ["urn:example:group:vo:other"]
     v = tv.Validator(idp.config())

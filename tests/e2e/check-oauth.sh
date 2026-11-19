@@ -126,7 +126,8 @@ expect "CORS preflight of the portal" 204 -X OPTIONS -H "Origin: $portal" \
     -H 'Access-Control-Request-Method: POST' \
     -H 'Access-Control-Request-Headers: authorization,content-type' "$base/v1/tasks"
 for h in "Access-Control-Allow-Origin: $portal" 'Access-Control-Allow-Methods: GET, POST, OPTIONS' \
-         'Access-Control-Allow-Headers: authorization, content-type' 'Vary: Origin'; do
+         'Access-Control-Allow-Headers: authorization, content-type' 'Access-Control-Max-Age: 600' \
+         'Vary: Origin'; do
     grep -qiF "$h" "$tmp/headers" || { echo "FAIL preflight lacks $h" >&2; fail=1; }
 done
 grep -qi '^Access-Control-Allow-Credentials' "$tmp/headers" && { echo "FAIL credentials allowed" >&2; fail=1; }

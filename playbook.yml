@@ -263,6 +263,11 @@
         owner: root
         group: root
         mode: '0600'
+        # nginx -t on the new file before it replaces the old one, so a
+        # config nginx rejects never reaches the gateway.
+        validate: >-
+          docker run --rm --entrypoint nginx
+          -v %s:/etc/nginx/conf.d/gateway.conf:ro {{ tesp_nginx_image }} -t
       register: tesp_gateway_conf
       no_log: true
 
@@ -376,7 +381,7 @@
 
         - name: Record the validator config checksum
           ansible.builtin.set_fact:
-            tesp_validator_conf_checksum: "{{ tesp_validator_conf.checksum }}"
+            tesp_validator_conf_checksum: "{{ tesp_validator_conf.checksum | default('check-mode') }}"
 
     - name: Template TESP-API deployment compose file
       ansible.builtin.template:
@@ -385,15 +390,6 @@
         owner: root
         group: root
         mode: '0644'
-
-    # Before the stack starts: a config nginx rejects would otherwise show
-    # only as a gateway that keeps restarting, after the old one is gone.
-    - name: Check the TES gateway config
-      ansible.builtin.command: >-
-        docker run --rm --entrypoint nginx
-        -v {{ tesp_gateway_dir }}:/etc/nginx/conf.d:ro
-        {{ tesp_nginx_image }} -t
-      changed_when: false
 
     - name: Build and start the TESP-API stack
       community.docker.docker_compose_v2:

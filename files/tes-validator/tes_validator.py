@@ -70,6 +70,11 @@ class Unavailable(Denied):
     """The issuer can't be reached, so the token can't be checked (503)."""
 
 
+class Forbidden(Denied):
+    """A valid token of a user without the required group (403): logging in
+    again wouldn't help, so not 401."""
+
+
 class FetchError(Exception):
     """An identity provider endpoint could not be read.
 
@@ -414,7 +419,7 @@ class Validator:
             return Decision("bearer", f"client {client_id}, no entitlement needed",
                             client_id)
         if not self._entitled(issuer, token, claims):
-            raise Denied(f"no matching entitlement (client {client_id})")
+            raise Forbidden(f"no matching entitlement (client {client_id})")
         return Decision("bearer", f"entitled, client {client_id}", client_id)
 
     def _resolve_endpoints(self, issuer: IssuerConfig,
@@ -549,6 +554,12 @@ class Validator:
             raise error(f"userinfo failed: {e}") from None
         if not isinstance(info, dict) or info.get("sub") != claims["sub"]:
             raise Denied("userinfo is for another subject")
+        if "eduperson_entitlement" not in info:
+            # Usually the client didn't ask for the scope that releases it
+            # (Krini's default scopes don't): every user is refused.
+            log.warning("userinfo has no eduperson_entitlement for a token of "
+                        "client %s: does the client request the scope that "
+                        "releases it?", _printable(claims.get("client_id"), 128))
         values = info.get("eduperson_entitlement") or []
         if isinstance(values, str):
             values = [values]
@@ -615,6 +626,10 @@ class Handler(BaseHTTPRequestHandler):
             # answer (see gateway.conf).
             log.warning("unavailable: %s", e)
             self._send(503)
+            return
+        except Forbidden as e:
+            log.info("forbidden: %s", e)
+            self._send(403)
             return
         except Denied as e:
             log.info("denied: %s", e)

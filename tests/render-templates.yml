@@ -455,6 +455,26 @@
           vars:
             compose: "{{ files['docker-compose.yml'] | from_yaml }}"
 
+        - name: Render the gateway with CORS and tokens off
+          ansible.builtin.template:
+            src: "{{ templates_dir }}/tesp-api/gateway.conf.j2"
+            dest: "{{ out.path }}/cors-basic-gateway.conf"
+            mode: '0600'
+          vars:
+            src_tes_cors_origins: https://krini.rahtiapp.fi
+
+        - name: With tokens off, CORS still covers the API and its errors
+          ansible.builtin.assert:
+            that:
+              - "'if ($tes_cors_preflight) {' in conf"
+              - "'auth_request' not in conf"
+              # service-info, the public docs, / and the 401 location.
+              - conf.count('add_header Access-Control-Allow-Origin') == 4
+              - "'Access-Control-Max-Age $tes_cors_max_age always;' in conf"
+              - "'1        \"600\";' in conf"
+          vars:
+            conf: "{{ lookup('file', out.path ~ '/cors-basic-gateway.conf') }}"
+
         - name: Render with LS Login tokens on
           ansible.builtin.template:
             src: "{{ templates_dir }}/{{ item }}"
@@ -530,7 +550,7 @@
               - conf.count('add_header Access-Control-Allow-Origin') == 6
               # The issuer can't be reached: 503, not a misleading 401.
               - "'error_page 500 = @auth_error;' in conf"
-              - "'if ($tes_auth_status = 503) {' in conf"
+              - "'if ($tes_auth_status ~ \"^50[234]\") {' in conf"
               - conf is search('WWW-Authenticate .Basic realm')
           vars:
             conf: "{{ lookup('file', out.path ~ '/oauth-gateway.conf') }}"

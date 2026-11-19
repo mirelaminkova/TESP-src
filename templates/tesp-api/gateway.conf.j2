@@ -60,8 +60,8 @@ access_log /var/log/nginx/access.log tes_gateway;
 
 # Only for a 503 of the validator (the issuer can't be reached).
 map $tes_auth_status $tes_retry_after {
-    503      "30";
-    default  "";
+    "~^50[234]"  "30";
+    default      "";
 }
 
 # Basic refused at the gateway gets the challenge the validator would send.
@@ -113,7 +113,7 @@ map $http_origin $tes_cors_origin {
 
 # A preflight: OPTIONS from an allowed origin.
 map "$request_method:$tes_cors_origin" $tes_cors_preflight {
-    "~^OPTIONS:https://"  1;
+    "~*^OPTIONS:https://"  1;
     default               0;
 }
 
@@ -277,7 +277,9 @@ server {
 {{ cors_headers() }}
         add_header Retry-After $tes_retry_after always;
         default_type application/json;
-        if ($tes_auth_status = 503) {
+        # 503 from the validator (issuer unreachable), or the validator
+        # itself not answering (502, 504).
+        if ($tes_auth_status ~ "^50[234]") {
             return 503 '{"detail": "Token check unavailable, try again later"}';
         }
         return 500 '{"detail": "Internal error"}';

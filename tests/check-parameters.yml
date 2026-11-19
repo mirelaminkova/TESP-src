@@ -93,6 +93,12 @@
       - why: Basic from everywhere (/0)
         expect: Invalid access settings
         vars: {src_tes_basic_auth_sources: '0.0.0.0/0'}
+      - why: two /1 ranges, Basic from almost everywhere
+        expect: Invalid access settings
+        vars: {src_tes_basic_auth_sources: '0.0.0.0/1,128.0.0.0/1'}
+      - why: an IPv6 /1
+        expect: Invalid access settings
+        vars: {src_tes_basic_auth_sources: '::/1'}
       - why: a Basic source that is only colons
         expect: Invalid access settings
         vars: {src_tes_basic_auth_sources: ':::'}
@@ -192,6 +198,15 @@
       - why: a CORS origin with a trailing slash
         expect: Invalid CORS origins
         vars: {src_tes_cors_origins: 'https://krini.example.org/'}
+      - why: a CORS origin with the default port
+        expect: Invalid CORS origins
+        vars: {src_tes_cors_origins: 'https://krini.example.org:443'}
+      - why: a CORS origin with port 0
+        expect: Invalid CORS origins
+        vars: {src_tes_cors_origins: 'https://krini.example.org:0'}
+      - why: a CORS origin with a port over 65535
+        expect: Invalid CORS origins
+        vars: {src_tes_cors_origins: 'https://krini.example.org:99999'}
       - why: CORS origins with a space
         expect: Invalid CORS origins
         vars: {src_tes_cors_origins: 'https://a.example.org https://b.example.org'}
