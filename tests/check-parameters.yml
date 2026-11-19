@@ -123,15 +123,24 @@
       - why: a negative leeway
         expect: Invalid access settings
         vars: {tesp_oauth_leeway_seconds: -1}
+      - why: a leeway over 5 minutes (long-expired tokens would pass)
+        expect: Invalid access settings
+        vars: {tesp_oauth_leeway_seconds: 301}
       - why: a userinfo cache time that isn't a number
         expect: Invalid access settings
         vars: {tesp_oauth_userinfo_cache_seconds: 'five'}
-      - why: an issuer timeout of 0 (every call would fail)
+      - why: a userinfo cache time of 10 digits
+        expect: Invalid access settings
+        vars: {tesp_oauth_userinfo_cache_seconds: 1000000000}
+      - why: an issuer timeout of 0
         expect: Invalid access settings
         vars: {tesp_oauth_http_timeout_seconds: 0}
-      - why: an issuer timeout over a minute
+      - why: a fractional issuer timeout
         expect: Invalid access settings
-        vars: {tesp_oauth_http_timeout_seconds: 61}
+        vars: {tesp_oauth_http_timeout_seconds: 0.5}
+      - why: an issuer timeout over 10 s (the gateway would wait over a minute)
+        expect: Invalid access settings
+        vars: {tesp_oauth_http_timeout_seconds: 11}
       - why: Basic sources with a space (as SRC would split them)
         expect: Invalid access settings
         vars: {src_tes_basic_auth_sources: '10.0.0.1 10.0.0.2'}

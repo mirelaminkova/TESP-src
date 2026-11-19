@@ -337,8 +337,8 @@ tesp_oauth_audit_tag_keys: >-
 # /etc/ssl/certs/ca-certificates.crt after adding that CA to the system.
 tesp_oauth_ca_bundle: ""
 # Validator tuning; see files/tes-validator/tes_validator.py.
-tesp_oauth_leeway_seconds: 60          # clock skew allowed for exp/nbf
-tesp_oauth_http_timeout_seconds: 5     # every call to the issuer
+tesp_oauth_leeway_seconds: 60          # clock skew allowed for exp/nbf; 0-300
+tesp_oauth_http_timeout_seconds: 5     # every call to the issuer; 1-10
 tesp_oauth_userinfo_cache_seconds: 300  # per token, never past its exp
 # Build context of the validator image, outside tesp_install_dir.
 tesp_validator_dir: /srv/tesp-validator

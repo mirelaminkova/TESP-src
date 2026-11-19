@@ -235,8 +235,10 @@ server {
         proxy_set_header Host validator;
         proxy_set_header Authorization $http_authorization;
         proxy_connect_timeout 2s;
-        # The validator gives up on the issuer after its own timeouts.
-        proxy_read_timeout 30s;
+        # Longer than the validator takes to give up on the issuer: up to
+        # three calls in a row (discovery, JWKS, userinfo), each up to about
+        # twice tesp_oauth_http_timeout_seconds when bytes trickle in.
+        proxy_read_timeout {{ 6 * (tesp_oauth_http_timeout_seconds | int) + 5 }}s;
     }
 
 {% macro protected() %}
