@@ -59,6 +59,7 @@ expect "task submission reaches tesp-api" 200 -u "$user:$password" \
     "$base/v1/tasks"
 grep -q '"id"' "$tmp/body" || { echo "FAIL submission returned no id" >&2; fail=1; }
 expect "Swagger UI is still served" 200 "$base/swagger-ui.html"
+expect "ReDoc is public too" 200 "$base/redoc"
 
 # tesp-api must be reachable only through the gateway.
 if ! ports=$(docker port tesp-api); then

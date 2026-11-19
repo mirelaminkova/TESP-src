@@ -36,8 +36,9 @@ jobs:
           python-version: "3.12"
 
       - name: install ansible-core
-        # Same version as in ci.yml and .pre-commit-config.yaml.
-        run: pip install "ansible-core==2.21.5"
+        # 2.16.20: what the SRC catalog item's plugin installs (ansible 9.1.0),
+        # the oldest version in ci.yml's matrix.
+        run: pip install "ansible-core==2.16.20"
 
       - name: render the stack
         run: ansible-playbook -i localhost, -c local tests/e2e/render-stack.yml -e "e2e_dir=$E2E_DIR"

@@ -4,8 +4,8 @@
 # and tesp-api:
 #   - GET /v1/service-info is answered here, from service-info.json next to
 #     this file: tesp-api's own answer is hard-coded for another provider.
-#   - Swagger UI and the OpenAPI document go to tesp-api without credentials,
-#     as before.
+#   - The API docs (Swagger UI, ReDoc, the OpenAPI document) go to tesp-api
+#     without credentials, as before.
 #   - Everything else goes to tesp-api unchanged, Authorization included;
 #     tesp-api checks the HTTP Basic credentials itself. A request without
 #     Basic credentials gets 401 here: tesp-api (c3a9f23) would answer it
@@ -55,7 +55,7 @@ server {
         rewrite ^ /v1/service-info last;
     }
 
-    location ~ ^/(|swagger-ui\.html|openapi\.json|docs/oauth2-redirect)$ {
+    location ~ ^/(|swagger-ui\.html|redoc|openapi\.json|docs/oauth2-redirect)$ {
         proxy_pass $tesp_api_upstream;
     }
 

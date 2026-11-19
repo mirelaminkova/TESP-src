@@ -391,6 +391,8 @@
               # Re-resolved, so a recreated tesp-api container is found.
               - "'resolver 127.0.0.11' in conf"
               - "'set $tesp_api_upstream http://tesp-api:8080;' in conf"
+              # The API docs stay public.
+              - "'|swagger-ui\\\\.html|redoc|openapi\\\\.json|' in conf"
               - conf.count('proxy_pass $tesp_api_upstream;') == 2
               # Never the decoded $uri: it would pass %0d%0a on as a line break.
               - conf is not search('proxy_pass [^;]*\\$uri')

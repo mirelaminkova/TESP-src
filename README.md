@@ -169,7 +169,7 @@ Nextflow has no `auto` addressing style: without `s3PathStyleAccess = true` it u
 
 ## Service info
 
-`GET /tes/v1/service-info` is public and describes this workspace for clients and for the [ELIXIR Cloud Registry](https://github.com/elixir-cloud-aai/cloud-registry). tesp-api's own answer is hard-coded for another provider: it names Masaryk University and says `environment: dev`. So the `gateway` container (`tesp-gateway`) answers it instead, from `/etc/tesp-gateway/service-info.json`. The gateway passes the other requests to tesp-api unchanged, with one exception: a request to the TES API (`/tes/v1/...`) without Basic credentials gets `401` from the gateway, where tesp-api would answer `500`. Service info, Swagger UI and the OpenAPI document stay public.
+`GET /tes/v1/service-info` is public and describes this workspace for clients and for the [ELIXIR Cloud Registry](https://github.com/elixir-cloud-aai/cloud-registry). tesp-api's own answer is hard-coded for another provider: it names Masaryk University and says `environment: dev`. So the `gateway` container (`tesp-gateway`) answers it instead, from `/etc/tesp-gateway/service-info.json`. The gateway passes the other requests to tesp-api unchanged, with one exception: a request to the TES API (`/tes/v1/...`) without Basic credentials gets `401` from the gateway, where tesp-api would answer `500`. Service info and the API docs (Swagger UI at `/tes/swagger-ui.html`, ReDoc at `/tes/redoc`, `/tes/openapi.json`) stay public.
 
 These optional component parameters set it; blank means the default:
 
