@@ -13,6 +13,13 @@
 # credentials, and the staging volume shared with pulsar_rest. Pulsar runs on
 # the host here. S3 is configured in settings.toml and, for the key pair, in
 # {{ tesp_secrets_file }}, mounted below; neither goes in this file.
+#
+# The generated config files ({{ tesp_secrets_dir }}) are bind-mounted
+# read-only, never put in ./: ./ is the image build context and the Dockerfile
+# does `COPY . .`, so they would end up in an image layer. A container reads
+# its config only at start, so each one carries the checksums of the files it
+# reads as labels: a changed file changes the label, and `docker compose up`
+# recreates that container (tasks/tesp-api-config.yml).
 services:
   tesp-api:
     build:
@@ -23,6 +30,9 @@ services:
     container_name: tesp-api
     restart: unless-stopped
     privileged: true
+    labels:
+      tesp.settings-checksum: "{{ tesp_settings_checksum }}"
+      tesp.s3-keys-checksum: "{{ tesp_s3_keys_checksum }}"
     environment:
       - FASTAPI_PROFILE=src
       - CONTAINER_TYPE={{ tesp_container_type }}
@@ -34,8 +44,10 @@ services:
       - pulsar-proxy
     volumes:
       - ./:/app
-      # Read by Dynaconf next to settings.toml. Kept outside ./ so that
-      # `COPY . .` in the image build never picks it up.
+      # Read by Dynaconf; mounted over the checkout's own settings.toml.
+      # Single files are fine here (unlike the gateway's directory): a
+      # changed file changes a label above, which recreates the container.
+      - {{ tesp_settings_file }}:/app/settings.toml:ro
       - {{ tesp_secrets_file }}:/app/.secrets.toml:ro
 
   gateway:

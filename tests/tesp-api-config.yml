@@ -1,0 +1,169 @@
+---
+# Issue #10: tesp-api's generated config (tasks/tesp-api-config.yml) stays
+# out of the image build context, and a changed config changes tesp-api's
+# compose definition, and only that one, so `docker compose up` (the
+# playbook's "Build and start" task) recreates tesp-api. (pulsar-proxy's
+# config is checked in render-templates.yml.)
+# Runs locally without root or Docker:
+#
+#   ansible-playbook -i localhost, -c local tests/tesp-api-config.yml
+- name: Generated tesp-api config and container recreation
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+  vars:
+    workspace_fqdn: tesp.example.src.surf-hosted.nl
+    templates_dir: "{{ playbook_dir }}/../templates"
+  tasks:
+    - name: Create a scratch directory
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: tesp-config
+      register: scratch
+
+    - name: Deploy, change, check, clean up
+      block:
+        # Facts, because group_vars/all.yml (vars_files) beats play vars.
+        - name: Set paths and test secrets
+          ansible.builtin.set_fact:
+            tesp_install_dir: "{{ scratch.path }}/srv/tesp-api"
+            tesp_secrets_dir: "{{ scratch.path }}/etc/tesp-api"
+            pulsar_token: test-pulsar-token-7Hq2
+            tesp_basic_auth_password: test-tes-password-K9xw
+            src_s3_access_key_id: test-s3-access-key-Qe3r
+            src_s3_secret_access_key: test-s3-secret-Jw8x
+            tesp_gateway_conf_checksum: 0123abcd
+            # Set by playbook.yml from pulsar-token-proxy.conf.
+            tesp_pulsar_proxy_conf_checksum: 3333cccc
+
+        - name: Create the build context and the config directory
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: directory
+            mode: '0700'
+          loop:
+            - "{{ tesp_install_dir }}"
+            - "{{ tesp_secrets_dir }}"
+
+        # --- first deploy ---------------------------------------------------
+        - name: First deploy
+          ansible.builtin.include_tasks: include/deploy-tesp-api-config.yml
+          vars:
+            run: first
+
+        - name: Find files in the build context
+          ansible.builtin.find:
+            paths: "{{ tesp_install_dir }}"
+            hidden: true
+          register: in_context
+
+        - name: The build context has no generated file
+          ansible.builtin.assert:
+            that: in_context.matched == 0
+            fail_msg: "{{ in_context.files | map(attribute='path') | list }}"
+
+        - name: Config files are 0600
+          ansible.builtin.assert:
+            that:
+              - item.stat.exists
+              - item.stat.mode == '0600'
+            fail_msg: "{{ item.item }}: {{ item.stat.mode | default('missing') }}"
+            quiet: true
+          loop: "{{ config_stat.results }}"
+          loop_control:
+            label: "{{ item.item }}"
+
+        # The mounts and label names are checked in render-templates.yml.
+        - name: The labels hold the real checksums, and no secret
+          ansible.builtin.assert:
+            that:
+              - labels.first.api | length == 2
+              # Each label value is a real checksum, not an empty default.
+              - >-
+                labels.first.api.values() | select('match', '^[0-9a-f]{40,}$')
+                | list | length == 2
+              # Checksums only: no secret reaches the compose file, which is
+              # in the build context.
+              - pulsar_token not in compose_src.first
+              - tesp_basic_auth_password not in compose_src.first
+              - src_s3_secret_access_key not in compose_src.first
+
+        # --- same config again: nothing is recreated --------------------------
+        - name: Deploy again with the same config
+          ansible.builtin.include_tasks: include/deploy-tesp-api-config.yml
+          vars:
+            run: same
+
+        - name: Unchanged config leaves every container definition alone
+          ansible.builtin.assert:
+            that:
+              - compose.same == compose.first
+
+        # --- a changed setting (settings.toml) --------------------------------
+        - name: Change a setting
+          ansible.builtin.set_fact:
+            tesp_max_wait_seconds: 4321
+
+        - name: Deploy with the changed setting
+          ansible.builtin.include_tasks: include/deploy-tesp-api-config.yml
+          vars:
+            run: setting
+
+        - name: Only tesp-api's definition changes, and the file has the value
+          ansible.builtin.assert:
+            that:
+              - "'pulsar.status.max_wait_seconds = 4321' in settings_toml"
+              - labels.setting.api != labels.first.api
+              - labels.setting.proxy == labels.first.proxy
+              - >-
+                compose.setting.services.gateway
+                == compose.first.services.gateway
+          vars:
+            settings_toml: "{{ lookup('file', tesp_settings_file) }}"
+
+        # --- changed S3 keys (.secrets.toml) ----------------------------------
+        - name: Change the S3 key pair
+          ansible.builtin.set_fact:
+            src_s3_secret_access_key: test-s3-secret-other-Lm5t
+
+        - name: Deploy with the changed key pair
+          ansible.builtin.include_tasks: include/deploy-tesp-api-config.yml
+          vars:
+            run: s3
+
+        - name: Changed secrets recreate tesp-api only
+          ansible.builtin.assert:
+            that:
+              - labels.s3.api['tesp.s3-keys-checksum'] != labels.setting.api['tesp.s3-keys-checksum']
+              - labels.s3.api['tesp.settings-checksum'] == labels.setting.api['tesp.settings-checksum']
+              - labels.s3.proxy == labels.setting.proxy
+
+        # --- check mode (--check) ---------------------------------------------
+        # A file that would change has no checksum in check mode; the run
+        # must still go through, and write nothing.
+        - name: Change the TES password
+          ansible.builtin.set_fact:
+            tesp_basic_auth_password: test-tes-password-other-Vb2n
+
+        - name: Run the config tasks in check mode
+          ansible.builtin.include_tasks:
+            file: ../tasks/tesp-api-config.yml
+            apply:
+              check_mode: true
+
+        - name: Check mode wrote nothing and marks the changed file
+          ansible.builtin.assert:
+            that:
+              - tesp_settings_checksum == 'check-mode'
+              # Unchanged files keep their real checksums: no spurious change.
+              - >-
+                tesp_s3_keys_checksum
+                == labels.s3.api['tesp.s3-keys-checksum']
+              - tesp_basic_auth_password not in lookup('file', tesp_settings_file)
+
+      always:
+        - name: Remove the scratch directory
+          ansible.builtin.file:
+            path: "{{ scratch.path }}"
+            state: absent

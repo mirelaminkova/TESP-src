@@ -1,0 +1,49 @@
+---
+# tesp-api's generated config (issue #10): settings.toml (with the TES
+# password) and .secrets.toml (with the S3 key pair). Included by
+# playbook.yml, and by tests/tesp-api-config.yml and tests/e2e/render-stack.yml,
+# so the tests run these very tasks.
+#
+# The files go to tesp_secrets_dir (root, 0700), never to tesp_install_dir:
+# that is the image build context and the Dockerfile does `COPY . .`, so a
+# file there would end up in an image layer. docker-compose.yml.j2
+# bind-mounts each file read-only.
+#
+# tesp-api reads these files only when it starts. Their checksums go into
+# labels on the tesp-api service, so a changed file changes its definition
+# and the "Build and start" task's `docker compose up` recreates it. Unlike
+# a handler, this also catches up on the next run after a run that failed
+# before the stack was up. (pulsar-proxy's config does the same in
+# playbook.yml.)
+#
+# No owner: the playbook runs as root, and nobody else can write in the
+# 0700 directory.
+#
+# src is relative to this file (tasks/../templates), so the tests in tests/
+# and tests/e2e/ find the templates too; hence the noqa.
+
+- name: Template TESP-API settings.toml
+  ansible.builtin.template:
+    src: ../templates/tesp-api/settings.toml.j2  # noqa: no-relative-paths (see header)
+    dest: "{{ tesp_settings_file }}"
+    mode: '0600'  # holds the TES password
+  diff: false  # would print the password
+  register: tesp_settings_result
+
+# Holds the S3 secret key. no_log so it is never shown (not even with --diff
+# or -v).
+- name: Template TESP-API secrets (S3 credentials)
+  ansible.builtin.template:
+    src: ../templates/tesp-api/secrets.toml.j2  # noqa: no-relative-paths (see header)
+    dest: "{{ tesp_secrets_file }}"
+    mode: '0600'
+  no_log: true
+  register: tesp_s3_keys_result
+
+# SHA-1 of each file, as the template module reports it. The files hold
+# random or long-lived secrets, so a checksum doesn't reveal them. In check
+# mode a file that would change has no checksum yet.
+- name: Record the generated config checksums
+  ansible.builtin.set_fact:
+    tesp_settings_checksum: "{{ tesp_settings_result.checksum | default('check-mode') }}"
+    tesp_s3_keys_checksum: "{{ tesp_s3_keys_result.checksum | default('check-mode') }}"

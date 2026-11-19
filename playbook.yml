@@ -342,25 +342,10 @@
         state: directory
         mode: '0755'
 
-    - name: Template TESP-API settings.toml
-      ansible.builtin.template:
-        src: templates/tesp-api/settings.toml.j2
-        dest: "{{ tesp_install_dir }}/settings.toml"
-        owner: root
-        group: root
-        mode: '0640'
-      diff: false  # holds the TES password
-
-    # Holds the S3 secret key. no_log so it is never shown (not even with
-    # --diff or -v).
-    - name: Template TESP-API secrets (S3 credentials)
-      ansible.builtin.template:
-        src: templates/tesp-api/secrets.toml.j2
-        dest: "{{ tesp_secrets_file }}"
-        owner: root
-        group: root
-        mode: '0600'
-      no_log: true
+    # Issue #10: settings.toml and the S3 keys, outside the image build
+    # context; a change recreates tesp-api (see the task file).
+    - name: Template the generated TESP-API config
+      ansible.builtin.include_tasks: tasks/tesp-api-config.yml
 
     - name: Template Pulsar token-injection proxy config
       ansible.builtin.template:

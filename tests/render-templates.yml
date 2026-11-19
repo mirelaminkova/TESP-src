@@ -44,6 +44,9 @@
         tesp_first_deploy_time: '2026-11-18T09:30:00Z'
         # Set by playbook.yml from the rendered gateway.conf.
         tesp_gateway_conf_checksum: 0123abcd
+        # Set by tasks/tesp-api-config.yml from the files it writes.
+        tesp_settings_checksum: 1111aaaa
+        tesp_s3_keys_checksum: 2222bbbb
 
     - name: Create output directory
       ansible.builtin.tempfile:
@@ -1013,6 +1016,86 @@
             pulsar_role: >-
               {{ playbook_roles | select('mapping')
                  | selectattr('role', 'eq', 'galaxyproject.pulsar') | list }}
+
+        - name: Generated config is bind-mounted from outside the build context
+          ansible.builtin.assert:
+            that:
+              - (tesp_settings_file ~ ':/app/settings.toml:ro')
+                in files['docker-compose.yml']
+              - (tesp_secrets_file ~ ':/app/.secrets.toml:ro')
+                in files['docker-compose.yml']
+              - (tesp_pulsar_proxy_conf ~ ':/etc/nginx/conf.d/default.conf:ro')
+                in files['docker-compose.yml']
+              - not (tesp_settings_file is match(tesp_install_dir ~ '/'))
+              - not (tesp_secrets_file is match(tesp_install_dir ~ '/'))
+              - not (tesp_pulsar_proxy_conf is match(tesp_install_dir ~ '/'))
+            fail_msg: >-
+              a generated tesp-api config file is in tesp_install_dir, the
+              image build context, or isn't mounted from tesp_secrets_dir
+
+        - name: The tesp-api service carries the checksums of the config it reads
+          ansible.builtin.assert:
+            that:
+              - >-
+                compose.services['tesp-api'].labels
+                == {'tesp.settings-checksum': '1111aaaa',
+                    'tesp.s3-keys-checksum': '2222bbbb'}
+          vars:
+            compose: "{{ files['docker-compose.yml'] | from_yaml }}"
+
+        # playbook.yml and tasks/*.yml: only the compose file may be
+        # templated or copied into the build context. A guard against the
+        # obvious mistake, not a proof: it reads blocks one level deep and
+        # looks for tesp_install_dir by name; tests/tesp-api-config.yml and
+        # the e2e image check test the behaviour.
+        - name: Find the tasks in playbook.yml and tasks/, blocks included
+          ansible.builtin.set_fact:
+            build_context_tasks: >-
+              {{ [top, top | map(attribute='block', default=[]),
+                  top | map(attribute='rescue', default=[]),
+                  top | map(attribute='always', default=[])]
+                 | flatten(levels=2) }}
+          vars:
+            plays: "{{ lookup('file', playbook_dir ~ '/../playbook.yml') | from_yaml }}"
+            task_files: >-
+              {{ query('ansible.builtin.file', *query('ansible.builtin.fileglob',
+                                                      playbook_dir ~ '/../tasks/*.yml'))
+                 | map('from_yaml') | flatten(levels=1) }}
+            top: >-
+              {{ [plays | map(attribute='pre_tasks', default=[]),
+                  plays | map(attribute='tasks', default=[]),
+                  plays | map(attribute='post_tasks', default=[]),
+                  [task_files]]
+                 | flatten(levels=3) }}
+
+        - name: The scan found the config tasks
+          ansible.builtin.assert:
+            that:
+              - >-
+                build_context_tasks | selectattr('name', 'defined')
+                | selectattr('name', '==', 'Template TESP-API settings.toml')
+                | list | length == 1
+              - >-
+                build_context_tasks | selectattr('name', 'defined')
+                | selectattr('name', '==', 'Take createdAt from the previous service info')
+                | list | length == 1
+
+        - name: Only the compose file is written into the build context
+          ansible.builtin.assert:
+            that:
+              - >-
+                not (dest is search('tesp_install_dir'))
+                or dest is search('/docker-compose\.deploy\.yml$')
+            quiet: true
+          loop: "{{ build_context_tasks }}"
+          loop_control:
+            label: "{{ item.name | default('(unnamed)') }}"
+          when: module in item
+          vars:
+            module: >-
+              {{ ('ansible.builtin.template' in item)
+                 | ternary('ansible.builtin.template', 'ansible.builtin.copy') }}
+            dest: "{{ item[module].dest | default('') }}"
 
         - name: Firewall script guards the Pulsar port
           ansible.builtin.assert:
