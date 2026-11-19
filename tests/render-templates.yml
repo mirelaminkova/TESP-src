@@ -15,6 +15,9 @@
     fact_co_groups: {src_co_admin: test-co-admins}
     src_pulsar_storage_path: ""
     templates_dir: "{{ playbook_dir }}/../templates"
+    # gather_facts is off: facts the SLURM settings read (welcome.html says
+    # whether CPUs are pinned). Tasks below override them.
+    ansible_facts: {processor_vcpus: 8, processor_nproc: 8, memtotal_mb: 16000}
     # Set by playbook.yml from the rendered proxy config.
     tesp_pulsar_proxy_conf_checksum: test-proxy-conf-sha256-4f1c
     # playbook.yml itself, for the checks of its tasks.
@@ -848,16 +851,56 @@
               - slurm_config.JobAcctGatherType == 'jobacct_gather/linux'
               - slurm_config.JobAcctGatherParams == 'OverMemoryKill,UsePss'
               - slurm_config.JobAcctGatherFrequency == 'task=10'
-              # No cgroup plugins and no task/affinity: the role's defaults,
-              # proctrack/pgid and no task plugin, stay.
+              # No cgroup plugins: the role's default proctrack/pgid stays.
               - slurm_config.ProctrackType is not defined
-              - slurm_config.TaskPlugin is not defined
               - slurm_cgroup_config is not defined
+              # CPUs 0..7 are the node's (an SRC VM): pin jobs (issue #39).
+              - tesp_slurm_cpus_allowed == '0-7'
+              - slurm_config.TaskPlugin == 'task/affinity'
           vars:
             ansible_facts:
               processor_vcpus: 8
               processor_nproc: 8
               memtotal_mb: 16000
+            tesp_pid1_status:
+              content: "{{ tesp_test_pid1_status | b64encode }}"
+            # As in /proc/1/status: lines of "Key:<tab>value".
+            tesp_test_pid1_status: >-
+              {% set tab = '%c' | format(9) %}
+              {{ ['Name:' ~ tab ~ 'systemd', 'Cpus_allowed:' ~ tab ~ 'ff',
+                  'Cpus_allowed_list:' ~ tab ~ '0-7', 'Mems_allowed_list:' ~ tab ~ '0', '']
+                 | join('%c' | format(10)) }}
+
+        # Binding to CPU 0 where the node may only run on other CPUs fails
+        # every job and drains the node (seen on an LXD container).
+        - name: SLURM pins jobs only where the CPUs are numbered 0..N-1
+          ansible.builtin.assert:
+            that:
+              - item.cpus_allowed_list is none or tesp_slurm_cpus_allowed == item.cpus_allowed_list
+              - slurm_config.TaskPlugin == item.plugin
+              # The welcome page tells users whether CPUs are capped.
+              - >-
+                ("CPUs aren't capped" in lookup('template', templates_dir ~ '/welcome.html'))
+                == (item.plugin == 'task/none')
+            fail_msg: "{{ item }}: TaskPlugin={{ slurm_config.TaskPlugin }}"
+          vars:
+            ansible_facts:
+              processor_vcpus: "{{ item.cpus }}"
+              processor_nproc: "{{ item.cpus }}"
+              memtotal_mb: 16000
+            tesp_pid1_status: >-
+              {{ {} if item.cpus_allowed_list is none else
+                 {'content': ('Cpus_allowed_list:' ~ tesp_test_tab ~ item.cpus_allowed_list) | b64encode} }}
+            tesp_test_tab: "{{ '%c' | format(9) }}"
+          loop:
+            - {cpus: 2, cpus_allowed_list: '0-1', plugin: task/affinity}
+            - {cpus: 1, cpus_allowed_list: '0', plugin: task/affinity}
+            - {cpus: 2, cpus_allowed_list: '1,7', plugin: task/none}
+            - {cpus: 2, cpus_allowed_list: '4-5', plugin: task/none}
+            - {cpus: 1, cpus_allowed_list: '3', plugin: task/none}
+            - {cpus: 4, cpus_allowed_list: '0-1,3-4', plugin: task/none}
+            # Not read (no slurp result): don't pin.
+            - {cpus: 2, cpus_allowed_list: null, plugin: task/none}
 
         - name: SLURM gets online CPUs and at least half of a small node
           ansible.builtin.assert:
