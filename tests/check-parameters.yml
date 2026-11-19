@@ -249,6 +249,38 @@
       - why: CORS origins with a space
         expect: Invalid CORS origins
         vars: {src_tes_cors_origins: 'https://a.example.org https://b.example.org'}
+    # Issue #44: the stack network's subnet.
+    subnet_cases:
+      - why: a stack subnet with a host address (172.16.97.1/24)
+        expect: Invalid stack subnet
+        vars: {src_tes_stack_subnet: 172.16.97.1/24}
+      - why: a stack subnet without a prefix
+        expect: Invalid stack subnet
+        vars: {src_tes_stack_subnet: 172.16.97.0}
+      - why: a stack subnet wider than /16
+        expect: Invalid stack subnet
+        vars: {src_tes_stack_subnet: 172.16.0.0/12}
+      - why: a stack subnet narrower than /28
+        expect: Invalid stack subnet
+        vars: {src_tes_stack_subnet: 172.16.97.0/29}
+      - why: a stack subnet with an octet over 255
+        expect: Invalid stack subnet
+        vars: {src_tes_stack_subnet: 172.16.300.0/24}
+      - why: a loopback stack subnet
+        expect: Invalid stack subnet
+        vars: {src_tes_stack_subnet: 127.1.0.0/24}
+      - why: a link-local stack subnet
+        expect: Invalid stack subnet
+        vars: {src_tes_stack_subnet: 169.254.1.0/24}
+      - why: a multicast stack subnet
+        expect: Invalid stack subnet
+        vars: {src_tes_stack_subnet: 224.1.0.0/24}
+      - why: an IPv6 stack subnet
+        expect: Invalid stack subnet
+        vars: {src_tes_stack_subnet: 'fd00::/64'}
+      - why: a stack subnet with a newline in it
+        expect: Invalid stack subnet
+        vars: {src_tes_stack_subnet: "10.9.8.0/24\n."}
     other_cases:
       - why: an S3 endpoint without a scheme
         expect: Invalid S3 component parameters
@@ -272,6 +304,33 @@
       ansible.builtin.include_tasks: ../tasks/check-parameters.yml
       vars:
         tesp_oauth_http_timeout_seconds: 20
+
+    - name: The default stack subnet; its gateway alone may set X-Real-IP
+      ansible.builtin.assert:
+        that:
+          - tesp_stack_subnet == '172.16.97.0/24'
+          - tesp_stack_gateway == '172.16.97.1'
+          - tesp_gateway_trusted_proxies == ['172.16.97.1/32']
+
+    - name: A stack subnet from the component parameter passes the checks
+      ansible.builtin.include_tasks: ../tasks/check-parameters.yml
+      vars:
+        src_tes_stack_subnet: ' 10.213.16.0/20 '
+
+    - name: The stack's gateway and trusted address follow the parameter
+      ansible.builtin.assert:
+        that:
+          - tesp_stack_subnet == '10.213.16.0/20'
+          - tesp_stack_gateway == '10.213.16.1'
+          - tesp_gateway_trusted_proxies == ['10.213.16.1/32']
+      vars:
+        src_tes_stack_subnet: ' 10.213.16.0/20 '
+
+    - name: The narrowest and widest stack subnets pass the checks
+      ansible.builtin.include_tasks: ../tasks/check-parameters.yml
+      vars:
+        src_tes_stack_subnet: "{{ item }}"
+      loop: [192.0.2.240/28, 10.200.0.0/16]
 
     - name: SRC component parameters reach the service info
       ansible.builtin.assert:
@@ -383,7 +442,7 @@
 
     - name: Each invalid case is rejected by its check
       ansible.builtin.include_tasks: include/expect-invalid.yml
-      loop: "{{ service_info_cases + oauth_cases + cors_cases + other_cases }}"
+      loop: "{{ service_info_cases + oauth_cases + cors_cases + subnet_cases + other_cases }}"
       loop_control:
         loop_var: case
         label: "{{ case.why }}"

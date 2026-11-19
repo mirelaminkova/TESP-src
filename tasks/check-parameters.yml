@@ -149,6 +149,34 @@
       tesp_oauth_http_timeout_seconds whole seconds from 1 to 20. See "Access
       with LS Login" in the README.
 
+# Issue #44: the stack's network, whose gateway address alone may set
+# X-Real-IP. Whether it's free is checked before the stack starts
+# (files/check_stack_subnet.py), once Docker is there.
+- name: Validate the stack subnet (src_tes_stack_subnet)
+  vars:
+    octet: '(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
+    # /16 to /28: room for the stack's containers, and not half the
+    # private ranges.
+    subnet_re: '({{ octet }}\.){3}{{ octet }}/(1[6-9]|2[0-8])\Z'
+    octets: "{{ tesp_stack_subnet.split('/')[0].split('.') | map('int') | list }}"
+    host_bits: "{{ 32 - tesp_stack_subnet.split('/')[1] | int }}"
+    address: >-
+      {{ octets[0] * 16777216 + octets[1] * 65536 + octets[2] * 256 + octets[3] }}
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      # One expression, so the rest isn't computed from a malformed value.
+      - >-
+        tesp_stack_subnet is string and tesp_stack_subnet is match(subnet_re)
+        and address | int % (2 ** (host_bits | int)) == 0
+        and octets[0] not in [0, 127] and octets[0] < 224
+        and not (octets[0] == 169 and octets[1] == 254)
+    fail_msg: >-
+      Invalid stack subnet. src_tes_stack_subnet must be an IPv4 network
+      address with a prefix from /16 to /28, such as 172.16.97.0/24 (not a
+      host address such as 172.16.97.1/24), and not loopback, link-local or
+      multicast. See "Who can claim an address" in the README.
+
 - name: Validate the CORS origins (src_tes_cors_origins)
   vars:
     host_re: '[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+'

@@ -148,6 +148,12 @@ networks:
     driver: bridge
     driver_opts:
       com.docker.network.driver.mtu: {{ tesp_network_mtu }}
+    # Pinned (issue #44): the gateway trusts X-Real-IP only from this
+    # network's gateway address, where the host's connections arrive from.
+    ipam:
+      config:
+        - subnet: {{ tesp_stack_subnet }}
+          gateway: {{ tesp_stack_gateway }}
 {% if tesp_oauth_enabled | bool %}
   auth:
     driver: bridge

@@ -10,9 +10,12 @@ tesp_oauth_issuers:
     exempt_audiences: [tes]
     entitlements:
       any_of: ["urn:e2e:group:ECP_CLN"]
-# The runner reaches the gateway's published port from Docker's bridge, so
-# Basic is allowed from there; check-oauth.sh sends X-Real-IP to be elsewhere.
-tesp_basic_auth_sources: [172.16.0.0/12]
+# The runner reaches the gateway's published port from the stack network's
+# gateway address, as the host nginx does, so Basic is allowed from there;
+# check-oauth.sh sends X-Real-IP to be elsewhere.
+tesp_basic_auth_sources: ["{{ tesp_stack_gateway }}"]
+# Never rate-limited; check-oauth.sh claims it with X-Real-IP (issue #44).
+tesp_rate_exempt_sources: [198.51.100.7]
 # A browser portal such as Krini.
 tesp_cors_origins: ["https://portal.e2e.test"]
 # The tag e2e tasks of the exempt client name their user in.
