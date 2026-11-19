@@ -1,8 +1,9 @@
 ---
 # Adopted from mirelaminkova/nextflow-tesp-src (issue #24).
 # `pre-commit install` sets up both the commit and the push stage.
-# ansible-core is pinned here (unit-tests) and in .github/workflows/ci.yml;
-# keep them the same. There is no separate `ansible-playbook --syntax-check`
+# ansible-core is pinned here (unit-tests) and in .github/workflows/ci.yml's
+# `unit` job; keep them the same. Its `src-ansible-core` job deliberately pins
+# SRC's 2.16. There is no separate `ansible-playbook --syntax-check`
 # hook as in nextflow-tesp-src: playbook.yml needs the roles from
 # requirements.yml, which aren't installed here, and ansible-lint already runs
 # the syntax check against the stand-ins in .ansible-lint.
@@ -42,7 +43,7 @@ repos:
         language: python
         additional_dependencies: [ansible-core==2.21.5]
         pass_filenames: false
-        files: ^(playbook\.yml|group_vars/|templates/|tests/|\.github/workflows/)
+        files: ^(playbook\.yml|requirements\.yml|group_vars/|templates/|tests/|\.github/workflows/)
       # Static analysis on every push; a finding blocks the push.
       - id: ast-grep
         name: ast-grep scan (+ rule tests)
