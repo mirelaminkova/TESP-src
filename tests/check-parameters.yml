@@ -275,6 +275,15 @@
       - why: a multicast stack subnet
         expect: Invalid stack subnet
         vars: {src_tes_stack_subnet: 224.1.0.0/24}
+      - why: a public stack subnet (the workspace couldn't reach it)
+        expect: Invalid stack subnet
+        vars: {src_tes_stack_subnet: 8.8.8.0/24}
+      - why: a stack subnet just outside 172.16.0.0/12
+        expect: Invalid stack subnet
+        vars: {src_tes_stack_subnet: 172.32.0.0/24}
+      - why: a stack subnet just outside 100.64.0.0/10
+        expect: Invalid stack subnet
+        vars: {src_tes_stack_subnet: 100.128.0.0/24}
       - why: an IPv6 stack subnet
         expect: Invalid stack subnet
         vars: {src_tes_stack_subnet: 'fd00::/64'}
@@ -330,7 +339,7 @@
       ansible.builtin.include_tasks: ../tasks/check-parameters.yml
       vars:
         src_tes_stack_subnet: "{{ item }}"
-      loop: [192.0.2.240/28, 10.200.0.0/16]
+      loop: [192.168.250.240/28, 10.200.0.0/16, 100.127.0.0/16, 172.31.255.0/24]
 
     - name: SRC component parameters reach the service info
       ansible.builtin.assert:

@@ -77,9 +77,29 @@ jobs:
             echo "COMPOSE_FILE=docker-compose.deploy.yml" >> "$GITHUB_ENV"
           fi
 
+      # Issue #44: the playbook's check of the stack's pinned subnet
+      # (tesp_stack_subnet's default), against the runner's real Docker
+      # networks and routes, before the stack exists and after.
+      - name: the stack's subnet is free before the first start
+        run: |
+          out=$(python3 files/check_stack_subnet.py 172.16.97.0/24 tesp-api)
+          echo "$out"
+          test "$out" = '{"own_subnet": null}'
+
       - name: start the stack
         working-directory: ${{ env.E2E_DIR }}/tesp-api
         run: docker compose up -d --build
+
+      - name: the stack's own network passes the subnet check; others don't
+        run: |
+          docker network inspect -f '{{range .IPAM.Config}}{{.Subnet}} {{.Gateway}}{{end}}' tesp-api_default
+          out=$(python3 files/check_stack_subnet.py 172.16.97.0/24 tesp-api)
+          echo "$out"
+          test "$out" = '{"own_subnet": "172.16.97.0/24"}'
+          # As another project, the stack's network is a conflict; so is
+          # Docker's default bridge.
+          ! python3 files/check_stack_subnet.py 172.16.97.0/24 other-project
+          ! python3 files/check_stack_subnet.py 172.17.0.0/24 tesp-api
 
       - name: wait for tesp-api behind the gateway
         run: tests/e2e/wait-for-tesp-api.sh http://127.0.0.1:8080 tes "$E2E_TES_PASSWORD"

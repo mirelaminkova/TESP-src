@@ -588,14 +588,32 @@
       ansible.builtin.script:
         cmd: >-
           files/check_stack_subnet.py {{ tesp_stack_subnet | quote }}
-          {{ (tesp_install_dir | basename | lower ~ '_default') | quote }}
+          {{ tesp_compose_project | quote }}
         executable: python3
+      register: tesp_stack_subnet_check
       changed_when: false
       check_mode: false
+
+    # An earlier version let Docker pick the subnet, and Compose doesn't
+    # always recreate a network whose addresses changed. Taking the stack
+    # down removes its containers and networks; MongoDB's data is a bind
+    # mount and stays, and the next task starts everything again.
+    - name: Take the stack down to recreate its network on the pinned subnet
+      community.docker.docker_compose_v2:
+        project_src: "{{ tesp_install_dir }}"
+        project_name: "{{ tesp_compose_project }}"
+        files:
+          - docker-compose.deploy.yml
+        state: absent
+      vars:
+        tesp_stack_old_subnet: >-
+          {{ (tesp_stack_subnet_check.stdout | from_json).own_subnet }}
+      when: tesp_stack_old_subnet not in ['', 'None', none, tesp_stack_subnet]
 
     - name: Build and start the TESP-API stack
       community.docker.docker_compose_v2:
         project_src: "{{ tesp_install_dir }}"
+        project_name: "{{ tesp_compose_project }}"
         files:
           - docker-compose.deploy.yml
         build: always
@@ -605,6 +623,32 @@
         wait_timeout: 300
         # Drops the validator when tokens are switched off.
         remove_orphans: true
+
+    # The gateway trusts X-Real-IP only from tesp_stack_gateway; on any other
+    # address every client would look like one (one rate-limit bucket, no
+    # Basic source matching).
+    - name: Read the stack network's addresses
+      ansible.builtin.command:
+        argv: [docker, network, inspect, "{{ tesp_compose_project }}_default"]
+      register: tesp_stack_network
+      changed_when: false
+      when: not ansible_check_mode
+
+    - name: The stack's network has the pinned subnet and gateway
+      ansible.builtin.assert:
+        that:
+          - ipam | length == 1
+          - ipam[0].Subnet | default('') == tesp_stack_subnet
+          - ipam[0].Gateway | default('') == tesp_stack_gateway
+        fail_msg: >-
+          The network {{ tesp_compose_project }}_default has {{ ipam }}, not
+          {{ tesp_stack_subnet }} with gateway {{ tesp_stack_gateway }}.
+          Run `docker compose -f docker-compose.deploy.yml down` in
+          {{ tesp_install_dir }} and deploy again.
+        quiet: true
+      vars:
+        ipam: "{{ (tesp_stack_network.stdout | from_json)[0].IPAM.Config }}"
+      when: not ansible_check_mode
 
   handlers:
     # Notified by the galaxyproject.pulsar role when its config changes
