@@ -51,10 +51,16 @@ class IdP:
         self.extra_keys = []
         self.jwks_status = 200
         self.jwks_body = None  # None: the real key set
+        # Like LS Login: userinfo answers this many seconds late when asked
+        # for application/json, and without that delay otherwise.
+        self.userinfo_json_delay = 0
+        self.userinfo_delay = 0  # for every userinfo request
+        self.accept = {}  # path -> the Accept header of its last request
         idp = self
 
         class H(BaseHTTPRequestHandler):
             def do_GET(self):  # noqa: N802
+                idp.accept[self.path] = self.headers.get("Accept")
                 if self.path == "/.well-known/openid-configuration":
                     idp.hits["discovery"] += 1
                     body = {"issuer": idp.discovery_issuer or idp.issuer,
@@ -76,9 +82,16 @@ class IdP:
                     auth = self.headers.get("Authorization", "")
                     if not auth.startswith("Bearer "):
                         return self._json(401, {})
+                    if "application/json" in (self.headers.get("Accept") or ""):
+                        time.sleep(idp.userinfo_json_delay)
+                    time.sleep(idp.userinfo_delay)
                     return self._json(idp.userinfo_status, idp.userinfo)
                 if self.path == "/notjson":
-                    return self._raw(200, b"<html>")
+                    return self._raw(200, b"<html>", "text/html")
+                if self.path == "/signed":
+                    # Signed userinfo (OIDC Core 5.3.2), a JWT, not JSON.
+                    return self._raw(200, b"eyJhbGciOiJSUzI1NiJ9.e30.c2ln",
+                                     "application/jwt")
                 if self.path == "/trickle":
                     # A byte every 0.3 s: each read is quick, the whole slow.
                     self.send_response(200)
@@ -99,9 +112,9 @@ class IdP:
             def _json(self, status, body):
                 self._raw(status, json.dumps(body).encode())
 
-            def _raw(self, status, data):
+            def _raw(self, status, data, content_type="application/json"):
                 self.send_response(status)
-                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
@@ -560,6 +573,36 @@ def test_garbage_tokens_are_refused(idp):
 
 # -- caching and abuse --------------------------------------------------------
 
+def test_userinfo_is_not_asked_for_json(idp):
+    """LS Login answered userinfo about 6 s late to Accept: application/json
+    (0.3 s to */*), past the timeout: every token got 503."""
+    idp.userinfo_json_delay = 3
+    v = tv.Validator(idp.config(http_timeout_seconds=1))
+    start = time.monotonic()
+    assert check(v, idp.token()).kind == "bearer"
+    assert time.monotonic() - start < 1
+    assert idp.accept["/userinfo"] == "*/*"
+
+
+def test_discovery_and_jwks_still_ask_for_json(idp):
+    v = tv.Validator(idp.config())
+    check(v, idp.token())
+    assert idp.accept["/.well-known/openid-configuration"] == "application/json"
+    assert idp.accept["/jwks"] == "application/json"
+
+
+def test_a_slow_userinfo_is_paid_once_per_token(idp):
+    idp.userinfo_delay = 0.5
+    v = tv.Validator(idp.config())
+    token = idp.token()
+    check(v, token)
+    start = time.monotonic()
+    for _ in range(5):
+        check(v, token)
+    assert time.monotonic() - start < 0.5
+    assert idp.hits["userinfo"] == 1
+
+
 def test_userinfo_answer_is_cached(idp):
     v = tv.Validator(idp.config())
     token = idp.token()
@@ -737,25 +780,35 @@ def test_valid_config_defaults():
         "issuer": "https://login.aai.lifescience-ri.eu/oidc/",
         "allowed_client_ids": ["c"], "entitlements": {"prefix_any_of": ["p:"]},
         "userinfo_endpoint": "https://login.aai.lifescience-ri.eu/oidc/userinfo",
-    }], "http_timeout_seconds": 3})
+    }]})
     i = c.issuers["https://login.aai.lifescience-ri.eu/oidc/"]
     assert i.discovery_url == (
         "https://login.aai.lifescience-ri.eu/oidc/.well-known/openid-configuration")
     assert i.algorithms == ("RS256",)
-    assert c.http_timeout_seconds == 3 and c.leeway_seconds == 60
+    assert c.http_timeout_seconds == 10 and c.leeway_seconds == 60
 
 
 # -- fetch_json ---------------------------------------------------------------
 
 def test_fetch_json_errors(idp):
-    with pytest.raises(tv.FetchError, match="not JSON"):
+    with pytest.raises(tv.FetchError, match=r"not JSON \(text/html\)"):
         tv.fetch_json(idp.base + "/notjson", 2)
+    # Says what came instead, so signed userinfo isn't taken for an outage.
+    with pytest.raises(tv.FetchError, match=r"not JSON \(application/jwt\)"):
+        tv.fetch_json(idp.base + "/signed", 2, accept="*/*")
     with pytest.raises(tv.FetchError, match="too large"):
         tv.fetch_json(idp.base + "/huge", 2)
     with pytest.raises(tv.FetchError, match="HTTPError 404"):
         tv.fetch_json(idp.base + "/missing", 2)
     with pytest.raises(tv.FetchError):
         tv.fetch_json("http://127.0.0.1:1/", 2)
+
+
+def test_fetch_json_sends_the_accept_header_asked_for(idp):
+    tv.fetch_json(idp.base + "/jwks", 2)
+    assert idp.accept["/jwks"] == "application/json"
+    tv.fetch_json(idp.base + "/jwks", 2, accept="*/*")
+    assert idp.accept["/jwks"] == "*/*"
 
 
 def test_fetch_json_error_does_not_contain_the_token(idp):
@@ -997,11 +1050,11 @@ def test_jwks_fetch_doesnt_block_known_keys(idp):
     gate = threading.Event()
     calls = []
 
-    def slow_fetch(url, timeout, token=None):
+    def slow_fetch(url, timeout, token=None, **kwargs):
         if url.endswith("/jwks") and calls:
             gate.wait(5)
         calls.append(url)
-        return tv.fetch_json(url, timeout, token)
+        return tv.fetch_json(url, timeout, token, **kwargs)
 
     v = tv.Validator(idp.config(), fetch=slow_fetch)
     check(v, idp.token())  # keys and endpoints fetched, fresh
@@ -1039,11 +1092,11 @@ def test_userinfo_refusal_is_cached_briefly(idp):
 def _slow_jwks(gate):
     calls = []
 
-    def fetch(url, timeout, token=None):
+    def fetch(url, timeout, token=None, **kwargs):
         if url.endswith("/jwks"):
             calls.append(url)
             gate.wait(5)
-        return tv.fetch_json(url, timeout, token)
+        return tv.fetch_json(url, timeout, token, **kwargs)
     return fetch, calls
 
 
