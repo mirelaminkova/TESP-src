@@ -60,7 +60,12 @@
 {% set fqdn = workspace_fqdn | default('localhost', true) %}
 {% set tes_url = 'https://' ~ fqdn ~ (tesp_root_path | default('/tes', true)) %}
 {% set tes_user = tesp_basic_auth_user | default('tes', true) %}
-{% set tes_password = tesp_basic_auth_password | default('unknown', true) %}
+{% set basic_on = tesp_basic_auth_enabled | default(true) | bool %}
+{% set oauth_on = tesp_oauth_enabled | default(false) | bool %}
+{# With Basic off the password works for nobody, so the page doesn't show it. #}
+{% set tes_password = tesp_basic_auth_password | default('unknown', true) if basic_on else '' %}
+{% set tes_auth = "-u '" ~ tes_user ~ ":" ~ tes_password ~ "'" if basic_on
+                  else '-H "Authorization: Bearer $TOKEN"' %}
 {% set s3_bucket = tesp_s3_bucket | default('') %}
 {% set s3_workdir = tesp_s3_workdir | default('') %}
 {% set s3_endpoint = tesp_s3_endpoint_url | default('') %}
@@ -107,8 +112,10 @@
         parameter.</p>
       <div class="fields">
 {{ field('field-tes-url', 'TES URL', tes_url, 'Paste TESP URL · src_tes_endpoint') }}
+{% if basic_on %}
 {{ field('field-tes-username', 'TES username', tes_user, 'src_tes_username') }}
 {{ field('field-tes-password', 'TES password', tes_password, 'Write the TES password · src_tes_password') }}
+{% endif %}
 {% if s3_bucket %}
 {{ field('field-nf-workdir', 'Nextflow work directory', s3_workdir, 'S3 bucket resource · src_nf_workdir') }}
 {% endif %}
@@ -120,13 +127,34 @@
 {% endif %}
 {{ field('field-fqdn', 'Workspace FQDN', fqdn) }}
       </div>
-      <p>Auth is HTTP Basic. The API documentation (Swagger UI) is at
+      <p id="auth-methods">Auth is {% if basic_on %}HTTP Basic{% if tesp_basic_auth_sources | default([]) %} (only from {{ tesp_basic_auth_sources | join(', ') }}){% endif %}{% endif %}{% if basic_on and oauth_on %} or {% endif %}{% if oauth_on %}an LS Login access token (see below){% endif %}.
+        The API documentation (Swagger UI) is at
         <a href="{{ tes_url }}/swagger-ui.html">{{ tes_url }}/swagger-ui.html</a>.</p>
 
+{% if basic_on %}
       <div class="warning">
         <strong>Keep the password private.</strong> Anyone with these credentials can run jobs on this workspace.
       </div>
+{% endif %}
     </section>
+{% if oauth_on %}
+
+    <section id="oauth">
+      <h2>Access with LS Login</h2>
+      <p>This endpoint also accepts <a href="https://lifescience-ri.eu/ls-login/">LS Login</a> access tokens:
+        tokens of the clients this workspace allows, for users with the required group membership
+        (entitlement). Send the token as a Bearer token, for example:</p>
+      <div class="copy-box">
+        <button class="copy-btn" onclick="copyToClipboard('tes-bearer', this)">Copy</button>
+        <pre id="tes-bearer">curl -H "Authorization: Bearer $TOKEN" {{ tes_url }}/v1/tasks</pre>
+      </div>
+      <div class="warning">
+        <strong>No per-user task isolation.</strong> Behind the gateway, every request reaches the TES as
+        the same user. Anyone allowed in can list, read and cancel every task on this workspace,
+        including other users' tasks. Don't put secrets in tasks.
+      </div>
+    </section>
+{% endif %}
 
 {% if s3_used %}
     <section>
@@ -170,7 +198,7 @@
       <p>Submit a test task (it prints the task <code>id</code>):</p>
       <div class="copy-box">
         <button class="copy-btn" onclick="copyToClipboard('tes-submit', this)">Copy</button>
-        <pre id="tes-submit">curl -u '{{ tes_user }}:{{ tes_password }}' -H 'Content-Type: application/json' \
+        <pre id="tes-submit">curl {{ tes_auth }} -H 'Content-Type: application/json' \
   -d '{"name": "hello", "executors": [{"image": "alpine:3.20", "command": ["echo", "hello from TES"]}]}' \
   {{ tes_url }}/v1/tasks</pre>
       </div>
@@ -178,7 +206,7 @@
       <p>Check on it, replacing <code>&lt;id&gt;</code> with the id from the previous command:</p>
       <div class="copy-box">
         <button class="copy-btn" onclick="copyToClipboard('tes-get', this)">Copy</button>
-        <pre id="tes-get">curl -u '{{ tes_user }}:{{ tes_password }}' '{{ tes_url }}/v1/tasks/&lt;id&gt;?view=FULL'</pre>
+        <pre id="tes-get">curl {{ tes_auth }} '{{ tes_url }}/v1/tasks/&lt;id&gt;?view=FULL'</pre>
       </div>
 
       <div class="warning">
@@ -219,8 +247,12 @@
         <pre id="nf-config">plugins { id 'nf-ga4gh' }
 process.executor = 'tes'
 tes.endpoint = '{{ tes_url }}'
+{% if basic_on %}
 tes.basicUsername = '{{ tes_user }}'
 tes.basicPassword = '{{ tes_password }}'
+{% else %}
+tes.oauthToken = '&lt;LS Login access token&gt;'
+{% endif %}
 {% if s3_bucket %}
 workDir = '{{ s3_workdir }}'
 {% endif %}

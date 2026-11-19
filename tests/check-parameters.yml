@@ -66,6 +66,150 @@
       - why: an organization URL with a bad host
         expect: Invalid service info
         vars: {src_tes_organization_url: 'https://-/'}
+    # Issue #26. A valid issuer, varied by the cases below.
+    valid_issuer:
+      issuer: https://login.example.org/oidc/
+      allowed_client_ids: [portal, cli, service]
+      exempt_client_ids: [service]
+      exempt_audiences: [tes.example.org]
+      entitlements: {any_of: ['urn:example:group:ECP_CLN#example.org']}
+    valid_issuers: ["{{ valid_issuer }}"]
+    oauth_cases:
+      - why: both Basic and tokens switched off
+        expect: Invalid access settings
+        vars: {tesp_basic_auth_enabled: false, tesp_oauth_enabled: false}
+      - why: src_tes_oauth_enabled that is not a boolean
+        expect: Invalid access settings
+        vars: {src_tes_oauth_enabled: maybe}
+      - why: a Basic source that is a host name
+        expect: Invalid access settings
+        vars: {src_tes_basic_auth_sources: 'nextflow.example.org'}
+      - why: a Basic source with an octet over 255
+        expect: Invalid access settings
+        vars: {src_tes_basic_auth_sources: '999.1.1.1'}
+      - why: a Basic source with a prefix over 32
+        expect: Invalid access settings
+        vars: {src_tes_basic_auth_sources: '10.0.0.0/33'}
+      - why: Basic from everywhere (/0)
+        expect: Invalid access settings
+        vars: {src_tes_basic_auth_sources: '0.0.0.0/0'}
+      - why: two /1 ranges, Basic from almost everywhere
+        expect: Invalid access settings
+        vars: {src_tes_basic_auth_sources: '0.0.0.0/1,128.0.0.0/1'}
+      - why: an IPv6 /1
+        expect: Invalid access settings
+        vars: {src_tes_basic_auth_sources: '::/1'}
+      - why: a Basic source that is only colons
+        expect: Invalid access settings
+        vars: {src_tes_basic_auth_sources: ':::'}
+      - why: Basic sources with a space (as SRC would split them)
+        expect: Invalid access settings
+        vars: {src_tes_basic_auth_sources: '10.0.0.1 10.0.0.2'}
+      - why: an exempt client without exempt_audiences
+        expect: Invalid token issuer
+        vars:
+          tesp_oauth_enabled: true
+          tesp_oauth_issuers:
+            - "{{ valid_issuer | combine({'exempt_audiences': []}) }}"
+      - why: an exempt audience that is a client id
+        expect: Invalid token issuer
+        vars:
+          tesp_oauth_enabled: true
+          tesp_oauth_issuers:
+            - "{{ valid_issuer | combine({'exempt_audiences': ['service']}) }}"
+      - why: audit tag keys given as a string
+        expect: Invalid token settings
+        vars: {tesp_oauth_enabled: true, tesp_oauth_audit_tag_keys: user_sub}
+      - why: a relative CA bundle path
+        expect: Invalid token settings
+        vars: {tesp_oauth_enabled: true, tesp_oauth_ca_bundle: certs/ca.pem}
+      - why: tokens on without issuers
+        expect: Invalid token issuers
+        vars: {tesp_oauth_enabled: true, tesp_oauth_issuers: []}
+      - why: the same issuer twice
+        expect: Invalid token issuers
+        vars:
+          tesp_oauth_enabled: true
+          tesp_oauth_issuers: ["{{ valid_issuer }}", "{{ valid_issuer }}"]
+      - why: the default LS Login entry without client ids
+        expect: Invalid token issuer https://login.aai.lifescience-ri.eu/oidc/
+        vars:
+          tesp_oauth_enabled: true
+          tesp_oauth_issuers: "{{ default_issuers }}"
+      - why: an http issuer
+        expect: Invalid token issuer http://
+        vars:
+          tesp_oauth_enabled: true
+          tesp_oauth_issuers:
+            - "{{ valid_issuer | combine({'issuer': 'http://login.example.org/oidc/'}) }}"
+      - why: an exempt client that is not allowed
+        expect: Invalid token issuer
+        vars:
+          tesp_oauth_enabled: true
+          tesp_oauth_issuers:
+            - "{{ valid_issuer | combine({'exempt_client_ids': ['other']}) }}"
+      - why: a symmetric algorithm
+        expect: Invalid token issuer
+        vars:
+          tesp_oauth_enabled: true
+          tesp_oauth_issuers:
+            - "{{ valid_issuer | combine({'algorithms': ['RS256', 'HS256']}) }}"
+      - why: no entitlements
+        expect: Invalid token issuer
+        vars:
+          tesp_oauth_enabled: true
+          tesp_oauth_issuers:
+            - "{{ valid_issuer | combine({'entitlements': {'any_of': []}}) }}"
+      - why: an entitlement prefix without a boundary
+        expect: Invalid token issuer
+        vars:
+          tesp_oauth_enabled: true
+          tesp_oauth_issuers:
+            - "{{ valid_issuer | combine({'entitlements': {'prefix_any_of': ['urn:x:ECP_CLN']}}) }}"
+      - why: an unknown key (a typo)
+        expect: Invalid token issuer
+        vars:
+          tesp_oauth_enabled: true
+          tesp_oauth_issuers:
+            - "{{ valid_issuer | combine({'alowed_client_ids': ['x']}) }}"
+      - why: an http JWKS URL
+        expect: Invalid token issuer
+        vars:
+          tesp_oauth_enabled: true
+          tesp_oauth_issuers:
+            - "{{ valid_issuer | combine({'jwks_uri': 'http://login.example.org/jwk'}) }}"
+      - why: client ids given as a string
+        expect: Invalid token issuer
+        vars:
+          tesp_oauth_enabled: true
+          tesp_oauth_issuers:
+            - "{{ valid_issuer | combine({'allowed_client_ids': 'portal'}) }}"
+    # Krini calls the TES from the browser: exact https origins only.
+    cors_cases:
+      - why: a CORS wildcard
+        expect: Invalid CORS origins
+        vars: {src_tes_cors_origins: '*'}
+      - why: an http CORS origin
+        expect: Invalid CORS origins
+        vars: {src_tes_cors_origins: 'http://krini.example.org'}
+      - why: a CORS origin with a path
+        expect: Invalid CORS origins
+        vars: {src_tes_cors_origins: 'https://krini.example.org/app'}
+      - why: a CORS origin with a trailing slash
+        expect: Invalid CORS origins
+        vars: {src_tes_cors_origins: 'https://krini.example.org/'}
+      - why: a CORS origin with the default port
+        expect: Invalid CORS origins
+        vars: {src_tes_cors_origins: 'https://krini.example.org:443'}
+      - why: a CORS origin with port 0
+        expect: Invalid CORS origins
+        vars: {src_tes_cors_origins: 'https://krini.example.org:0'}
+      - why: a CORS origin with a port over 65535
+        expect: Invalid CORS origins
+        vars: {src_tes_cors_origins: 'https://krini.example.org:99999'}
+      - why: CORS origins with a space
+        expect: Invalid CORS origins
+        vars: {src_tes_cors_origins: 'https://a.example.org https://b.example.org'}
     other_cases:
       - why: an S3 endpoint without a scheme
         expect: Invalid S3 component parameters
@@ -74,6 +218,10 @@
         expect: tesp_max_wait_seconds must be
         vars: {tesp_max_wait_seconds: -1}
   tasks:
+    - name: Keep the default issuer list for a case
+      ansible.builtin.set_fact:
+        default_issuers: "{{ tesp_oauth_issuers }}"
+
     - name: The defaults pass
       ansible.builtin.include_tasks: ../tasks/check-parameters.yml
 
@@ -111,9 +259,83 @@
         src_tes_environment: prod
         src_tes_contact_url: mailto:support@example.org
 
+    - name: Token settings from SRC component parameters
+      ansible.builtin.assert:
+        that:
+          - tesp_oauth_enabled is true
+          - tesp_basic_auth_enabled is true
+          - tesp_basic_auth_sources == ['145.38.1.2', '10.0.0.0/8']
+          - tesp_oauth_issuers | length == 1
+          - issuer.issuer == 'https://login.aai.lifescience-ri.eu/oidc/'
+          - issuer.allowed_client_ids == ['portal', 'cli', 'service']
+          - issuer.exempt_client_ids == ['service']
+          - issuer.exempt_audiences == ['tes.example.org']
+          - issuer.audiences == []
+          - tesp_oauth_audit_tag_keys == ['user_sub']
+          - issuer.entitlements.any_of == ['urn:a', 'urn:b']
+          - issuer.entitlements.prefix_any_of == ['urn:a:']
+      vars:
+        src_tes_oauth_enabled: 'True'
+        src_tes_basic_auth_sources: '145.38.1.2,10.0.0.0/8'
+        src_tes_oauth_client_ids: ' portal, cli,service ,'
+        src_tes_oauth_exempt_client_ids: service
+        src_tes_oauth_exempt_audiences: tes.example.org
+        src_tes_oauth_audit_tag_keys: user_sub
+        src_tes_oauth_entitlements: 'urn:a,urn:b'
+        src_tes_oauth_entitlement_prefixes: 'urn:a:'
+        issuer: "{{ tesp_oauth_issuers[0] }}"
+
+    - name: Those token settings pass the checks
+      ansible.builtin.include_tasks: ../tasks/check-parameters.yml
+      vars:
+        src_tes_oauth_enabled: 'true'
+        src_tes_oauth_client_ids: portal,cli,service
+        src_tes_oauth_exempt_client_ids: service
+        src_tes_oauth_exempt_audiences: tes.example.org
+        src_tes_oauth_entitlement_prefixes: 'urn:a:'
+        src_tes_basic_auth_sources: '145.38.1.2,2001:610:108::/48'
+
+    # Issue #26 audit: the registered workspace takes tokens only.
+    - name: With tokens on and no Basic sources, Basic is off; defaults apply
+      ansible.builtin.assert:
+        that:
+          - tesp_basic_auth_enabled is false
+          - tesp_oauth_issuers[0].exempt_client_ids == []
+          - tesp_oauth_issuers[0].entitlements.any_of == tesp_oauth_default_entitlements
+          - tesp_oauth_default_entitlements is not search('ECP_CLN#')
+      vars:
+        src_tes_oauth_enabled: 'true'
+        src_tes_oauth_client_ids: portal
+
+    - name: CORS origins from the component parameter pass the checks
+      ansible.builtin.include_tasks: ../tasks/check-parameters.yml
+      vars:
+        src_tes_cors_origins: https://krini.rahtiapp.fi,https://krini.example.org:8443
+
+    - name: CORS origins are parsed
+      ansible.builtin.assert:
+        that:
+          - tesp_cors_origins == ['https://krini.rahtiapp.fi', 'https://krini.example.org:8443']
+      vars:
+        src_tes_cors_origins: https://krini.rahtiapp.fi,https://krini.example.org:8443
+
+    - name: With tokens off, Basic is on from anywhere
+      ansible.builtin.assert:
+        that:
+          - tesp_basic_auth_enabled is true
+          - tesp_basic_auth_sources == []
+
+    - name: An issuer without entitlements passes when they are switched off
+      ansible.builtin.include_tasks: ../tasks/check-parameters.yml
+      vars:
+        tesp_oauth_enabled: true
+        tesp_oauth_issuers:
+          - "{{ valid_issuer | combine({'entitlements': {},
+                                       'require_entitlement': false}) }}"
+
     - name: Each invalid case is rejected by its check
       ansible.builtin.include_tasks: include/expect-invalid.yml
-      loop: "{{ service_info_cases + other_cases }}"
+      loop: "{{ service_info_cases + oauth_cases + cors_cases + other_cases }}"
       loop_control:
         loop_var: case
         label: "{{ case.why }}"

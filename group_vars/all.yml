@@ -211,6 +211,117 @@ tesp_service_info_updated_at: ""
 # RFC 3339 UTC, as the timestamps above.
 tesp_time_re: '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z'
 
+# Access to the TES API (issue #26; see "Access with LS Login" in the README).
+# The comma-separated component parameters below take no spaces.
+#
+# OAuth2 access tokens (Bearer), checked by the gateway's validator container
+# against tesp_oauth_issuers. Off by default: then only Basic is used, as
+# before. tasks/check-parameters.yml accepts only true/false.
+tesp_oauth_param: >-
+  {{ src_tes_oauth_enabled | default('') | string | trim | lower
+     | default('false', true) }}
+tesp_oauth_enabled: "{{ tesp_oauth_param == 'true' }}"
+# HTTP Basic: the deploy-time password of tesp_basic_auth_user, checked by
+# tesp-api; for the co-located Nextflow component (nf-ga4gh). Addresses (IP
+# or CIDR) that may use it, from src_tes_basic_auth_sources, e.g. the
+# Nextflow workspace's address. Empty: from anywhere while tokens are off,
+# from nowhere (Basic off) while they are on, so a registered, token-protected
+# workspace takes tokens only.
+tesp_basic_auth_sources: >-
+  {{ (src_tes_basic_auth_sources | default('') | string).split(',')
+     | map('trim') | select | list }}
+tesp_basic_auth_enabled: >-
+  {{ not (tesp_oauth_enabled | bool) or tesp_basic_auth_sources | length > 0 }}
+# Browser origins (https://host[:port]) that may call the TES API across
+# origins (CORS), from src_tes_cors_origins: Krini's Cloud Components call it
+# from the user's browser, e.g. https://krini.rahtiapp.fi (the production
+# address comes with elixir-cloud-aai/generic-issues#55). Empty: no CORS
+# headers. Exact origins only, never a wildcard, no credentials (Krini sends
+# a Bearer header, not cookies).
+tesp_cors_origins: >-
+  {{ (src_tes_cors_origins | default('') | string).split(',')
+     | map('trim') | select | list }}
+# Where the gateway takes the client's address from X-Real-IP, which the host
+# nginx (SRC's reverse-proxy role) sets: Docker's address ranges, from which
+# the host's connections to the gateway's published port arrive.
+tesp_gateway_trusted_proxies: [172.16.0.0/12, 192.168.0.0/16]
+# Issuers whose access tokens are accepted. Each entry:
+#   issuer               exact "iss" (https); also where discovery is read,
+#                        unless discovery_url is set. Never taken from a token.
+#   allowed_client_ids   clients (token claim client_id) whose tokens count
+#   exempt_client_ids    clients that skip the entitlement check, e.g. a
+#                        service client that checked the user itself; must
+#                        also be in allowed_client_ids, and need audiences
+#   entitlements         any_of: exact values; prefix_any_of: prefixes ending
+#                        with ':'; matched against eduperson_entitlement from
+#                        userinfo
+#   require_entitlement  default true; false accepts every user of the clients
+#   algorithms           default [RS256]; RS*, PS* or ES* only
+#   audiences            checked against every token's "aud" when set
+#   exempt_audiences     what an exempt client's token must have in "aud": a
+#                        name of this TES, not a client id; required with
+#                        exempt_client_ids
+#   discovery_url, jwks_uri, userinfo_endpoint   optional overrides (https)
+# The default is one LS Login entry filled from the component parameters
+# src_tes_oauth_client_ids, src_tes_oauth_exempt_client_ids,
+# src_tes_oauth_audiences, src_tes_oauth_exempt_audiences,
+# src_tes_oauth_entitlements and
+# src_tes_oauth_entitlement_prefixes. Client ids: Krini in
+# elixir-cloud-aai/generic-issues#48, proTES's service client in #47.
+# Entitlements come from LS Login's userinfo, per client; match the
+# subgroups, not the parent ECP_CLN value, whose release depends on the
+# client (generic-issues#46). Without src_tes_oauth_entitlements, the exact
+# values below (compute users and admins, lifescience-ri.eu form) apply.
+tesp_oauth_default_entitlements:
+  - urn:geant:lifescience-ri.eu:group:elixir:ECP_CLN:EOC-Compute#aai.lifescience-ri.eu
+  - urn:geant:lifescience-ri.eu:group:elixir:ECP_CLN:ADMIN#aai.lifescience-ri.eu
+tesp_oauth_issuers:
+  - issuer: https://login.aai.lifescience-ri.eu/oidc/
+    allowed_client_ids: >-
+      {{ (src_tes_oauth_client_ids | default('') | string).split(',')
+         | map('trim') | select | list }}
+    exempt_client_ids: >-
+      {{ (src_tes_oauth_exempt_client_ids | default('') | string).split(',')
+         | map('trim') | select | list }}
+    audiences: >-
+      {{ (src_tes_oauth_audiences | default('') | string).split(',')
+         | map('trim') | select | list }}
+    exempt_audiences: >-
+      {{ (src_tes_oauth_exempt_audiences | default('') | string).split(',')
+         | map('trim') | select | list }}
+    entitlements:
+      any_of: >-
+        {{ (src_tes_oauth_entitlements | default('') | string).split(',')
+           | map('trim') | select | list
+           or tesp_oauth_default_entitlements }}
+      prefix_any_of: >-
+        {{ (src_tes_oauth_entitlement_prefixes | default('') | string).split(',')
+           | map('trim') | select | list }}
+# The keys an issuer entry may have (checked before deploying).
+tesp_oauth_issuer_keys: [issuer, allowed_client_ids, exempt_client_ids,
+                         entitlements, require_entitlement, algorithms,
+                         audiences, exempt_audiences, discovery_url, jwks_uri,
+                         userinfo_endpoint]
+# Task tags that name the user when an exempt client (proTES) submits a task
+# on the user's behalf; logged by the validator for audit, with the client
+# id, and nothing else of the task. Which tags proTES sets is still open
+# (elixir-cloud-aai/proTES#254, generic-issues#108); with none set, the log
+# lists the tag names of such tasks, without values.
+tesp_oauth_audit_tag_keys: >-
+  {{ (src_tes_oauth_audit_tag_keys | default('') | string).split(',')
+     | map('trim') | select | list }}
+# CA bundle (a file on the workspace) the validator trusts for the issuer,
+# instead of its image's bundle; empty = the image's (public CAs, as for LS
+# Login). For a test issuer with its own CA, e.g.
+# /etc/ssl/certs/ca-certificates.crt after adding that CA to the system.
+tesp_oauth_ca_bundle: ""
+# Validator tuning; see files/tes-validator/tes_validator.py.
+tesp_oauth_leeway_seconds: 60          # clock skew allowed for exp/nbf
+tesp_oauth_http_timeout_seconds: 5     # every call to the issuer
+tesp_oauth_userinfo_cache_seconds: 300  # per token, never past its exp
+# Build context of the validator image, outside tesp_install_dir.
+tesp_validator_dir: /srv/tesp-validator
+
 # Longest a TES task's Pulsar job may queue and run, in whole seconds. Past it
 # tesp-api cancels the job and the task ends in SYSTEM_ERROR. 0 = no limit:
 # tesp-api waits until the job finishes. See "Long tasks" in the README.

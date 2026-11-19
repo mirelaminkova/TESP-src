@@ -1,0 +1,5 @@
+# Python test dependencies, for tests/run.sh (the validator's own
+# dependencies come from files/tes-validator/requirements.txt). Versions are
+# pinned; CI installs both files.
+pytest==9.2.0
+pytest-cov==7.1.0

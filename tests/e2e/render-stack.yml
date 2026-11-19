@@ -1,10 +1,11 @@
 ---
 # Renders the tesp-api stack the way playbook.yml does, into a scratch
-# directory, for .github/workflows/e2e.yml (issue #25). Pulsar is not set up:
-# the checks only need tesp-api, MongoDB and the gateway.
+# directory, for .github/workflows/e2e.yml (issues #25, #26). Pulsar is not
+# set up: the checks only need tesp-api, MongoDB, the gateway and, with
+# tokens on, the validator.
 #
 #   ansible-playbook -i localhost, -c local tests/e2e/render-stack.yml \
-#     -e e2e_dir=/tmp/e2e
+#     -e e2e_dir=/tmp/e2e [-e @tests/e2e/oauth-vars.yml]
 #
 # The TES password comes from $E2E_TES_PASSWORD, a throwaway test value.
 - name: Render the tesp-api stack for the end-to-end test
@@ -22,6 +23,7 @@
         tesp_install_dir: "{{ e2e_dir }}/tesp-api"
         tesp_secrets_dir: "{{ e2e_dir }}/secrets"
         tesp_gateway_dir: "{{ e2e_dir }}/gateway"
+        tesp_validator_dir: "{{ e2e_dir }}/validator"
         pulsar_token: e2e-pulsar-token
         tesp_basic_auth_password: "{{ lookup('env', 'E2E_TES_PASSWORD') }}"
         tesp_first_deploy_time: "2026-11-18T09:30:00Z"
@@ -48,6 +50,8 @@
         - "{{ tesp_install_dir }}/docker/mongodb/data"
         - "{{ tesp_secrets_dir }}"
         - "{{ tesp_gateway_dir }}"
+        - "{{ tesp_gateway_dir }}/validator"
+        - "{{ tesp_validator_dir }}"
 
     - name: Render the stack
       ansible.builtin.template:
@@ -63,3 +67,12 @@
           dest: "{{ tesp_install_dir }}/docker-compose.deploy.yml"
         - {src: gateway.conf.j2, dest: "{{ tesp_gateway_dir }}/gateway.conf"}
         - {src: service-info.json.j2, dest: "{{ tesp_gateway_dir }}/service-info.json"}
+        - src: validator.json.j2
+          dest: "{{ tesp_gateway_dir }}/validator/config.json"
+
+    - name: Copy the validator sources
+      ansible.builtin.copy:
+        src: "{{ playbook_dir | dirname | dirname }}/files/tes-validator/{{ item }}"
+        dest: "{{ tesp_validator_dir }}/{{ item }}"
+        mode: '0644'
+      loop: [Dockerfile, requirements.txt, tes_validator.py]

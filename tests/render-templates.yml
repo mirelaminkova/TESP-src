@@ -70,6 +70,7 @@
             - tesp-api/secrets.toml.j2
             - tesp-api/gateway.conf.j2
             - tesp-api/service-info.json.j2
+            - tesp-api/validator.json.j2
 
         - name: Read rendered files
           ansible.builtin.slurp:
@@ -399,8 +400,10 @@
               # Requests without Basic credentials get 401 at the gateway.
               - "'if ($tes_has_basic = 0)' in conf"
               - "'add_header Allow \"GET, HEAD\" always;' in conf"
-              # The gateway neither adds nor drops credentials.
-              - "'proxy_set_header Authorization' not in conf"
+              # The gateway adds no credentials; only the public locations
+              # drop them.
+              - conf is not search('proxy_set_header Authorization \\$')
+              - conf.count('proxy_set_header Authorization') == 1
               - tesp_basic_auth_password not in conf
               - tesp_basic_auth_password not in files['service-info.json']
           vars:
@@ -422,6 +425,256 @@
               - info.description == "two\nlines"
           vars:
             info: "{{ lookup('file', out.path ~ '/escaped-service-info.json') | from_json }}"
+
+        # The welcome page shows the Basic password, so it must stay behind
+        # SRAM even when the TES API is open to tokens.
+        - name: The welcome page is SRAM-only, the TES API is not
+          ansible.builtin.assert:
+            that:
+              - about.auth == 'sram'
+              - about.location == '=/'
+              - tes.auth == 'noauth'
+          vars:
+            about: >-
+              {{ nginx_reverse_proxy_locations | selectattr('name', '==', 'about') | first }}
+            tes: >-
+              {{ nginx_reverse_proxy_locations | selectattr('name', '==', 'tes') | first }}
+
+        # Issue #26: without tokens the gateway and the page are as before.
+        - name: With OAuth off there is no validator
+          ansible.builtin.assert:
+            that:
+              # No CORS origins configured: no CORS headers.
+              - "'Access-Control' not in files['gateway.conf']"
+              - "'validator' not in compose.services"
+              - "'auth_request' not in files['gateway.conf']"
+              - "'id=\"oauth\"' not in files['welcome.html']"
+              - "'tes.basicPassword' in files['welcome.html']"
+              # Basic from anywhere, as before.
+              - "'    default 1;' in files['gateway.conf']"
+          vars:
+            compose: "{{ files['docker-compose.yml'] | from_yaml }}"
+
+        - name: Render the gateway with CORS and tokens off
+          ansible.builtin.template:
+            src: "{{ templates_dir }}/tesp-api/gateway.conf.j2"
+            dest: "{{ out.path }}/cors-basic-gateway.conf"
+            mode: '0600'
+          vars:
+            src_tes_cors_origins: https://krini.rahtiapp.fi
+
+        - name: With tokens off, CORS still covers the API and its errors
+          ansible.builtin.assert:
+            that:
+              - "'if ($tes_cors_preflight) {' in conf"
+              - "'auth_request' not in conf"
+              # service-info, the public docs, / and the 401 location.
+              - conf.count('add_header Access-Control-Allow-Origin') == 4
+              - "'Access-Control-Max-Age $tes_cors_max_age always;' in conf"
+              - "'1        \"600\";' in conf"
+          vars:
+            conf: "{{ lookup('file', out.path ~ '/cors-basic-gateway.conf') }}"
+
+        - name: Render with LS Login tokens on
+          ansible.builtin.template:
+            src: "{{ templates_dir }}/{{ item }}"
+            dest: >-
+              {{ out.path }}/oauth-{{ item | basename | regex_replace('\.j2$', '') }}
+            mode: '0600'
+          loop: &oauth_templates
+            - welcome.html
+            - tesp-api/gateway.conf.j2
+            - tesp-api/validator.json.j2
+            - tesp-api/docker-compose.yml.j2
+          vars: &oauth_vars
+            tesp_oauth_enabled: true
+            tesp_validator_conf_checksum: 4567cdef
+            # The default LS Login entry, filled from component parameters.
+            src_tes_oauth_client_ids: krini-client, cli-client, protes-service
+            src_tes_oauth_exempt_client_ids: protes-service
+            src_tes_oauth_entitlement_prefixes: 'urn:example:ECP_CLN:'
+            src_tes_oauth_exempt_audiences: tes.example.org
+            src_tes_oauth_entitlements: urn:example:ECP_CLN:EOC-Compute#example.org
+            # Basic only from the Nextflow workspace.
+            src_tes_basic_auth_sources: 145.38.1.2
+            src_tes_cors_origins: https://krini.rahtiapp.fi
+
+        - name: Tokens are checked by the validator; tesp-api gets Basic
+          ansible.builtin.assert:
+            that:
+              - "'auth_request /_tes_auth;' in conf"
+              - "'set $tes_validator_url http://validator:8081/auth;' in conf"
+              - "'proxy_pass_request_body off;' in conf"
+              # Only a valid token gets the injected credentials, and they
+              # replace whatever the client sent.
+              - "('bearer   \"Basic ' ~ basic_b64 ~ '\";') in conf"
+              - "'default  $http_authorization;' in conf"
+              - "'proxy_set_header Authorization $tes_upstream_authorization;' in conf"
+              - "'auth_request_set $tes_auth_kind $upstream_http_x_tes_auth_kind;' in conf"
+              # Public locations pass no credentials at all.
+              - "'proxy_set_header Authorization \"\";' in conf"
+              # Tokens decide here, not the Basic-only check.
+              - "'if ($tes_has_basic = 0)' not in conf"
+              - tesp_basic_auth_password not in conf
+              # Exempt clients' task submissions go to the audit log too,
+              # with the validator's answer, not the client's headers.
+              - "'location = /v1/tasks {' in conf"
+              - "'mirror /_tes_audit;' in conf"
+              - "'proxy_set_header X-Tes-Auth-Exempt $tes_auth_exempt;' in conf"
+              - "'if ($tes_auth_exempt != \"1\")' in conf"
+              - "'if ($request_method != POST)' in conf"
+              # Forged gateway headers never reach tesp-api.
+              - conf.count('proxy_set_header X-Tes-Auth-Exempt \"\";') == 2
+              - conf.count('auth_request /_tes_auth;') == 2
+              # nginx copies the validator's challenge; not added twice.
+              - "'tes_auth_challenge' not in conf"
+              # Basic from elsewhere is refused before the validator.
+              - "'if ($tes_basic_refused) {' in conf"
+              - "'real_ip_header X-Real-IP;' in conf"
+              - "'set_real_ip_from 172.16.0.0/12;' in conf"
+              - "'geo $tes_basic_source {' in conf"
+              # CORS for Krini (browser): the exact origin only, echoed;
+              # preflights answered before any auth; headers on errors too.
+              - "'\"https://krini.rahtiapp.fi\" $http_origin;' in conf"
+              - "'Access-Control-Allow-Origin $tes_cors_origin always;' in conf"
+              - "'Access-Control-Allow-Credentials' not in conf"
+              - conf is not search('Allow-Origin[^;]*\\*')
+              - "'if ($tes_cors_preflight) {' in conf"
+              - >-
+                conf.index('if ($tes_cors_preflight) {')
+                < conf.index('auth_request /_tes_auth;')
+              # Every client-facing location sends them (add_header in a
+              # location replaces the server's): service-info, the public
+              # docs, /, /v1/tasks and the three error locations. Not the
+              # internal /_tes_auth and /_tes_audit, nor the rewrite.
+              - conf.count('add_header Access-Control-Allow-Origin') == 7
+              # The issuer can't be reached: 503, not a misleading 401.
+              - "'error_page 500 = @auth_error;' in conf"
+              # No required group: 403, with the CORS headers too.
+              - "'error_page 403 = @forbidden;' in conf"
+              - "'location @forbidden {' in conf"
+              - "'error=\"insufficient_scope\"' in conf"
+              # A stopped validator (no upstream status) is 503 as well.
+              - "'if ($tes_auth_status ~ \"^(50[234])?$\") {' in conf"
+              - "'~^50[234]' in conf"
+              - conf is search('WWW-Authenticate .Basic realm')
+          vars:
+            conf: "{{ lookup('file', out.path ~ '/oauth-gateway.conf') }}"
+            basic_b64: "{{ ('tes:' ~ tesp_basic_auth_password) | b64encode }}"
+
+        - name: The validator config has the issuers and no secrets
+          ansible.builtin.assert:
+            that:
+              - config.basic_auth_enabled is true
+              - config.audit_tag_keys == []
+              - config.leeway_seconds == 60
+              - config.issuers | length == 1
+              - >-
+                config.issuers[0] == {
+                  'issuer': 'https://login.aai.lifescience-ri.eu/oidc/',
+                  'allowed_client_ids': ['krini-client', 'cli-client',
+                                         'protes-service'],
+                  'exempt_client_ids': ['protes-service'],
+                  'audiences': [],
+                  'exempt_audiences': ['tes.example.org'],
+                  'entitlements': {
+                    'any_of': ['urn:example:ECP_CLN:EOC-Compute#example.org'],
+                    'prefix_any_of': ['urn:example:ECP_CLN:']}}
+              # Basic stays on: sources are set.
+              - config.basic_auth_enabled is true
+              - tesp_basic_auth_password not in lookup('file', path)
+              - basic_b64 not in lookup('file', path)
+              - pulsar_token not in lookup('file', path)
+          vars:
+            path: "{{ out.path }}/oauth-validator.json"
+            config: "{{ lookup('file', path) | from_json }}"
+            basic_b64: "{{ ('tes:' ~ tesp_basic_auth_password) | b64encode }}"
+
+        - name: The validator runs locked down, reachable only by the gateway
+          ansible.builtin.assert:
+            that:
+              - "'ports' not in validator"
+              - validator.read_only is true
+              - validator.cap_drop == ['ALL']
+              - "'no-new-privileges:true' in validator.security_opt"
+              - validator.build.context == tesp_validator_dir
+              - not tesp_validator_dir.startswith(tesp_install_dir)
+              - >-
+                validator.volumes
+                == [tesp_gateway_dir ~ '/validator:/etc/tes-validator:ro']
+              - >-
+                validator.labels['tesp.validator-config-checksum']
+                == '4567cdef'
+              - "'validator' in compose.services.gateway.depends_on"
+              - "'/healthz' in validator.healthcheck.test | join(' ')"
+              - "'environment' not in validator"
+              # Only the gateway shares a network with the validator.
+              - validator.networks == ['auth']
+              - compose.services.gateway.networks == ['default', 'auth']
+              - "'auth' in compose.networks"
+          vars:
+            compose: >-
+              {{ lookup('file', out.path ~ '/oauth-docker-compose.yml') | from_yaml }}
+            validator: "{{ compose.services.validator }}"
+
+        - name: The page shows a Bearer example and the trade-off, no secrets
+          ansible.builtin.assert:
+            that:
+              - "'id=\"oauth\"' in page"
+              - >-
+                ('<pre id="tes-bearer">curl -H "Authorization: Bearer $TOKEN" https://'
+                 ~ workspace_fqdn ~ '/tes/v1/tasks</pre>') in page
+              - "'No per-user task isolation.' in page"
+              - "'HTTP Basic (only from 145.38.1.2) or an LS Login access token' in page"
+              # Basic is still on, so its fields stay.
+              - tesp_basic_auth_password in page
+              - basic_b64 not in page
+              - pulsar_token not in page
+              - "'krini-client' not in page"
+          vars:
+            page: "{{ lookup('file', out.path ~ '/oauth-welcome.html') }}"
+            basic_b64: "{{ ('tes:' ~ tesp_basic_auth_password) | b64encode }}"
+
+        - name: Render with tokens only (Basic off)
+          ansible.builtin.template:
+            src: "{{ templates_dir }}/{{ item }}"
+            dest: >-
+              {{ out.path }}/bearer-{{ item | basename | regex_replace('\.j2$', '') }}
+            mode: '0600'
+          loop: *oauth_templates
+          vars:
+            <<: *oauth_vars
+            # Tokens on and no Basic sources: Basic is off.
+            src_tes_basic_auth_sources: ''
+            tesp_oauth_ca_bundle: /etc/ssl/certs/ca-certificates.crt
+
+        - name: With Basic off, nothing offers the password
+          ansible.builtin.assert:
+            that:
+              - tesp_basic_auth_password not in page
+              - "'id=\"field-tes-password\"' not in page"
+              - "'tes.oauthToken' in page"
+              - "'tes.basicPassword' not in page"
+              - >-
+                '<pre id="tes-get">curl -H "Authorization: Bearer $TOKEN" '
+                in page
+              - "'Basic realm' not in conf"
+              # Every Basic request is refused at the gateway.
+              - "'    default 0;' in conf"
+              - (lookup('file', out.path ~ '/bearer-validator.json')
+                 | from_json).basic_auth_enabled is false
+              # A test issuer's CA, through the system bundle.
+              - >-
+                '/etc/ssl/certs:/etc/tes-validator-ca:ro'
+                in compose.services.validator.volumes
+              - >-
+                compose.services.validator.environment
+                == ['SSL_CERT_FILE=/etc/tes-validator-ca/ca-certificates.crt']
+          vars:
+            page: "{{ lookup('file', out.path ~ '/bearer-welcome.html') }}"
+            conf: "{{ lookup('file', out.path ~ '/bearer-gateway.conf') }}"
+            compose: >-
+              {{ lookup('file', out.path ~ '/bearer-docker-compose.yml') | from_yaml }}
 
         - name: Pulsar token goes only to the proxy, TES password to tesp-api
           ansible.builtin.assert:

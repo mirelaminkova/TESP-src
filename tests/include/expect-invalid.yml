@@ -24,6 +24,14 @@
           {{ case.vars.tesp_service_info_created_at
              | default('2026-11-18T09:30:00Z') }}
         tesp_service_info_updated_at: "{{ case.vars.tesp_service_info_updated_at | default('') }}"
+        tesp_basic_auth_enabled: "{{ case.vars.tesp_basic_auth_enabled | default(true) }}"
+        tesp_oauth_enabled: "{{ case.vars.tesp_oauth_enabled | default(false) }}"
+        tesp_oauth_issuers: "{{ case.vars.tesp_oauth_issuers | default(valid_issuers) }}"
+        src_tes_oauth_enabled: "{{ case.vars.src_tes_oauth_enabled | default('') }}"
+        src_tes_basic_auth_sources: "{{ case.vars.src_tes_basic_auth_sources | default('') }}"
+        src_tes_cors_origins: "{{ case.vars.src_tes_cors_origins | default('') }}"
+        tesp_oauth_audit_tag_keys: "{{ case.vars.tesp_oauth_audit_tag_keys | default([]) }}"
+        tesp_oauth_ca_bundle: "{{ case.vars.tesp_oauth_ca_bundle | default('') }}"
 
     - name: The checks should have failed
       ansible.builtin.fail:
@@ -31,8 +39,12 @@
   rescue:
     - name: "Rejected by the check: {{ case.expect }}"
       ansible.builtin.assert:
-        that: ansible_failed_result.msg | default('') is search(case.expect)
-        fail_msg: >-
-          expected a {{ case.expect }} error, got:
-          {{ ansible_failed_result.msg | default(ansible_failed_result) }}
+        that: messages is search(case.expect)
+        fail_msg: "expected a {{ case.expect }} error, got: {{ messages }}"
         quiet: true
+      vars:
+        # A failed loop has the messages in its items.
+        messages: >-
+          {{ ([ansible_failed_result.msg | default('')]
+              + ansible_failed_result.results | default([])
+                | map(attribute='msg', default='') | list) | join(' | ') }}

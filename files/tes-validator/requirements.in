@@ -1,0 +1,6 @@
+# Direct dependencies of tes_validator.py. requirements.txt is generated
+# from this file, with every transitive dependency and its hashes:
+#   pip-compile --generate-hashes --strip-extras --no-header --allow-unsafe \
+#     -o requirements.txt requirements.in
+PyJWT[crypto]==2.15.1
+cryptography==50.0.2

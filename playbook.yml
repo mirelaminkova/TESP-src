@@ -254,14 +254,52 @@
         group: root
         mode: '0755'
 
+    # Root-only: with OAuth on it holds tesp-api's Basic credentials. Read by
+    # the nginx master process, which runs as root. nginx -t checks the new
+    # file before it replaces the old one (validate), so a config nginx
+    # rejects never reaches the gateway; only when the content changes.
     - name: Template the TES gateway config
-      ansible.builtin.template:
-        src: templates/tesp-api/gateway.conf.j2
-        dest: "{{ tesp_gateway_dir }}/gateway.conf"
-        owner: root
-        group: root
-        mode: '0644'
-      register: tesp_gateway_conf
+      block:
+        - name: Template the TES gateway config
+          ansible.builtin.template:
+            src: templates/tesp-api/gateway.conf.j2
+            dest: "{{ tesp_gateway_dir }}/gateway.conf"
+            owner: root
+            group: root
+            mode: '0600'
+            validate: >-
+              docker run --rm --entrypoint nginx
+              -v %s:/etc/nginx/conf.d/gateway.conf:ro {{ tesp_nginx_image }} -t
+          register: tesp_gateway_conf
+          no_log: true
+      rescue:
+        # no_log above hides nginx's reason; nginx -t names file and line,
+        # not their content.
+        - name: Keep the rejected gateway config for inspection
+          ansible.builtin.template:
+            src: templates/tesp-api/gateway.conf.j2
+            dest: "{{ tesp_gateway_dir }}/gateway.conf.rejected"
+            owner: root
+            group: root
+            mode: '0600'
+          no_log: true
+
+        - name: Show why nginx rejects the gateway config
+          ansible.builtin.command: >-
+            docker run --rm --entrypoint nginx
+            -v {{ tesp_gateway_dir }}/gateway.conf.rejected:/etc/nginx/conf.d/gateway.conf:ro
+            {{ tesp_nginx_image }} -t
+          register: tesp_gateway_conf_check
+          changed_when: false
+          failed_when: false
+
+        - name: Stop on the rejected gateway config
+          ansible.builtin.fail:
+            msg: >-
+              nginx rejects the new gateway config, kept as
+              {{ tesp_gateway_dir }}/gateway.conf.rejected; the running
+              gateway keeps the old one. nginx -t says:
+              {{ tesp_gateway_conf_check.stderr | default('') }}
 
     # Goes into a label of the gateway container, so a changed config
     # recreates it (nginx reads its config only at start).
@@ -318,6 +356,63 @@
         group: root
         mode: '0644'
 
+    # ---- Token validator (issue #26), only with tesp_oauth_enabled ----
+    - name: Install the token validator
+      when: tesp_oauth_enabled | bool
+      block:
+        - name: Create the validator directories
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: directory
+            owner: root
+            group: root
+            mode: '0755'
+          loop:
+            - "{{ tesp_validator_dir }}"
+            - "{{ tesp_gateway_dir }}/validator"
+
+        # The image build context: only these files.
+        - name: Copy the validator sources
+          ansible.builtin.copy:
+            src: "files/tes-validator/{{ item }}"
+            dest: "{{ tesp_validator_dir }}/{{ item }}"
+            owner: root
+            group: root
+            mode: '0644'
+          loop:
+            - Dockerfile
+            - requirements.txt
+            - tes_validator.py
+
+        - name: Check the validator's CA bundle
+          ansible.builtin.stat:
+            path: "{{ tesp_oauth_ca_bundle }}"
+          register: tesp_oauth_ca_bundle_stat
+          when: tesp_oauth_ca_bundle | length > 0
+
+        # Docker would create a missing path as an empty directory, and every
+        # token would be refused.
+        - name: The CA bundle is a file
+          ansible.builtin.assert:
+            that: tesp_oauth_ca_bundle_stat.stat.isreg | default(false)
+            fail_msg: tesp_oauth_ca_bundle {{ tesp_oauth_ca_bundle }} is not a file.
+            quiet: true
+          when: tesp_oauth_ca_bundle | length > 0
+
+        # No secrets in it; the validator (nobody) reads it.
+        - name: Template the validator config
+          ansible.builtin.template:
+            src: templates/tesp-api/validator.json.j2
+            dest: "{{ tesp_gateway_dir }}/validator/config.json"
+            owner: root
+            group: root
+            mode: '0644'
+          register: tesp_validator_conf
+
+        - name: Record the validator config checksum
+          ansible.builtin.set_fact:
+            tesp_validator_conf_checksum: "{{ tesp_validator_conf.checksum | default('check-mode') }}"
+
     - name: Template TESP-API deployment compose file
       ansible.builtin.template:
         src: templates/tesp-api/docker-compose.yml.j2
@@ -333,11 +428,11 @@
           - docker-compose.deploy.yml
         build: always
         state: present
-
-    # A config nginx rejects would only show as a restarting container.
-    - name: Check the TES gateway config
-      ansible.builtin.command: docker exec tesp-gateway nginx -t
-      changed_when: false
+        # Until every container runs and the validator is healthy.
+        wait: true
+        wait_timeout: 300
+        # Drops the validator when tokens are switched off.
+        remove_orphans: true
 
   handlers:
     # Notified by the galaxyproject.pulsar role when its config changes

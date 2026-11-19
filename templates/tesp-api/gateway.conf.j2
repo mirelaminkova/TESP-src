@@ -1,30 +1,138 @@
+{% set oauth = tesp_oauth_enabled | bool %}
+{% set basic = tesp_basic_auth_enabled | bool %}
+{% set cors = tesp_cors_origins | default([]) | length > 0 %}
+{# CORS headers, in every client-facing location: an add_header there
+   replaces the ones of the server level. Empty values aren't sent. #}
+{% macro cors_headers() %}
+{% if cors %}
+        add_header Access-Control-Allow-Origin $tes_cors_origin always;
+        add_header Vary Origin always;
+        add_header Access-Control-Allow-Methods $tes_cors_methods always;
+        add_header Access-Control-Allow-Headers $tes_cors_headers always;
+        add_header Access-Control-Max-Age $tes_cors_max_age always;
+{% endif %}
+{%- endmacro %}
+{# A preflight of an allowed origin is answered here, before any auth. #}
+{% macro cors_preflight() %}
+{% if cors %}
+        if ($tes_cors_preflight) {
+            return 204;
+        }
+{% endif %}
+{%- endmacro %}
 # Managed by Ansible (TESP-src). Do not edit by hand.
 #
-# TES gateway (issue #25), between the host nginx (/tes/, prefix stripped)
-# and tesp-api:
+# TES gateway (issues #25, #26), between the host nginx (/tes/, prefix
+# stripped) and tesp-api:
 #   - GET /v1/service-info is answered here, from service-info.json next to
 #     this file: tesp-api's own answer is hard-coded for another provider.
 #   - The API docs (Swagger UI, ReDoc, the OpenAPI document) go to tesp-api
-#     without credentials, as before.
+#     without credentials.
+{% if oauth %}
+#   - Every other request is checked by the validator container first
+#     (auth_request). A valid OAuth2 access token is replaced by tesp-api's
+#     own Basic credentials.{% if basic %} Basic credentials go to tesp-api unchanged,
+#     which checks them, from the allowed sources only.{% endif %} Anything else gets 401.
+#
+# Holds tesp-api's Basic credentials (base64), so the file is root-only.
+{% else %}
 #   - Everything else goes to tesp-api unchanged, Authorization included;
 #     tesp-api checks the HTTP Basic credentials itself. A request without
 #     Basic credentials gets 401 here: tesp-api (c3a9f23) would answer it
 #     with a 500 (it reads the missing credentials' username).
+{% endif %}
 
-# Docker's embedded DNS. proxy_pass with a variable makes nginx resolve
-# tesp-api per request, so a recreated tesp-api container (new address) is
-# found. Without a URI part, the request URI goes on as received, still
-# percent-encoded; the host nginx in front has normalised it already. Not
-# $uri: it is decoded and nginx doesn't re-encode it, so %0d%0a in a path
-# would reach tesp-api as a raw line break (header injection).
+# Docker's embedded DNS. proxy_pass with a variable makes nginx resolve the
+# containers per request, so a recreated one (new address) is found. Without
+# a URI part, the request URI goes on as received, still percent-encoded; the
+# host nginx in front has normalised it already. Not $uri: it is decoded and
+# nginx doesn't re-encode it, so %0d%0a in a path would reach tesp-api as a
+# raw line break (header injection).
 resolver 127.0.0.11 valid=2s ipv6=off;
 
+{% if oauth %}
+# As nginx's default "main" format, plus the request id that the validator's
+# audit lines carry.
+log_format tes_gateway '$remote_addr - $remote_user [$time_local] "$request" '
+                       '$status $body_bytes_sent "$http_referer" '
+                       '"$http_user_agent" request_id=$request_id';
+access_log /var/log/nginx/access.log tes_gateway;
+
+# Only for a 503 of the validator (the issuer can't be reached).
+map $tes_auth_status $tes_retry_after {
+    "~^50[234]"  "30";
+    ""           "30";
+    default      "";
+}
+
+# Basic refused at the gateway gets the challenge the validator would send.
+map $tes_basic_refused $tes_refused_challenge {
+    1        'Bearer realm="tes"';
+    default  "";
+}
+
+# What the validator decided (its X-Tes-Auth-Kind header): "bearer" for a
+# valid access token, "basic" for Basic credentials. Only "bearer" gets
+# tesp-api's credentials; anything else keeps the client's header.
+map $tes_auth_kind $tes_upstream_authorization {
+    bearer   "Basic {{ (tesp_basic_auth_user ~ ':' ~ tesp_basic_auth_password) | b64encode }}";
+    default  $http_authorization;
+}
+{% endif %}
 # The scheme, one space and credentials, as tesp-api (FastAPI) parses them.
 map $http_authorization $tes_has_basic {
     "~*^basic [^ ]"  1;
     default          0;
 }
 
+# Who may use Basic: tesp_basic_auth_sources, by the client's address (from
+# X-Real-IP, below). With no sources: everyone while tokens are off, no one
+# while they are on.
+geo $tes_basic_source {
+    default {{ 1 if (basic and not tesp_basic_auth_sources) else 0 }};
+{% for source in tesp_basic_auth_sources %}
+    {{ source }} 1;
+{% endfor %}
+}
+
+# Basic credentials from elsewhere: refused here, before tesp-api (or the
+# validator) sees them.
+map "$tes_has_basic:$tes_basic_source" $tes_basic_refused {
+    "1:0"    1;
+    default  0;
+}
+
+{% if cors %}
+# CORS (Krini calls the TES from the browser): only these exact origins are
+# echoed; any other gets no CORS headers. No credentials, no wildcard.
+map $http_origin $tes_cors_origin {
+    default  "";
+{% for origin in tesp_cors_origins %}
+    "{{ origin }}" $http_origin;
+{% endfor %}
+}
+
+# A preflight: OPTIONS from an allowed origin.
+map "$request_method:$tes_cors_origin" $tes_cors_preflight {
+    "~*^OPTIONS:https://"  1;
+    default               0;
+}
+
+# Only on preflight answers.
+map $tes_cors_preflight $tes_cors_methods {
+    1        "GET, POST, OPTIONS";
+    default  "";
+}
+map $tes_cors_preflight $tes_cors_headers {
+    1        "authorization, content-type";
+    default  "";
+}
+map $tes_cors_preflight $tes_cors_max_age {
+    1        "600";
+    default  "";
+}
+
+{% endif %}
 server {
     listen 8080;
     server_name _;
@@ -33,15 +141,24 @@ server {
     # The host nginx in front enforces the request size limit.
     client_max_body_size 0;
 
+    # The client's address, as the host nginx saw it: it sets X-Real-IP to
+    # $remote_addr (SRC's reverse-proxy role). Only connections from Docker's
+    # ranges, where the host's connections to the published (127.0.0.1-only)
+    # port arrive from, may set it.
+{% for proxy in tesp_gateway_trusted_proxies %}
+    set_real_ip_from {{ proxy }};
+{% endfor %}
+    real_ip_header X-Real-IP;
+
     set $tesp_api_upstream http://tesp-api:8080;
     proxy_http_version 1.1;
-    # The Host the host nginx sent, as tesp-api saw it before the gateway.
-    proxy_set_header Host $http_host;
     proxy_read_timeout 300s;
     proxy_send_timeout 300s;
 
     location = /v1/service-info {
+{{ cors_preflight() }}
         add_header Allow "GET, HEAD" always;
+{{ cors_headers() }}
         if ($request_method !~ ^(GET|HEAD)$) {
             return 405;
         }
@@ -55,20 +172,144 @@ server {
         rewrite ^ /v1/service-info last;
     }
 
+    # proxy_set_header in a location replaces all inherited ones, so each
+    # location sets Host (as the host nginx sent it) itself.
     location ~ ^/(|swagger-ui\.html|redoc|openapi\.json|docs/oauth2-redirect)$ {
+{{ cors_preflight() }}
+{{ cors_headers() }}
+        proxy_set_header Host $http_host;
+        # Public: no credentials, not even a token, go to tesp-api.
+        proxy_set_header Authorization "";
         proxy_pass $tesp_api_upstream;
     }
 
+{% if oauth %}
+    location = /_tes_auth {
+        internal;
+        set $tes_validator_url http://validator:8081/auth;
+        proxy_pass $tes_validator_url;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header Host validator;
+        proxy_set_header Authorization $http_authorization;
+        proxy_connect_timeout 2s;
+        # The validator gives up on the issuer after its own timeouts.
+        proxy_read_timeout 30s;
+    }
+
+{% macro protected() %}
+{{ cors_preflight() }}
+{{ cors_headers() }}
+        if ($tes_basic_refused) {
+            return 401;
+        }
+        auth_request /_tes_auth;
+        auth_request_set $tes_auth_kind $upstream_http_x_tes_auth_kind;
+        auth_request_set $tes_auth_client $upstream_http_x_tes_auth_client;
+        auth_request_set $tes_auth_exempt $upstream_http_x_tes_auth_exempt;
+        auth_request_set $tes_auth_status $upstream_status;
+        # nginx answers any other status of the validator with 500. An
+        # error_page here replaces the server's, so 401 is repeated.
+        error_page 500 = @auth_error;
+        error_page 401 = @unauthorized;
+        error_page 403 = @forbidden;
+        proxy_set_header Host $http_host;
+        # Replaces every Authorization header the client sent.
+        proxy_set_header Authorization $tes_upstream_authorization;
+        # The gateway's own headers never come from a client.
+        proxy_set_header X-Tes-Auth-Client "";
+        proxy_set_header X-Tes-Auth-Exempt "";
+        proxy_pass $tesp_api_upstream;
+{%- endmacro %}
     location / {
+{{ protected() }}
+    }
+
+    # Task submissions of exempt clients (e.g. proTES, which submits tasks for
+    # users) are also sent to the validator's audit log, which records the
+    # user named in the task tags. It sees the task, but neither the token
+    # nor the response. Every request here is mirrored; the audit location
+    # drops all but those.
+    location = /v1/tasks {
+{{ protected() }}
+        mirror /_tes_audit;
+        mirror_request_body on;
+    }
+
+    location = /_tes_audit {
+        internal;
+        if ($tes_auth_exempt != "1") {
+            return 204;
+        }
+        if ($request_method != POST) {
+            return 204;
+        }
+        set $tes_audit_url http://validator:8081/audit;
+        proxy_pass $tes_audit_url;
+        proxy_set_header Host validator;
+        proxy_set_header Authorization "";
+        # From the validator's own answer for this request (auth_request_set),
+        # replacing any such header of the client.
+        proxy_set_header X-Tes-Auth-Client $tes_auth_client;
+        proxy_set_header X-Tes-Auth-Exempt $tes_auth_exempt;
+        # Matches the audit line to this request in the gateway's log.
+        proxy_set_header X-Request-Id $request_id;
+        proxy_connect_timeout 2s;
+        proxy_read_timeout 10s;
+    }
+{% else %}
+    location / {
+{{ cors_preflight() }}
+{{ cors_headers() }}
         if ($tes_has_basic = 0) {
             return 401;
         }
+        if ($tes_basic_refused) {
+            return 401;
+        }
+        proxy_set_header Host $http_host;
         proxy_pass $tesp_api_upstream;
     }
+{% endif %}
 
+{% if oauth %}
+    # A valid token of a user without the required group: 403, so clients
+    # don't ask the user to log in again (that's for 401).
+    location @forbidden {
+{{ cors_headers() }}
+        # RFC 6750: the token is fine, its permissions are not.
+        add_header WWW-Authenticate 'Bearer realm="tes", error="insufficient_scope"' always;
+        default_type application/json;
+        return 403 '{"detail": "Not allowed: the account lacks the required group"}';
+    }
+
+    # The validator answers 503 when the issuer can't be reached: then the
+    # client gets 503, not a 401 that would look like bad credentials.
+    location @auth_error {
+{{ cors_headers() }}
+        add_header Retry-After $tes_retry_after always;
+        default_type application/json;
+        # 503 from the validator (issuer unreachable), or the validator
+        # itself not answering (502, 504).
+        # Empty: the validator's name doesn't resolve (container stopped).
+        if ($tes_auth_status ~ "^(50[234])?$") {
+            return 503 '{"detail": "Token check unavailable, try again later"}';
+        }
+        return 500 '{"detail": "Internal error"}';
+    }
+
+{% endif %}
     error_page 401 = @unauthorized;
     location @unauthorized {
+{{ cors_headers() }}
+{% if oauth %}
+        # The validator's Bearer challenge: nginx copies it from a 401 of the
+        # auth subrequest. Refused Basic never reaches the validator.
+        add_header WWW-Authenticate $tes_refused_challenge always;
+{% endif %}
+{% if basic %}
         add_header WWW-Authenticate 'Basic realm="tes"' always;
+{% endif %}
         default_type application/json;
         return 401 '{"detail": "Not authenticated"}';
     }
