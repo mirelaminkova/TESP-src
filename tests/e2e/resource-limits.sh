@@ -31,8 +31,10 @@
 #                 submission even before #21, so this case guards the memory
 #                 path, not the #21 fix.
 #   ram-within    ram_gb 1, holds 256 MiB for 30 s: must reach COMPLETE
-#   ram-overuse   ram_gb 0.5, holds 1.5 GiB for 90 s: must be killed
-#                 (EXECUTOR_ERROR/SYSTEM_ERROR), not COMPLETE (issue #13)
+#   ram-overuse   ram_gb 0.5, holds 1.5 GiB for 90 s: must be killed by
+#                 SLURM (EXECUTOR_ERROR/SYSTEM_ERROR, "exceeded memory
+#                 limit" in its logs) before it finishes (issue #13). Runs
+#                 ram-within first: the control for the same image.
 # tesp-api reports no reason for a rejection yet (mirelaminkova/tesp-api#66);
 # on the workspace, `sacct` and slurmctld's log show it.
 #
@@ -50,11 +52,17 @@ REJECT_SECONDS=${REJECT_SECONDS:-60}
 read -r -a curl_opts <<<"${CURL_OPTS:-}"
 
 ALL_CASES=(fits cpu-too-big ram-too-big ram-within ram-overuse)
-# hog <MiB> <seconds>: a command holding that much memory, every page touched
+# hog <MiB> <seconds>: a shell command that holds that much memory, every
+# page written (bytes * n), then prints "held <MiB> MiB"
 HOG_IMAGE=python:3.13-alpine
-hog() { echo "python3 -c 'import time; b = b\"x\" * ($1 << 20); time.sleep($2); print(\"held $1 MiB\")'"; }
+hog() {
+    printf 'python3 -c %q' \
+        "import time; b = b'x' * ($1 << 20); time.sleep($2); print('held $1 MiB')"
+}
+ram_within_ok=
 FAILED_STATES=" EXECUTOR_ERROR SYSTEM_ERROR "
 failures=0
+passes=0
 control_ok=
 
 # Prints the response body; fails on an HTTP error. The credentials go
@@ -132,19 +140,11 @@ print(text[-300:] if text else "no reason reported")
     echo "   $1: task $ID -> $STATE in ${SECONDS_TAKEN}s; $DETAIL"
 }
 
-pass() { echo "PASS $1"; }
+pass() { echo "PASS $1"; passes=$((passes + 1)); }
 fail() { echo "FAIL $1"; failures=$((failures + 1)); }
 
 expect_complete() {  # <case>
     if [ "$STATE" = COMPLETE ]; then pass "$1"; else fail "$1 (expected COMPLETE)"; fi
-}
-
-# The task must fail (at any time). Gated on the control like expect_rejected.
-expect_failed() {  # <case>
-    if [ -z "$control_ok" ]; then
-        fail "$1 (inconclusive: the control task 'fits' didn't complete)"
-    elif [[ "$FAILED_STATES" == *" $STATE "* ]]; then pass "$1"
-    else fail "$1 (expected EXECUTOR_ERROR or SYSTEM_ERROR)"; fi
 }
 
 # The task must fail, and fast enough to be a rejection at submission. Without
@@ -180,11 +180,25 @@ case_ram-too-big() {
 case_ram-within() {
     run ram-within "$(task 1 1 "$HOG_IMAGE" "$(hog 256 30)")"
     expect_complete ram-within
+    if [ "$STATE" = COMPLETE ]; then ram_within_ok=1; fi
 }
 
+# The task must fail because SLURM killed it for its memory: the hog never
+# finished, and slurmstepd's message reached the task's logs.
 case_ram-overuse() {
+    [ -n "$ram_within_ok" ] || case_ram-within
     run ram-overuse "$(task 1 0.5 "$HOG_IMAGE" "$(hog 1536 90)")"
-    expect_failed ram-overuse
+    if [ -z "$ram_within_ok" ]; then
+        fail "ram-overuse (inconclusive: the control task 'ram-within' didn't complete)"
+    elif [[ "$FAILED_STATES" != *" $STATE "* ]]; then
+        fail "ram-overuse (expected EXECUTOR_ERROR or SYSTEM_ERROR)"
+    elif [[ "$DETAIL" == *"held 1536 MiB"* ]]; then
+        fail "ram-overuse (the task held its memory to the end: not killed)"
+    elif [[ "$DETAIL" != *"exceeded memory limit"* ]]; then
+        fail "ram-overuse (failed without SLURM's \"exceeded memory limit\")"
+    else
+        pass ram-overuse
+    fi
 }
 
 cases=("$@")
@@ -200,5 +214,5 @@ run_cases=(fits)
 for c in "${cases[@]}"; do [ "$c" = fits ] || run_cases+=("$c"); done
 for c in "${run_cases[@]}"; do "case_$c"; done
 
-echo "Summary: $(( ${#run_cases[@]} - failures )) passed, $failures failed"
+echo "Summary: $passes passed, $failures failed"
 [ "$failures" -eq 0 ]

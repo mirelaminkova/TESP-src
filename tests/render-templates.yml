@@ -405,13 +405,13 @@
               - slurm_config.DefMemPerCPU | int == (16000 - 2048) // 8
               - slurm_config.EnforcePartLimits == 'ALL'
               # Run-time limits without cgroups (issue #13): see group_vars.
-              - slurm_config.TaskPlugin is not defined
               - slurm_config.JobAcctGatherType == 'jobacct_gather/linux'
-              - slurm_config.JobAcctGatherParams == 'OverMemoryKill'
+              - slurm_config.JobAcctGatherParams == 'OverMemoryKill,UsePss'
               - slurm_config.JobAcctGatherFrequency == 'task=10'
-              # Ubuntu 22.04's SLURM 21.08 has no cgroup v2 plugin, so any
-              # cgroup plugin stops slurmd on SRC's cgroup v2 image.
-              - slurm_config.values() | select('search', 'cgroup') | list == []
+              # No cgroup plugins and no task/affinity: the role's defaults,
+              # proctrack/pgid and no task plugin, stay.
+              - slurm_config.ProctrackType is not defined
+              - slurm_config.TaskPlugin is not defined
               - slurm_cgroup_config is not defined
           vars:
             ansible_facts:
