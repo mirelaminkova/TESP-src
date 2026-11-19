@@ -30,6 +30,7 @@ fail() { printf 'FAIL %s\n' "$1"; fails=$((fails + 1)); }
 
 # ---- Stand-ins ------------------------------------------------------------
 mount -t tmpfs tmpfs /run   # private /run: netns mounts, xtables lock
+mount -t sysfs sysfs /sys   # /sys/class/net of this namespace (find-bridges.sh)
 ip netns add peer
 ip link set lo up
 ip netns exec peer ip link set lo up
@@ -272,6 +273,22 @@ expect "on again: task -/-> loopback 8080" refused tcp 127.0.0.1 8080 "$task_use
 expect "on again: task -/-> [::1]:8080" refused tcp ::1 8080 "$task_user"
 # An unknown argument is an error, not a run that applies (or removes) rules.
 if sh "$fence" --bogus >/dev/null 2>&1; then fail "an unknown argument was accepted"; else pass "an unknown argument is refused"; fi
+
+# ---- files/find-bridges.sh: what playbook.yml passes on as found bridges -----
+# Linux bridges only (not the veth links above), without one that carries a
+# default route (the uplink), IPv4 or IPv6.
+find_bridges="$(dirname "$0")/../../files/find-bridges.sh"
+ip link add tesp-br0 type bridge; ip link set tesp-br0 up
+ip link add upl0 type bridge; ip link set upl0 up
+ip addr add 192.0.2.1/24 dev upl0; ip route add default via 192.0.2.254 dev upl0
+ip link add upl6 type bridge; ip link set upl6 up
+ip -6 addr add fd00:77::1/64 dev upl6 nodad; ip -6 route add default via fd00:77::fe dev upl6
+got=$(sh "$find_bridges" | sort | tr '\n' ' ')
+if [ "$got" = "tesp-br0 " ]; then pass "find-bridges.sh: tesp-br0 found, uplinks left out"; else fail "find-bridges.sh printed: $got"; fi
+ip route del default; ip -6 route del default
+got=$(sh "$find_bridges" | sort | tr '\n' ' ')
+if [ "$got" = "tesp-br0 upl0 upl6 " ]; then pass "find-bridges.sh: without default routes, every bridge"; else fail "find-bridges.sh without default routes printed: $got"; fi
+for b in tesp-br0 upl0 upl6; do ip link del "$b"; done
 
 echo
 if [ "$fails" = 0 ]; then echo "task fence: all checks passed"; else echo "task fence: $fails check(s) failed"; exit 1; fi

@@ -12,7 +12,8 @@
 # {{ pulsar_user.name }}, Pulsar itself included, and nobody else (root, sshd,
 # Docker, other users). For {{ pulsar_user.name }}, in iptables and ip6tables:
 #   - connections it opens to this host's own addresses (loopback included),
-#     to containers on bridges ({{ tesp_task_fence_interfaces | join(', ') }}) and to link-local
+#     to containers on bridges (tesp_task_fence_interfaces, see the rules
+#     below) and to link-local
 #     addresses (cloud metadata) are refused, except DNS (53) and slurmctld
 #     on this host, which Pulsar needs (traffic to any of the host's own
 #     addresses goes over lo). Everything else (image pulls, S3 and http(s)
