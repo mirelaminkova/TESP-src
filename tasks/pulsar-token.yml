@@ -23,22 +23,39 @@
     mode: '0600'
   no_log: true
 
+# Under --check, copy reports a new token without writing it, so on a host
+# deployed before this file existed there is nothing to fix or read yet. The
+# play then goes on with a stand-in token that is never written anywhere.
+- name: Find the stored Pulsar token file
+  ansible.builtin.stat:
+    path: "{{ tesp_pulsar_token_file }}"
+    get_checksum: false
+  register: tesp_pulsar_token_file_stat
+  no_log: true
+
 # copy with force: false leaves an existing file's mode alone.
 - name: Keep the stored Pulsar token file private
   ansible.builtin.file:
     path: "{{ tesp_pulsar_token_file }}"
     mode: '0600'
+  when: tesp_pulsar_token_file_stat.stat.exists
   no_log: true
 
 - name: Read the stored Pulsar token
   ansible.builtin.slurp:
     src: "{{ tesp_pulsar_token_file }}"
   register: tesp_pulsar_token_stored
+  when: tesp_pulsar_token_file_stat.stat.exists
   no_log: true
 
 - name: Set the Pulsar token
   ansible.builtin.set_fact:
-    pulsar_token: "{{ tesp_pulsar_token_stored.content | b64decode | trim }}"
+    # Stand-in only under --check (see above); in a normal run an empty value
+    # would stop the run at the check below.
+    pulsar_token: >-
+      {{ (tesp_pulsar_token_stored.content | b64decode | trim)
+         if tesp_pulsar_token_stored.content is defined
+         else ('check-mode-stand-in-token-not-stored' if ansible_check_mode else '') }}
   no_log: true
 
 # An empty or short file would otherwise give Pulsar a weak or empty

@@ -1,0 +1,19 @@
+---
+# Run by tests/render-templates.yml with ansible-playbook --check (issue #35),
+# not by tests/run.sh: the stand-in token is chosen only under a real
+# --check, where ansible_check_mode is true.
+- name: Pulsar token tasks under --check without a stored token
+  hosts: localhost
+  gather_facts: false
+  vars:
+    # tests/render-templates.yml passes the real path with -e.
+    tesp_pulsar_token_file: /nonexistent/set-with-extra-vars
+  tasks:
+    - name: Get the Pulsar token
+      ansible.builtin.include_tasks: ../../tasks/pulsar-token.yml
+
+    - name: Check mode uses the stand-in token
+      ansible.builtin.assert:
+        that:
+          - pulsar_token == 'check-mode-stand-in-token-not-stored'
+        fail_msg: under --check without a stored token, expected the stand-in token
