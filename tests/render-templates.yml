@@ -594,8 +594,8 @@
               - conf is search('limit_req_zone \\$tes_rate_key zone=tes_per_ip:10m rate=20r/s;')
               - conf.count('limit_req zone=tes_per_ip burst=40 delay=20;') == 2
               - conf.count('limit_conn tes_conn_per_ip 32;') == 2
-              # 6 x the default issuer timeout (5 s) + 5: longer than the validator.
-              - "'proxy_read_timeout 35s;' in conf"
+              # 6 x the default issuer timeout (5 s) + 10 (the 5 s slot wait and slack).
+              - "'proxy_read_timeout 40s;' in conf"
               - conf is search('limit_conn_zone \\$tes_rate_key zone=tes_conn_per_ip:10m;')
               - "'nodelay' not in conf"
               # Allowlisted sources (Basic sources, src_tes_rate_exempt_sources)

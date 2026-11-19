@@ -235,10 +235,12 @@ server {
         proxy_set_header Host validator;
         proxy_set_header Authorization $http_authorization;
         proxy_connect_timeout 2s;
-        # Longer than the validator takes to give up on the issuer: up to
-        # three calls in a row (discovery, JWKS, userinfo), each up to about
-        # twice tesp_oauth_http_timeout_seconds when bytes trickle in.
-        proxy_read_timeout {{ 6 * (tesp_oauth_http_timeout_seconds | int) + 5 }}s;
+        # Usually longer than the validator takes to give up on the issuer:
+        # up to 5 s for a free check slot, then up to three calls in a row
+        # (discovery, JWKS, userinfo), each usually within twice
+        # tesp_oauth_http_timeout_seconds (see fetch_json). A check that
+        # takes longer still ends as a 503 (@auth_error).
+        proxy_read_timeout {{ 6 * (tesp_oauth_http_timeout_seconds | int) + 10 }}s;
     }
 
 {% macro protected() %}

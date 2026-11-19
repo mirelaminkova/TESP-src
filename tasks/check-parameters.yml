@@ -122,8 +122,9 @@
       # Below the validator's 64 concurrent checks (MAX_CONCURRENT_CHECKS).
       - tesp_gateway_conn_per_address | int < 64
       # The validator's timings, in whole seconds. A large leeway would
-      # accept long-expired tokens. The gateway waits for the validator
-      # 6 x the issuer timeout (gateway.conf.j2); 10 keeps that near a minute.
+      # accept long-expired tokens. The gateway waits for the validator up to
+      # 6 x the issuer timeout + 10 s (gateway.conf.j2); a timeout of at most
+      # 10 keeps that near a minute.
       - tesp_oauth_leeway_seconds | string is match('[0-9]{1,3}\\Z')
       - tesp_oauth_leeway_seconds | int <= 300
       - tesp_oauth_userinfo_cache_seconds | string is match('[0-9]{1,9}\\Z')

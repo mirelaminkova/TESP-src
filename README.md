@@ -207,7 +207,7 @@ With tokens on, the gateway asks a small validator container (`files/tes-validat
 - the token's `iss` is exactly a configured issuer. The discovery document, keys (JWKS) and userinfo endpoint come from the configuration, never from the token;
 - it is signed with an allowed algorithm (`RS256` by default; never `none` or `HS*`), by a key the issuer publishes;
 - its header says `typ: at+jwt`, so it is an access token and not an ID token (RFC 9068);
-- `exp` and `nbf` hold, with 60 s leeway by default (`tesp_oauth_leeway_seconds`);
+- `exp` and `nbf` hold, with 60 s leeway by default (`tesp_oauth_leeway_seconds`, at most 300);
 - its `client_id` is one of the allowed clients;
 - `aud` is one of the configured audiences, if any are configured; an exempt client's token must also have one of `exempt_audiences`;
 - LS Login's userinfo response for the token lists a required entitlement in `eduperson_entitlement`: an exact value, or one starting with a configured prefix (which ends with `:`, so `…:ECP_CLN:` matches the subgroups of `ECP_CLN` but not `…:ECP_CLN_OTHER`). Exempt clients skip this check: a service such as proTES, which checks the user itself.
