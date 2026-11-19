@@ -112,15 +112,41 @@
       # IPv4 or IPv6 addresses, optionally with a prefix length (not /0).
       - tesp_basic_auth_sources is sequence and tesp_basic_auth_sources is not string
       - tesp_basic_auth_sources | reject('match', ipv4_re ~ '|' ~ ipv6_re) | list | length == 0
+      - tesp_rate_exempt_sources is sequence and tesp_rate_exempt_sources is not string
+      - tesp_rate_exempt_sources | reject('match', ipv4_re ~ '|' ~ ipv6_re) | list | length == 0
+      - tesp_gateway_rate_per_second | string is match('[1-9][0-9]*\\Z')
+      # 2 or more: delay= is half of it, and nginx refuses delay=0.
+      - tesp_gateway_rate_burst | string is match('[1-9][0-9]*\\Z')
+      - tesp_gateway_rate_burst | int >= 2
+      - tesp_gateway_conn_per_address | string is match('[1-9][0-9]*\\Z')
+      # Below the validator's 64 concurrent checks (MAX_CONCURRENT_CHECKS).
+      - tesp_gateway_conn_per_address | int < 64
+      # The validator's timings, in whole seconds. A large leeway would
+      # accept long-expired tokens. The gateway waits for the validator up to
+      # 6 x the issuer timeout + 10 s (gateway.conf.j2); a timeout of at most
+      # 10 keeps that near a minute.
+      - tesp_oauth_leeway_seconds | string is match('[0-9]{1,3}\\Z')
+      - tesp_oauth_leeway_seconds | int <= 300
+      - tesp_oauth_userinfo_cache_seconds | string is match('[0-9]{1,9}\\Z')
+      - tesp_oauth_http_timeout_seconds | string is match('[0-9]{1,2}\\Z')
+      - tesp_oauth_http_timeout_seconds | int >= 1
+      - tesp_oauth_http_timeout_seconds | int <= 10
       # For values set directly instead of through the parameters.
       - tesp_basic_auth_enabled | string | lower in ['true', 'false']
       - tesp_oauth_enabled | string | lower in ['true', 'false']
       - tesp_basic_auth_enabled | bool or tesp_oauth_enabled | bool
     fail_msg: >-
       Invalid access settings. src_tes_oauth_enabled must be true or false;
-      src_tes_basic_auth_sources must be IP addresses or CIDRs (e.g.
-      145.38.1.2 or 145.38.0.0/16), comma-separated without spaces. See
-      "Access with LS Login" in the README.
+      src_tes_basic_auth_sources and src_tes_rate_exempt_sources must be IP
+      addresses or CIDRs (e.g. 145.38.1.2 or 145.38.0.0/16, at least /8 or
+      /16 for IPv6), comma-separated without spaces;
+      tesp_gateway_rate_per_second must be a whole number above 0,
+      tesp_gateway_conn_per_address a whole number from 1 to 63,
+      tesp_gateway_rate_burst a whole number of at least 2,
+      tesp_oauth_leeway_seconds whole seconds from 0 to 300,
+      tesp_oauth_userinfo_cache_seconds whole seconds (at most 9 digits), and
+      tesp_oauth_http_timeout_seconds whole seconds from 1 to 10. See "Access
+      with LS Login" in the README.
 
 - name: Validate the CORS origins (src_tes_cors_origins)
   vars:

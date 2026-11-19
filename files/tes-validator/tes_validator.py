@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import functools
 import hashlib
 import json
 import logging
@@ -60,6 +61,10 @@ JWS_RE = re.compile(r"[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
 MAX_TOKEN_LENGTH = 16384
 MAX_RESPONSE_BYTES = 1 << 20    # from the issuer
 MAX_AUDIT_BODY_BYTES = 1 << 20  # a task sent to /audit
+REFUSAL_CACHE_SECONDS = 60      # userinfo refused a token (4xx)
+REFUSED = "refused"             # userinfo cache value for such a token
+LISTEN_BACKLOG = 128            # connections waiting for accept()
+MAX_THREADS = 100               # below the container's pids limit (128)
 
 
 class Denied(Exception):
@@ -212,6 +217,10 @@ class IssuerConfig:
         )
 
 
+# Upper bound for every number in the config file (over 30 years in seconds).
+MAX_CONFIG_NUMBER = 10 ** 9
+
+
 @dataclass(frozen=True)
 class Config:
     """The validator's configuration file (rendered by Ansible)."""
@@ -253,24 +262,52 @@ class Config:
                      "userinfo_cache_seconds", "cache_max_entries"):
             if name in d:
                 value = d[name]
+                # json.load accepts NaN, Infinity and huge numbers (a 1e300 s
+                # timeout overflows the socket). None of them is usable here.
                 if isinstance(value, bool) or not isinstance(value, (int, float)) \
-                        or value < 0:
-                    raise ValueError(f"{name} must be a number >= 0")
+                        or not 0 <= value <= MAX_CONFIG_NUMBER:
+                    raise ValueError(f"{name} must be a number from 0 to "
+                                     f"{MAX_CONFIG_NUMBER}")
                 numbers[name] = value
         audit = _string_list(d.get("audit_tag_keys"), "audit_tag_keys")
-        return cls(issuers=issuers, basic_auth_enabled=basic,
-                   audit_tag_keys=audit, allow_http=allow_http, **numbers)
+        config = cls(issuers=issuers, basic_auth_enabled=basic,
+                     audit_tag_keys=audit, allow_http=allow_http, **numbers)
+        if config.http_timeout_seconds <= 0:
+            raise ValueError("http_timeout_seconds must be above 0")
+        if config.jwks_max_stale_seconds < config.jwks_cache_seconds or \
+                config.jwks_max_stale_seconds <= 0:
+            # Keys would be dropped before they are due for a refresh, or
+            # right after every fetch.
+            raise ValueError("jwks_max_stale_seconds must be above 0 and at "
+                             "least jwks_cache_seconds")
+        return config
 
 
 def fetch_json(url: str, timeout: float, token: str | None = None) -> Any:
-    """GET a JSON document, with a timeout and a size limit."""
+    """GET a JSON document, with a timeout and a size limit.
+
+    urllib's timeout applies to each socket operation (connecting, the status
+    line and headers, each read). Reading the body in chunks against a
+    deadline also stops one that trickles bytes, after about twice the
+    timeout; headers trickled line by line are bounded only per line.
+    """
     headers = {"Accept": "application/json"}
     if token is not None:
         headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(url, headers=headers)
+    deadline = time.monotonic() + timeout
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            body = response.read(MAX_RESPONSE_BYTES + 1)
+            chunks, size = [], 0
+            while size <= MAX_RESPONSE_BYTES:
+                if time.monotonic() > deadline:
+                    raise FetchError(f"{url}: too slow")
+                chunk = response.read1(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                size += len(chunk)
+            body = b"".join(chunks)
     except (urllib.error.URLError, OSError, ValueError) as e:
         # HTTPError is a URLError; its message has the status, not the token.
         status = getattr(e, "code", None)
@@ -282,6 +319,16 @@ def fetch_json(url: str, timeout: float, token: str | None = None) -> Any:
         return json.loads(body)
     except ValueError:
         raise FetchError(f"{url}: not JSON") from None
+
+
+def _only_key(keys: dict[str | None, Any], kid: Any) -> Any:
+    """For a token without a kid: the issuer's key, if it has exactly one.
+    If the issuer rotates that key, tokens signed with the new one fail
+    until the keys are refreshed (within jwks_cache_seconds). LS Login sets
+    kids."""
+    if kid is None and len(keys) == 1:
+        return next(iter(keys.values()))
+    return None
 
 
 class TTLCache:
@@ -321,8 +368,19 @@ class _IssuerState:
     jwks_uri: str | None = None
     userinfo_endpoint: str | None = None
     keys: dict[str | None, Any] = field(default_factory=dict)
+    # Times from the validator's timer (monotonic): a wall-clock step can't
+    # make keys look fresh, or hold the back-off, for the length of the step.
     fetched_at: float | None = None    # last successful JWKS fetch
     attempted_at: float | None = None  # last attempt, successful or not
+    # Set while one request fetches the JWKS; others wait on it, without
+    # holding the lock (which guards only these fields, never a fetch).
+    refreshing: threading.Event | None = None
+    # Fetches are numbered as they start; `published` is the number of the
+    # one whose keys are in use. A fetch publishes only if its number is
+    # higher than `published`: a fetch given up on can't bring back older
+    # keys.
+    generation: int = 0
+    published: int = 0
 
 
 @dataclass(frozen=True)
@@ -335,15 +393,23 @@ class Decision:
     exempt: bool = False
 
 
+# Monotonic, and on Linux it also counts time suspended: after a VM
+# resumes, cached keys show their real age.
+_uptime = (functools.partial(time.clock_gettime, time.CLOCK_BOOTTIME)
+           if hasattr(time, "CLOCK_BOOTTIME") else time.monotonic)
+
+
 class Validator:
     """Checks Authorization headers against the configuration."""
 
     def __init__(self, config: Config,
                  fetch: Callable[..., Any] = fetch_json,
-                 clock: Callable[[], float] = time.time):
+                 clock: Callable[[], float] = time.time,
+                 timer: Callable[[], float] = _uptime):
         self.config = config
         self._fetch = fetch
-        self._clock = clock
+        self._clock = clock  # wall clock: cache expiry (capped at token exp)
+        self._timer = timer  # monotonic: JWKS ages and back-off
         self._state = {iss: _IssuerState() for iss in config.issuers}
         self._userinfo = TTLCache(config.cache_max_entries, clock)
         self._warned = TTLCache(1000, clock)
@@ -432,7 +498,10 @@ class Validator:
 
     def _resolve_endpoints(self, issuer: IssuerConfig,
                            state: _IssuerState) -> None:
-        """Fills in jwks_uri and userinfo_endpoint; call with state.lock.
+        """Fills in jwks_uri and userinfo_endpoint (both, or neither).
+
+        Called by the one request that fetches the JWKS, and by userinfo
+        lookups, which only run once the keys (so the endpoints) exist.
 
         From the configuration, else from the configured discovery document,
         which is read once.
@@ -452,23 +521,23 @@ class Validator:
             userinfo = userinfo or doc.get("userinfo_endpoint")
         allow_http = self.config.allow_http
         try:
-            state.jwks_uri = _https_only(jwks_uri, "jwks_uri", allow_http)
+            jwks_uri = _https_only(jwks_uri, "jwks_uri", allow_http)
             if userinfo:
-                state.userinfo_endpoint = _https_only(
-                    userinfo, "userinfo_endpoint", allow_http)
+                userinfo = _https_only(userinfo, "userinfo_endpoint", allow_http)
         except ValueError as e:
             raise Denied(f"discovery: {e}") from None
+        state.userinfo_endpoint = userinfo or None
+        state.jwks_uri = jwks_uri
 
     def _signing_key(self, issuer: IssuerConfig, kid: Any, alg: str) -> Any:
         """The issuer's public key for this kid, from its (cached) JWKS."""
         state = self._state[issuer.issuer]
-        now = self._clock()
+        now = self._timer()
         key = self._cached_key(state, kid, now)
         if key is None:
-            with state.lock:
-                key = self._refreshed_key(issuer, state, kid, now)
-        if key is None and kid is None and len(state.keys) == 1:
-            key = next(iter(state.keys.values()))
+            key = self._refreshed_key(issuer, state, kid, now)
+        if key is None:
+            key = _only_key(state.keys, kid)
         if key is None:
             raise Denied("unknown signing key")
         try:
@@ -486,46 +555,112 @@ class Validator:
         age = now - state.fetched_at
         if age < self.config.jwks_cache_seconds:
             return key
-        if age < self.config.jwks_max_stale_seconds and state.lock.locked():
+        if age < self.config.jwks_max_stale_seconds and state.refreshing:
             return key
         return None
 
     def _refreshed_key(self, issuer: IssuerConfig, state: _IssuerState,
                        kid: Any, now: float) -> Any:
-        """Refetches the JWKS if due and allowed; call with state.lock."""
-        stale = (state.fetched_at is None or
-                 now - state.fetched_at >= self.config.jwks_cache_seconds)
-        # Refetch when the keys are old, or for an unknown kid (a rotated
-        # key), but at most once per jwks_min_refresh_seconds, failed attempts
-        # included: random kids or an unreachable issuer can't make every
-        # request wait for a fetch.
-        may_try = (state.attempted_at is None or
-                   now - state.attempted_at >= self.config.jwks_min_refresh_seconds)
-        if (state.keys.get(kid) is None or stale) and may_try:
-            state.attempted_at = now
-            try:
-                self._resolve_endpoints(issuer, state)
-                keys = self._parse_jwks(self._fetch(
-                    state.jwks_uri, self.config.http_timeout_seconds))
-                if not keys:
-                    raise FetchError("no usable signing keys")
-            except (Denied, FetchError) as e:
-                log.warning("JWKS refresh of %s failed: %s", issuer.issuer, e)
-                if not state.keys:
-                    raise Unavailable(f"JWKS fetch failed: {e}") from None
-            else:
-                state.keys = keys
-                state.fetched_at = now
-        elif state.fetched_at is None:
-            # The first fetch failed and the backoff holds.
+        """Refetches the JWKS if due and allowed, or waits for the request
+        that is fetching it. No lock is held during a fetch."""
+        abandoned_after = 2 * self.config.http_timeout_seconds + 1
+
+        def known() -> bool:
+            return (state.keys.get(kid) is not None or
+                    _only_key(state.keys, kid) is not None)
+
+        with state.lock:
+            waiting_for = state.refreshing
+            # A fetch that hangs (an issuer trickling bytes) is given up on,
+            # so it can't stop every later refresh.
+            if waiting_for is not None and state.attempted_at is not None \
+                    and now - state.attempted_at > abandoned_after:
+                # It counts as an attempt: the back-off still holds, so
+                # hung fetches can't pile up.
+                waiting_for = state.refreshing = None
+            stale = (state.fetched_at is None or
+                     now - state.fetched_at >= self.config.jwks_cache_seconds)
+            # Refetch when the keys are old, or for an unknown kid (a rotated
+            # key), but at most once per jwks_min_refresh_seconds, failed
+            # attempts included: random kids or an unreachable issuer can't
+            # make every request wait for a fetch.
+            may_try = (state.attempted_at is None or
+                       now - state.attempted_at >=
+                       self.config.jwks_min_refresh_seconds)
+            fetching = (waiting_for is None and may_try and
+                        (not known() or stale))
+            if fetching:
+                state.attempted_at = now
+                state.refreshing = done = threading.Event()
+                state.generation += 1
+                generation = state.generation
+        if waiting_for is not None:
+            # Another request is fetching. Wait for it only if we don't have
+            # the key yet; a kid-less token can use the issuer's only key.
+            if not known():
+                finished = waiting_for.wait(abandoned_after)
+                if not finished and not known():
+                    raise Unavailable("JWKS refresh still running")
+        elif fetching:
+            self._fetch_jwks(issuer, state, now, done, generation)
+        elif state.fetched_at is None or (
+                kid is not None and state.keys.get(kid) is None
+                and state.attempted_at is not None
+                and state.attempted_at > state.fetched_at):
+            # The last fetch failed (or hung) and the back-off holds: a
+            # rotated key we couldn't fetch is an outage (503), not a bad
+            # token (401).
             raise Unavailable("JWKS fetch failed recently; retrying after "
-                         f"{self.config.jwks_min_refresh_seconds}s")
+                              f"{self.config.jwks_min_refresh_seconds}s")
+        if state.fetched_at is None and not state.keys:
+            raise Unavailable("JWKS fetch failed")
         # Keys the issuer couldn't confirm for too long are dropped: one it
-        # revoked must not stay valid through a long outage.
-        if now - state.fetched_at >= self.config.jwks_max_stale_seconds:
-            state.keys = {}
-            raise Unavailable("JWKS too old and the issuer can't be reached")
-        return state.keys.get(kid)
+        # revoked must not stay valid through a long outage. Under the lock,
+        # so a fetch that just finished isn't wiped.
+        with state.lock:
+            if (state.fetched_at is not None and now - state.fetched_at >=
+                    self.config.jwks_max_stale_seconds):
+                state.keys = {}
+                raise Unavailable("JWKS too old and the issuer can't be reached")
+            key = state.keys.get(kid)
+            # An unknown kid right after a failed fetch (by this request or
+            # the one it waited for) is an outage, as in the back-off later.
+            if key is None and kid is not None and state.attempted_at is not None \
+                    and state.attempted_at > (state.fetched_at or 0):
+                raise Unavailable("JWKS fetch failed recently")
+            return key
+
+    def _fetch_jwks(self, issuer: IssuerConfig, state: _IssuerState,
+                    now: float, done: threading.Event,
+                    generation: int) -> None:
+        """Fetches the JWKS (this request only) and publishes the result."""
+        try:
+            self._resolve_endpoints(issuer, state)
+            keys = self._parse_jwks(self._fetch(
+                state.jwks_uri, self.config.http_timeout_seconds))
+            if not keys:
+                raise FetchError("no usable signing keys")
+        except (Denied, FetchError) as e:
+            log.warning("JWKS refresh of %s failed: %s", issuer.issuer, e)
+            if not state.keys:
+                raise Unavailable(f"JWKS fetch failed: {e}") from None
+        else:
+            # Only if no newer fetch has published: one given up on must not
+            # overwrite newer keys (a revoked kid would come back). A newer
+            # one still running overwrites these when it succeeds.
+            with state.lock:
+                if generation > state.published:
+                    state.keys = keys
+                    state.fetched_at = now
+                    state.published = generation
+                else:
+                    log.info("JWKS refresh of %s finished after it was given "
+                             "up on; discarded", issuer.issuer)
+        finally:
+            with state.lock:
+                if state.refreshing is done:
+                    state.refreshing = None
+            done.set()
 
     def _parse_jwks(self, jwks: Any) -> dict[str | None, Any]:
         keys: dict[str | None, Any] = {}
@@ -545,21 +680,27 @@ class Validator:
         cache_key = hashlib.sha256(
             (issuer.issuer + "\0" + token).encode()).hexdigest()
         cached = self._userinfo.get(cache_key)
+        if cached is REFUSED:
+            raise Denied("userinfo failed: refused this token recently")
         if cached is not None:
             return cached
         state = self._state[issuer.issuer]
-        with state.lock:
-            self._resolve_endpoints(issuer, state)
-            endpoint = state.userinfo_endpoint
+        # Resolved with the JWKS already; no lock needed to read it.
+        self._resolve_endpoints(issuer, state)
+        endpoint = state.userinfo_endpoint
         if not endpoint:
             raise Denied("issuer has no userinfo endpoint")
         try:
             info = self._fetch(endpoint, self.config.http_timeout_seconds,
                                token=token)
         except FetchError as e:
-            # A 4xx: the issuer refuses this token (e.g. revoked).
-            error = Unavailable if e.unavailable else Denied
-            raise error(f"userinfo failed: {e}") from None
+            if e.unavailable:
+                raise Unavailable(f"userinfo failed: {e}") from None
+            # A 4xx: the issuer refuses this token (e.g. revoked). Remembered
+            # for a minute, so a client retrying it doesn't reach the issuer.
+            self._userinfo.put(cache_key, REFUSED, min(
+                self._clock() + REFUSAL_CACHE_SECONDS, float(claims["exp"])))
+            raise Denied(f"userinfo failed: {e}") from None
         if not isinstance(info, dict) or info.get("sub") != claims["sub"]:
             raise Denied("userinfo is for another subject")
         if ("eduperson_entitlement" not in info
@@ -735,6 +876,8 @@ def _challenge(authorization: str | None) -> str:
     return 'Bearer realm="tes"'
 
 
+# tasks/check-parameters.yml keeps tesp_gateway_conn_per_address below this:
+# change both together.
 MAX_CONCURRENT_CHECKS = 64
 
 
@@ -744,9 +887,24 @@ def make_server(validator: Validator, host: str, port: int,
         "validator": validator,
         "slots": threading.BoundedSemaphore(max_concurrent),
     })
-    server = ThreadingHTTPServer((host, port), handler)
+    server = _Server((host, port), handler)
     server.daemon_threads = True
     return server
+
+
+class _Server(ThreadingHTTPServer):
+    """socketserver's default backlog of 5 drops connections in a burst; and
+    past MAX_THREADS connections, new ones are closed instead of starting a
+    thread each (the container's pids limit would make that fail)."""
+
+    request_queue_size = LISTEN_BACKLOG
+
+    def process_request(self, request, client_address):
+        if threading.active_count() > MAX_THREADS:
+            log.warning("too many connections; closing one")
+            self.shutdown_request(request)
+            return
+        super().process_request(request, client_address)
 
 
 def main(argv: list[str] | None = None) -> int:

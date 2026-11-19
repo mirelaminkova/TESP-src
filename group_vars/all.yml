@@ -242,9 +242,30 @@ tesp_cors_origins: >-
   {{ (src_tes_cors_origins | default('') | string).split(',')
      | map('trim') | select | list }}
 # Where the gateway takes the client's address from X-Real-IP, which the host
-# nginx (SRC's reverse-proxy role) sets: Docker's address ranges, from which
-# the host's connections to the gateway's published port arrive.
+# nginx (SRC's reverse-proxy role) sets: Docker's bridge networks, from which
+# the host's connections to the gateway's published port arrive: Docker's
+# default pools, 172.17.0.0/16 to 172.31.0.0/16, then 192.168.0.0/16 once
+# those are used up. Without a range, every client looks like the bridge
+# gateway: one rate-limit bucket for all and Basic sources that don't match.
 tesp_gateway_trusted_proxies: [172.16.0.0/12, 192.168.0.0/16]
+# Requests per second per client address on the TES API (not service info or
+# the docs). Up to the burst, faster requests are queued; beyond it they get
+# 429, which fails a Nextflow task or aborts its run (nf-ga4gh doesn't retry).
+tesp_gateway_rate_per_second: 20
+# At least 2 (half of it passes without waiting). Each queued request waits
+# up to about burst / 2 / rate seconds; keep that well under a client's
+# timeout (Nextflow's HTTP client: 10 s).
+tesp_gateway_rate_burst: 40
+# Connections one address may keep open: requests in progress, not a rate.
+# Below the validator's 64 concurrent checks, so one address can't take
+# them all while LS Login answers slowly.
+tesp_gateway_conn_per_address: 32
+# Addresses (IP or CIDR) that are never rate-limited, from
+# src_tes_rate_exempt_sources, e.g. proTES's, which submits for all its
+# users. The Basic sources are exempt too.
+tesp_rate_exempt_sources: >-
+  {{ (src_tes_rate_exempt_sources | default('') | string).split(',')
+     | map('trim') | select | list }}
 # Issuers whose access tokens are accepted. Each entry:
 #   issuer               exact "iss" (https); also where discovery is read,
 #                        unless discovery_url is set. Never taken from a token.
@@ -316,8 +337,8 @@ tesp_oauth_audit_tag_keys: >-
 # /etc/ssl/certs/ca-certificates.crt after adding that CA to the system.
 tesp_oauth_ca_bundle: ""
 # Validator tuning; see files/tes-validator/tes_validator.py.
-tesp_oauth_leeway_seconds: 60          # clock skew allowed for exp/nbf
-tesp_oauth_http_timeout_seconds: 5     # every call to the issuer
+tesp_oauth_leeway_seconds: 60          # clock skew allowed for exp/nbf; 0-300
+tesp_oauth_http_timeout_seconds: 5     # every call to the issuer; 1-10
 tesp_oauth_userinfo_cache_seconds: 300  # per token, never past its exp
 # Build context of the validator image, outside tesp_install_dir.
 tesp_validator_dir: /srv/tesp-validator

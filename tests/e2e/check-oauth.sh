@@ -147,6 +147,8 @@ expect "CORS preflight of another origin" 401 -X OPTIONS -H 'Origin: https://evi
 grep -qi '^Access-Control-Allow-Origin' "$tmp/headers" && { echo "FAIL another origin got CORS headers" >&2; fail=1; }
 expect "token call from the portal" 200 -H "Origin: $portal" -H "$(bearer "$(mint)")" "$base/v1/tasks"
 grep -qiF "Access-Control-Allow-Origin: $portal" "$tmp/headers" || { echo "FAIL no CORS header on 200" >&2; fail=1; }
+grep -qiF 'Access-Control-Expose-Headers: WWW-Authenticate, Retry-After' "$tmp/headers" ||
+    { echo "FAIL no Access-Control-Expose-Headers" >&2; fail=1; }
 expect "401 for the portal" 401 -H "Origin: $portal" "$base/v1/tasks"
 grep -qiF "Access-Control-Allow-Origin: $portal" "$tmp/headers" || { echo "FAIL no CORS header on 401" >&2; fail=1; }
 
@@ -154,6 +156,62 @@ grep -qiF "Access-Control-Allow-Origin: $portal" "$tmp/headers" || { echo "FAIL 
 docker stop -t 2 "$(docker ps -qf name=idp)" >/dev/null
 expect "issuer down: 503, not 401" 503 -H "$(bearer "$(mint --sub entitled-new-user)")" "$base/v1/tasks"
 grep -qi '^Retry-After: 30' "$tmp/headers" || { echo "FAIL no Retry-After on 503" >&2; fail=1; }
+
+# Rate limit per client address (20/s; up to 40 more are queued, the rest
+# get 429). The runner is a Basic source here, so exempt; X-Real-IP (trusted
+# from the runner's Docker range) makes it another, limited address.
+burst() {  # burst <extra curl args...>: 100 parallel requests, prints the 429s
+    rm -rf "$tmp/burst"
+    mkdir -p "$tmp/burst"
+    for i in $(seq 1 100); do
+        curl -s -o /dev/null -D "$tmp/burst/$i" -w '%{http_code}\n' \
+            -H "Origin: $portal" "$@" "$base/v1/tasks" &
+    done | grep -c '^429$' || true
+}
+n429=$(burst -H 'X-Real-IP: 203.0.113.9')
+if [ "$n429" -gt 0 ]; then
+    echo "ok   rate limit: $n429 of 100 got 429"
+else
+    echo "FAIL rate limit: no 429 in a burst of 100" >&2
+    fail=1
+fi
+# A 429 carries the CORS headers and Retry-After, so a portal can back off.
+h429=$(grep -l '^HTTP/1.1 429' "$tmp"/burst/* | head -1)
+if [ -n "$h429" ] && grep -qiF "Access-Control-Allow-Origin: $portal" "$h429" &&
+        grep -qi '^Retry-After: 1' "$h429"; then
+    echo "ok   429 carries Allow-Origin and Retry-After"
+else
+    echo "FAIL 429 without Allow-Origin or Retry-After" >&2
+    fail=1
+fi
+sleep 3
+# An exempt source (the Basic source, the co-located Nextflow) is never
+# limited: a 429 would abort its Nextflow run.
+n429=$(burst)
+if [ "$n429" = 0 ]; then
+    echo "ok   exempt source: no 429 in a burst of 100"
+else
+    echo "FAIL exempt source got $n429 x 429" >&2
+    fail=1
+fi
+# Clients polling faster than the rate, but one request at a time each (as
+# Nextflow does), are slowed down, never refused: 4 pollers without pauses
+# for 4 s. With nodelay this would give 429s.
+for p in 1 2 3 4; do
+    (end=$((SECONDS + 4)); while [ $SECONDS -lt $end ]; do
+        curl -s -o /dev/null -w '%{http_code}\n' -H 'X-Real-IP: 203.0.113.10' "$base/v1/tasks" || true
+    done) > "$tmp/poller$p" &
+done
+wait
+polls=$(cat "$tmp"/poller* | wc -l)
+n429=$(cat "$tmp"/poller* | grep -c '^429$' || true)
+if [ "$n429" = 0 ]; then
+    echo "ok   4 pollers over the rate: $polls requests, no 429"
+else
+    echo "FAIL 4 pollers over the rate got $n429 x 429 in $polls requests" >&2
+    fail=1
+fi
+sleep 3
 
 # No token may end up in the logs.
 docker logs tesp-validator > "$tmp/validator.log" 2>&1

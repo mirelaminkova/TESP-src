@@ -463,13 +463,31 @@
           vars:
             src_tes_cors_origins: https://krini.rahtiapp.fi
 
+        # Tokens off, no sources: Basic from everyone, but nobody exempt
+        # from the rate limit (the Basic geo defaults to 1 there).
+        - name: With tokens off and no sources, the rate geo exempts no one
+          ansible.builtin.assert:
+            that:
+              - conf is search('geo \\$tes_basic_source \\{\\s+default 1;')
+              - conf is search('geo \\$tes_rate_exempt \\{\\s+default 0;\\s+\\}')
+          vars:
+            conf: "{{ lookup('file', out.path ~ '/cors-basic-gateway.conf') }}"
+
+        - name: With tokens off, a request without Basic still gets the challenge
+          ansible.builtin.assert:
+            that:
+              # The location's own error_page (429) must not drop the 401.
+              - conf is search('error_page 429 = @rate_limited;\\s+error_page 401 = @unauthorized;')
+          vars:
+            conf: "{{ lookup('file', out.path ~ '/cors-basic-gateway.conf') }}"
+
         - name: With tokens off, CORS still covers the API and its errors
           ansible.builtin.assert:
             that:
               - "'if ($tes_cors_preflight) {' in conf"
               - "'auth_request' not in conf"
-              # service-info, the public docs, / and the 401 location.
-              - conf.count('add_header Access-Control-Allow-Origin') == 4
+              # service-info, the public docs, /, the 401 and 429 locations.
+              - conf.count('add_header Access-Control-Allow-Origin') == 5
               - "'Access-Control-Max-Age $tes_cors_max_age always;' in conf"
               - "'1        \"600\";' in conf"
           vars:
@@ -497,6 +515,7 @@
             src_tes_oauth_entitlements: urn:example:ECP_CLN:EOC-Compute#example.org
             # Basic only from the Nextflow workspace.
             src_tes_basic_auth_sources: 145.38.1.2
+            src_tes_rate_exempt_sources: 192.0.2.7
             src_tes_cors_origins: https://krini.rahtiapp.fi
 
         - name: Tokens are checked by the validator; tesp-api gets Basic
@@ -545,9 +564,9 @@
                 < conf.index('auth_request /_tes_auth;')
               # Every client-facing location sends them (add_header in a
               # location replaces the server's): service-info, the public
-              # docs, /, /v1/tasks and the three error locations. Not the
+              # docs, /, /v1/tasks and the four error locations. Not the
               # internal /_tes_auth and /_tes_audit, nor the rewrite.
-              - conf.count('add_header Access-Control-Allow-Origin') == 7
+              - conf.count('add_header Access-Control-Allow-Origin') == 8
               # The issuer can't be reached: 503, not a misleading 401.
               - "'error_page 500 = @auth_error;' in conf"
               # No required group: 403, with the CORS headers too.
@@ -561,6 +580,54 @@
           vars:
             conf: "{{ lookup('file', out.path ~ '/oauth-gateway.conf') }}"
             basic_b64: "{{ ('tes:' ~ tesp_basic_auth_password) | b64encode }}"
+
+        # Issue #36: hardening from the review of #33.
+        - name: The gateway clears its headers, limits rates, exposes headers
+          ansible.builtin.assert:
+            that:
+              # None of the gateway's own headers come from a client.
+              - "'proxy_set_header X-Tes-Auth-Kind \"\";' in conf"
+              # Per real client address, on the protected locations, with a
+              # JSON 429 that carries the CORS headers.
+              # Excess requests are queued, not refused (no nodelay): a 429
+              # aborts a Nextflow run (nf-ga4gh doesn't retry it).
+              - conf is search('limit_req_zone \\$tes_rate_key zone=tes_per_ip:10m rate=20r/s;')
+              - conf.count('limit_req zone=tes_per_ip burst=40 delay=20;') == 2
+              - conf.count('limit_conn tes_conn_per_ip 32;') == 2
+              # 6 x the default issuer timeout (5 s) + 10 (the 5 s slot wait and slack).
+              - "'proxy_read_timeout 40s;' in conf"
+              - conf is search('limit_conn_zone \\$tes_rate_key zone=tes_conn_per_ip:10m;')
+              - "'nodelay' not in conf"
+              # Allowlisted sources (Basic sources, src_tes_rate_exempt_sources)
+              # aren't limited: an empty key is not counted.
+              - "'geo $tes_rate_exempt {' in conf"
+              - "'    145.38.1.2 1;' in conf"
+              # src_tes_rate_exempt_sources in the rate geo, not the Basic one.
+              - conf is search('geo \\$tes_rate_exempt \\{[^}]*192\\.0\\.2\\.7 1;')
+              - conf is not search('geo \\$tes_basic_source \\{[^}]*192\\.0\\.2\\.7')
+              - "'map $tes_rate_exempt $tes_rate_key {' in conf"
+              # Not the Basic map: its default can be 1 (everyone).
+              - conf is search('geo \\$tes_rate_exempt \\{\\s+default 0;')
+              - >-
+                conf is search('location @rate_limited \\{[^}]*add_header Retry-After 1 always;')
+              - "'limit_req_status 429;' in conf"
+              - "'error_page 429 = @rate_limited;' in conf"
+              - "'location @rate_limited {' in conf"
+              # Krini can read the challenge and Retry-After.
+              - "'Access-Control-Expose-Headers $tes_cors_expose always;' in conf"
+              - "'WWW-Authenticate, Retry-After' in conf"
+          vars:
+            conf: "{{ lookup('file', out.path ~ '/oauth-gateway.conf') }}"
+
+        - name: The validator container is bounded
+          ansible.builtin.assert:
+            that:
+              - compose.services.validator.pids_limit == 128
+              - compose.services.validator.mem_limit == '256m'
+              - tesp_gateway_trusted_proxies == ['172.16.0.0/12', '192.168.0.0/16']
+          vars:
+            compose: >-
+              {{ lookup('file', out.path ~ '/oauth-docker-compose.yml') | from_yaml }}
 
         - name: The validator config has the issuers and no secrets
           ansible.builtin.assert:
