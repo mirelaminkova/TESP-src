@@ -217,7 +217,7 @@ class IssuerConfig:
         )
 
 
-# The largest number a config setting may have (about 30 years in seconds).
+# Upper bound for every number in the config file (over 30 years in seconds).
 MAX_CONFIG_NUMBER = 10 ** 9
 
 
@@ -272,6 +272,8 @@ class Config:
         audit = _string_list(d.get("audit_tag_keys"), "audit_tag_keys")
         config = cls(issuers=issuers, basic_auth_enabled=basic,
                      audit_tag_keys=audit, allow_http=allow_http, **numbers)
+        if config.http_timeout_seconds <= 0:
+            raise ValueError("http_timeout_seconds must be above 0")
         if config.jwks_max_stale_seconds < config.jwks_cache_seconds or \
                 config.jwks_max_stale_seconds <= 0:
             # Keys would be dropped before they are due for a refresh, or

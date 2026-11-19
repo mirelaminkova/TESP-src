@@ -34,6 +34,9 @@
         tesp_gateway_rate_per_second: "{{ case.vars.tesp_gateway_rate_per_second | default(20) }}"
         tesp_gateway_rate_burst: "{{ case.vars.tesp_gateway_rate_burst | default(40) }}"
         tesp_gateway_conn_per_address: "{{ case.vars.tesp_gateway_conn_per_address | default(32) }}"
+        tesp_oauth_leeway_seconds: "{{ case.vars.tesp_oauth_leeway_seconds | default(60) }}"
+        tesp_oauth_userinfo_cache_seconds: "{{ case.vars.tesp_oauth_userinfo_cache_seconds | default(300) }}"
+        tesp_oauth_http_timeout_seconds: "{{ case.vars.tesp_oauth_http_timeout_seconds | default(5) }}"
         tesp_oauth_audit_tag_keys: "{{ case.vars.tesp_oauth_audit_tag_keys | default([]) }}"
         tesp_oauth_ca_bundle: "{{ case.vars.tesp_oauth_ca_bundle | default('') }}"
 

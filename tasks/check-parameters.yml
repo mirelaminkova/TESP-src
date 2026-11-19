@@ -121,6 +121,12 @@
       - tesp_gateway_conn_per_address | string is match('[1-9][0-9]*\\Z')
       # Below the validator's 64 concurrent checks (MAX_CONCURRENT_CHECKS).
       - tesp_gateway_conn_per_address | int < 64
+      # The validator's timings (see files/tes-validator).
+      - tesp_oauth_leeway_seconds | string is match('[0-9]{1,9}\\Z')
+      - tesp_oauth_userinfo_cache_seconds | string is match('[0-9]{1,9}\\Z')
+      - tesp_oauth_http_timeout_seconds | string is match('[0-9]+(\\.[0-9]+)?\\Z')
+      - tesp_oauth_http_timeout_seconds | float > 0
+      - tesp_oauth_http_timeout_seconds | float <= 60
       # For values set directly instead of through the parameters.
       - tesp_basic_auth_enabled | string | lower in ['true', 'false']
       - tesp_oauth_enabled | string | lower in ['true', 'false']
@@ -132,8 +138,10 @@
       /16 for IPv6), comma-separated without spaces;
       tesp_gateway_rate_per_second must be a whole number above 0,
       tesp_gateway_conn_per_address a whole number from 1 to 63, and
-      tesp_gateway_rate_burst a whole number of at least 2. See "Access with
-      LS Login" in the README.
+      tesp_gateway_rate_burst a whole number of at least 2;
+      tesp_oauth_leeway_seconds and tesp_oauth_userinfo_cache_seconds whole
+      numbers, and tesp_oauth_http_timeout_seconds a number above 0 and at
+      most 60. See "Access with LS Login" in the README.
 
 - name: Validate the CORS origins (src_tes_cors_origins)
   vars:

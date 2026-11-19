@@ -700,11 +700,16 @@ def test_invalid_issuer_config(issuer, message):
     ({"basic_auth_enabled": "yes"}, "true or false"),
     ({"leeway_seconds": -1}, "leeway_seconds"),
     ({"http_timeout_seconds": True}, "http_timeout_seconds"),
+    ({"basic_auth_enabled": True, "http_timeout_seconds": 0},
+     "http_timeout_seconds must be above 0"),
     ({"jwks_max_stale_seconds": float("nan")},
      "jwks_max_stale_seconds must be a number from"),
     ({"leeway_seconds": float("inf")}, "leeway_seconds must be a number from"),
-    ({"http_timeout_seconds": 1e300}, "http_timeout_seconds must be a number"),
-    ({"cache_max_entries": 10 ** 400}, "cache_max_entries must be a number"),
+    ({"http_timeout_seconds": 1e300},
+     "http_timeout_seconds must be a number from"),
+    ({"cache_max_entries": 10 ** 400}, "cache_max_entries must be a number from"),
+    ({"leeway_seconds": tv.MAX_CONFIG_NUMBER + 1},
+     "leeway_seconds must be a number from"),
     ({"basic_auth_enabled": True, "jwks_cache_seconds": 100,
       "jwks_max_stale_seconds": 99}, "at least jwks_cache_seconds"),
     ({"basic_auth_enabled": True, "jwks_cache_seconds": 0,
@@ -713,6 +718,11 @@ def test_invalid_issuer_config(issuer, message):
 def test_invalid_config(config, message):
     with pytest.raises(ValueError, match=message):
         tv.Config.from_dict(config)
+
+
+def test_config_numbers_may_reach_the_bound():
+    config = tv.Config.from_dict({"leeway_seconds": tv.MAX_CONFIG_NUMBER})
+    assert config.leeway_seconds == tv.MAX_CONFIG_NUMBER
 
 
 def test_duplicate_issuer():
