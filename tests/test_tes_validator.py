@@ -700,6 +700,8 @@ def test_invalid_issuer_config(issuer, message):
     ({"basic_auth_enabled": "yes"}, "true or false"),
     ({"leeway_seconds": -1}, "leeway_seconds"),
     ({"http_timeout_seconds": True}, "http_timeout_seconds"),
+    ({"jwks_max_stale_seconds": float("nan")}, "jwks_max_stale_seconds"),
+    ({"jwks_cache_seconds": float("inf")}, "jwks_cache_seconds"),
     ({"basic_auth_enabled": True, "jwks_cache_seconds": 100,
       "jwks_max_stale_seconds": 99}, "at least jwks_cache_seconds"),
     ({"basic_auth_enabled": True, "jwks_cache_seconds": 0,

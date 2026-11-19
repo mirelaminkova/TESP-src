@@ -32,6 +32,7 @@ import functools
 import hashlib
 import json
 import logging
+import math
 import re
 import sys
 import threading
@@ -258,8 +259,9 @@ class Config:
                      "userinfo_cache_seconds", "cache_max_entries"):
             if name in d:
                 value = d[name]
+                # json accepts NaN and Infinity; neither is a usable time.
                 if isinstance(value, bool) or not isinstance(value, (int, float)) \
-                        or value < 0:
+                        or not math.isfinite(value) or value < 0:
                     raise ValueError(f"{name} must be a number >= 0")
                 numbers[name] = value
         audit = _string_list(d.get("audit_tag_keys"), "audit_tag_keys")
@@ -384,9 +386,9 @@ class Decision:
     exempt: bool = False
 
 
-# Monotonic, and on Linux counting suspended time too: after a VM resumes,
-# its JWKS is as old as it really is.
-UPTIME = (functools.partial(time.clock_gettime, time.CLOCK_BOOTTIME)
+# Monotonic, and on Linux it also counts time suspended: after a VM
+# resumes, cached keys show their real age.
+_uptime = (functools.partial(time.clock_gettime, time.CLOCK_BOOTTIME)
           if hasattr(time, "CLOCK_BOOTTIME") else time.monotonic)
 
 
@@ -396,7 +398,7 @@ class Validator:
     def __init__(self, config: Config,
                  fetch: Callable[..., Any] = fetch_json,
                  clock: Callable[[], float] = time.time,
-                 timer: Callable[[], float] = UPTIME):
+                 timer: Callable[[], float] = _uptime):
         self.config = config
         self._fetch = fetch
         self._clock = clock  # wall clock: cache expiry (capped at token exp)
