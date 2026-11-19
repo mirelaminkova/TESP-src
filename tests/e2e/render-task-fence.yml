@@ -1,0 +1,25 @@
+---
+# Renders the task network fence (templates/task-fence.sh.j2) for
+# tests/e2e/check-task-fence.sh, with "nobody" as the task user:
+#
+#   ansible-playbook -i localhost, -c local tests/e2e/render-task-fence.yml \
+#     -e fence_out=/tmp/tesp-task-fence
+#   sudo tests/e2e/check-task-fence.sh /tmp/tesp-task-fence nobody
+- name: Render the task network fence for the end-to-end test
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../../group_vars/all.yml
+  vars:
+    templates_dir: "{{ playbook_dir }}/../../templates"
+  tasks:
+    # A fact, because group_vars/all.yml (vars_files) beats play vars.
+    - name: Make "nobody" the task user
+      ansible.builtin.set_fact:
+        pulsar_user: {name: nobody}
+
+    - name: Render the fence
+      ansible.builtin.template:
+        src: "{{ templates_dir }}/task-fence.sh.j2"
+        dest: "{{ fence_out }}"
+        mode: '0755'

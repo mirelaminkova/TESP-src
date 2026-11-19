@@ -19,7 +19,7 @@
 # which is ambiguous in the DST fall-back hour and has zone names `date`
 # may reject (issue #35).
 set -euo pipefail
-unit={{ (pulsar_systemd_service_name | default('pulsar') ~ '.service') | quote }}
+unit={{ tesp_pulsar_unit | quote }}
 dir={{ pulsar_config_dir | quote }}
 # LoadUnit gives the unit's object path, also for a unit that doesn't exist.
 path=$(busctl call org.freedesktop.systemd1 /org/freedesktop/systemd1 \

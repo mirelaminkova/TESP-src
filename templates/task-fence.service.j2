@@ -1,0 +1,21 @@
+# Managed by Ansible (TESP-src). Do not edit by hand.
+# Fences the network of TES tasks (the {{ pulsar_user.name }} user); see the script.
+# RequiredBy keeps Pulsar and slurmd, and so any task, including jobs SLURM
+# restarts at boot, from starting if the rules can't be applied. It also
+# means that restarting this unit restarts them; the playbook runs the script
+# directly instead. Stopping it stops them too and leaves the rules in place.
+# After the firewall loaders, which would otherwise drop the jump or put
+# rules ahead of it at boot (no effect where they aren't installed).
+[Unit]
+Description=Fence the network of TES tasks (user {{ pulsar_user.name }})
+After=ufw.service netfilter-persistent.service
+Before={{ tesp_pulsar_unit }} slurmd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/tesp-task-fence
+
+[Install]
+WantedBy=multi-user.target
+RequiredBy={{ tesp_pulsar_unit }} slurmd.service

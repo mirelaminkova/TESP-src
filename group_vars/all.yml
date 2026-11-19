@@ -121,6 +121,18 @@ pulsar_uwsgi_options:
   ignore-sigpipe: true
   ignore-write-errors: true
   disable-write-exception: true
+  # Without a socket, uwsgi's HTTP router (the process on pulsar_port) hands
+  # each request to the worker over TCP on 127.0.0.1 at a random port, which
+  # the task network fence (templates/task-fence.sh.j2) blocks for the Pulsar
+  # user, tasks and Pulsar alike. This puts the worker on a unix socket in
+  # Pulsar's own runtime directory (templates/pulsar-uwsgi-socket.conf.j2).
+  socket: "{{ tesp_pulsar_uwsgi_socket }}"
+  http-to: "{{ tesp_pulsar_uwsgi_socket }}"
+  chmod-socket: 600
+# Pulsar's systemd unit, as the galaxyproject.pulsar role names it.
+tesp_pulsar_unit: "{{ pulsar_systemd_service_name | default('pulsar') }}.service"
+# /run/pulsar: the RuntimeDirectory in templates/pulsar-uwsgi-socket.conf.j2.
+tesp_pulsar_uwsgi_socket: /run/pulsar/uwsgi.sock
 
 pulsar_yaml_config:
   managers:
@@ -139,9 +151,11 @@ pulsar_yaml_config:
 
 # Docker
 docker_install_compose: true
-# Lets Pulsar jobs use docker if tesp_container_type is switched to "docker".
-docker_users:
-  - "{{ pulsar_user.name }}"
+# Lets Pulsar jobs use docker, only if tesp_container_type is "docker". The
+# docker group is root-equivalent, and with Apptainer tasks run as the Pulsar
+# user, so it must not be in that group (issue #45; playbook.yml takes it out
+# on hosts deployed before).
+docker_users: "{{ [pulsar_user.name] if tesp_container_type == 'docker' else [] }}"
 
 # TESP-API (GA4GH TES -> Pulsar bridge)
 # Exposed publicly via nginx at https://<workspace_fqdn>{{ tesp_root_path }}/ and
@@ -360,6 +374,16 @@ tesp_native_spec_ram_gb: "--mem={ram_mib}"
 # "auto" adds them for docker only. Keep it for singularity: Apptainer needs a
 # cgroups manager for these flags and fails the task without one.
 tesp_container_resource_limits: auto
+
+# Task network fence (templates/task-fence.sh.j2, issue #45): TCP ports on
+# this host (any of its addresses: that traffic goes over lo) that the Pulsar
+# user may still connect to, besides DNS. Pulsar
+# submits and watches its SLURM jobs through DRMAA, which talks to slurmctld.
+# Tasks run as the same user, so they can reach these too: keep the list short.
+tesp_task_fence_loopback_tcp_ports:
+  # slurm.conf also allows a range (6817-6818); the script renders it as
+  # iptables needs (6817:6818).
+  - "{{ slurm_config.SlurmctldPort | default(6817) }}"
 
 # S3 storage for s3://bucket/key task inputs and outputs (see "Using S3" in the
 # README). Set from the optional src_s3_* component parameters; with none set,
