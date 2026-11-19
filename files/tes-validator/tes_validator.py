@@ -285,7 +285,8 @@ class Config:
 
 def fetch_json(url: str, timeout: float, token: str | None = None,
                accept: str = "application/json") -> Any:
-    """GET a JSON document, with a timeout and a size limit.
+    """GET a JSON document, with a timeout and a size limit. `accept` is the
+    Accept header (userinfo uses */*; see Validator._entitled).
 
     urllib's timeout applies to each socket operation (connecting, the status
     line and headers, each read). Reading the body in chunks against a
@@ -299,6 +300,7 @@ def fetch_json(url: str, timeout: float, token: str | None = None,
     deadline = time.monotonic() + timeout
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
+            content_type = response.headers.get("Content-Type") or "none"
             chunks, size = [], 0
             while size <= MAX_RESPONSE_BYTES:
                 if time.monotonic() > deadline:
@@ -319,7 +321,9 @@ def fetch_json(url: str, timeout: float, token: str | None = None,
     try:
         return json.loads(body)
     except ValueError:
-        raise FetchError(f"{url}: not JSON") from None
+        # The type (e.g. application/jwt for signed userinfo) tells a
+        # misconfiguration from an outage; logged, never the body.
+        raise FetchError(f"{url}: not JSON ({_printable(content_type, 64)})") from None
 
 
 def _only_key(keys: dict[str | None, Any], kid: Any) -> Any:

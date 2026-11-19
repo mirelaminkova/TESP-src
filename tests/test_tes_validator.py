@@ -52,8 +52,9 @@ class IdP:
         self.jwks_status = 200
         self.jwks_body = None  # None: the real key set
         # Like LS Login: userinfo answers this many seconds late when asked
-        # for application/json, and at once otherwise.
+        # for application/json, and without that delay otherwise.
         self.userinfo_json_delay = 0
+        self.userinfo_delay = 0  # for every userinfo request
         self.accept = {}  # path -> the Accept header of its last request
         idp = self
 
@@ -83,9 +84,14 @@ class IdP:
                         return self._json(401, {})
                     if "application/json" in (self.headers.get("Accept") or ""):
                         time.sleep(idp.userinfo_json_delay)
+                    time.sleep(idp.userinfo_delay)
                     return self._json(idp.userinfo_status, idp.userinfo)
                 if self.path == "/notjson":
-                    return self._raw(200, b"<html>")
+                    return self._raw(200, b"<html>", "text/html")
+                if self.path == "/signed":
+                    # Signed userinfo (OIDC Core 5.3.2), a JWT, not JSON.
+                    return self._raw(200, b"eyJhbGciOiJSUzI1NiJ9.e30.c2ln",
+                                     "application/jwt")
                 if self.path == "/trickle":
                     # A byte every 0.3 s: each read is quick, the whole slow.
                     self.send_response(200)
@@ -106,9 +112,9 @@ class IdP:
             def _json(self, status, body):
                 self._raw(status, json.dumps(body).encode())
 
-            def _raw(self, status, data):
+            def _raw(self, status, data, content_type="application/json"):
                 self.send_response(status)
-                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
@@ -586,7 +592,7 @@ def test_discovery_and_jwks_still_ask_for_json(idp):
 
 
 def test_a_slow_userinfo_is_paid_once_per_token(idp):
-    idp.userinfo_json_delay = 0.5
+    idp.userinfo_delay = 0.5
     v = tv.Validator(idp.config())
     token = idp.token()
     check(v, token)
@@ -774,19 +780,22 @@ def test_valid_config_defaults():
         "issuer": "https://login.aai.lifescience-ri.eu/oidc/",
         "allowed_client_ids": ["c"], "entitlements": {"prefix_any_of": ["p:"]},
         "userinfo_endpoint": "https://login.aai.lifescience-ri.eu/oidc/userinfo",
-    }], "http_timeout_seconds": 3})
+    }]})
     i = c.issuers["https://login.aai.lifescience-ri.eu/oidc/"]
     assert i.discovery_url == (
         "https://login.aai.lifescience-ri.eu/oidc/.well-known/openid-configuration")
     assert i.algorithms == ("RS256",)
-    assert c.http_timeout_seconds == 3 and c.leeway_seconds == 60
+    assert c.http_timeout_seconds == 10 and c.leeway_seconds == 60
 
 
 # -- fetch_json ---------------------------------------------------------------
 
 def test_fetch_json_errors(idp):
-    with pytest.raises(tv.FetchError, match="not JSON"):
+    with pytest.raises(tv.FetchError, match=r"not JSON \(text/html\)"):
         tv.fetch_json(idp.base + "/notjson", 2)
+    # Says what came instead, so signed userinfo isn't taken for an outage.
+    with pytest.raises(tv.FetchError, match=r"not JSON \(application/jwt\)"):
+        tv.fetch_json(idp.base + "/signed", 2, accept="*/*")
     with pytest.raises(tv.FetchError, match="too large"):
         tv.fetch_json(idp.base + "/huge", 2)
     with pytest.raises(tv.FetchError, match="HTTPError 404"):
@@ -800,11 +809,6 @@ def test_fetch_json_sends_the_accept_header_asked_for(idp):
     assert idp.accept["/jwks"] == "application/json"
     tv.fetch_json(idp.base + "/jwks", 2, accept="*/*")
     assert idp.accept["/jwks"] == "*/*"
-
-
-def test_default_issuer_timeout_is_ten_seconds():
-    c = tv.Config.from_dict({"basic_auth_enabled": True})
-    assert c.http_timeout_seconds == 10
 
 
 def test_fetch_json_error_does_not_contain_the_token(idp):

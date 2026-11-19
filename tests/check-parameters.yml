@@ -138,12 +138,9 @@
       - why: a fractional issuer timeout
         expect: Invalid access settings
         vars: {tesp_oauth_http_timeout_seconds: 0.5}
-      - why: an issuer timeout over 20 s (the gateway would wait over 2 minutes)
+      - why: an issuer timeout over 20 s (the gateway would wait over 130 s)
         expect: Invalid access settings
         vars: {tesp_oauth_http_timeout_seconds: 21}
-      - why: an issuer timeout of 3 digits
-        expect: Invalid access settings
-        vars: {tesp_oauth_http_timeout_seconds: 100}
       - why: Basic sources with a space (as SRC would split them)
         expect: Invalid access settings
         vars: {src_tes_basic_auth_sources: '10.0.0.1 10.0.0.2'}
@@ -267,7 +264,7 @@
     - name: The defaults pass
       ansible.builtin.include_tasks: ../tasks/check-parameters.yml
 
-    - name: The default issuer timeout is 10 s (LS Login's userinfo took 6 s)
+    - name: The default issuer timeout is 10 s (headroom over LS Login's 6 s answers to application/json)
       ansible.builtin.assert:
         that: tesp_oauth_http_timeout_seconds == 10
 

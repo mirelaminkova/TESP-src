@@ -4,8 +4,9 @@ and userinfo over https, like LS Login. Standard library only.
 userinfo answers for any Bearer token without checking it (the validator
 checks tokens; this only stands in for LS Login's answer): subjects starting
 with "entitled" get the e2e entitlement, others get none. Asked for
-application/json, it answers JSON_DELAY seconds late, past any timeout the
-validator may have: LS Login took about 6 s for that, and 0.3 s for */*.
+application/json, it answers JSON_DELAY seconds late, past the longest
+tesp_oauth_http_timeout_seconds: LS Login took about 6 s for that, and 0.3 s
+for */*.
 
     python3 mock_idp.py <dir from make_keys.py>
 """
