@@ -54,9 +54,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 2.18.1: what SRC runs the playbook with (Ansible 11.1). 2.21.5: as
-        # in .pre-commit-config.yaml.
-        ansible-core: ["2.18.1", "2.21.5"]
+        # 2.16.20: what the SRC catalog item's plugin installs (ansible 9.1.0,
+        # ansible-core ~=2.16.1), the oldest we support. 2.18.1: SRC's newer
+        # plugin version. 2.21.5: as in .pre-commit-config.yaml.
+        ansible-core: ["2.16.20", "2.18.1", "2.21.5"]
     name: unit (ansible-core ${{ matrix.ansible-core }})
     steps:
       - name: check out repository

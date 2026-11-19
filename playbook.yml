@@ -267,7 +267,8 @@
     # recreates it (nginx reads its config only at start).
     - name: Record the TES gateway config checksum
       ansible.builtin.set_fact:
-        tesp_gateway_conf_checksum: "{{ tesp_gateway_conf.checksum }}"
+        # No checksum in --check mode when the file would change.
+        tesp_gateway_conf_checksum: "{{ tesp_gateway_conf.checksum | default('check-mode') }}"
 
     # createdAt is the first deploy: keep it from the file a previous deploy
     # wrote.
