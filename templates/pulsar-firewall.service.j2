@@ -4,7 +4,7 @@
 # means restarting this unit restarts Pulsar too).
 [Unit]
 Description=Restrict Pulsar port {{ pulsar_port }} to loopback and Docker bridges
-Before=pulsar.service
+Before={{ tesp_pulsar_unit }}
 
 [Service]
 Type=oneshot
@@ -13,4 +13,4 @@ ExecStart=/usr/local/sbin/tesp-pulsar-firewall
 
 [Install]
 WantedBy=multi-user.target
-RequiredBy=pulsar.service
+RequiredBy={{ tesp_pulsar_unit }}

@@ -168,7 +168,7 @@
 
     - name: Restart Pulsar if it doesn't run with its current config
       ansible.builtin.systemd_service:
-        name: "{{ pulsar_systemd_service_name | default('pulsar') }}.service"
+        name: "{{ tesp_pulsar_unit }}"
         state: restarted
       # "missing": systemd has no Pulsar unit (not-found), which happens
       # under --check on a fresh host; the role would have failed otherwise.
@@ -248,38 +248,13 @@
       failed_when: tesp_pulsar_docker_group.rc not in [0, 3]
       when: tesp_container_type != 'docker'
 
-    # slurmctld caches each user's groups for new jobs (about 10 minutes on
-    # SLURM 21.08, measured on the test bed), so new tasks would keep the
-    # docker gid that long. Only a restart of slurmctld empties that cache
-    # (scontrol reconfigure and a slurmd restart don't); it keeps its saved
-    # state, so queued and running jobs carry on. Running jobs keep their
-    # groups until they end.
-    - name: Make SLURM forget the Pulsar user's old groups
-      ansible.builtin.systemd_service:
-        name: slurmctld
-        state: restarted
-      when:
-        - tesp_container_type != 'docker'
-        - tesp_pulsar_docker_group.rc | default(3) == 0
-
-    - name: Wait for slurmctld after the restart
-      ansible.builtin.command: scontrol ping
-      register: tesp_slurmctld_ping
-      until: "'UP' in tesp_slurmctld_ping.stdout"
-      retries: 30
-      delay: 2
-      changed_when: false
-      when:
-        - tesp_container_type != 'docker'
-        - tesp_pulsar_docker_group.rc | default(3) == 0
-
     # From the running process rather than a handler: a run that fails after
     # gpasswd would leave Pulsar with the group, and the next one would see
     # nothing left to change.
     - name: Check whether Pulsar still runs with the docker group
       ansible.builtin.shell: |
         set -o pipefail
-        pid=$(systemctl show -p MainPID --value {{ (pulsar_systemd_service_name | default('pulsar')) | quote }}.service)
+        pid=$(systemctl show -p MainPID --value {{ tesp_pulsar_unit | quote }})
         gid=$(getent group docker | cut -d: -f3)
         if [ -n "$gid" ] && [ "${pid:-0}" != 0 ] \
             && grep '^Groups:' "/proc/$pid/status" | tr -s ' \t' '\n' | grep -qx "$gid"; then
@@ -292,9 +267,42 @@
       check_mode: false
       when: tesp_container_type != 'docker'
 
+    # slurmctld caches each user's groups for new jobs (about 10 minutes on
+    # SLURM 21.08, measured on the test bed), so new tasks would keep the
+    # docker gid that long. Only a restart of slurmctld empties that cache
+    # (scontrol reconfigure and a slurmd restart don't); it keeps its saved
+    # state, so queued and running jobs carry on, and running jobs keep their
+    # groups until they end. Also when Pulsar still has the group: then an
+    # earlier run stopped before getting this far. Not under --check, where
+    # gpasswd doesn't run.
+    - name: Decide whether SLURM must forget the Pulsar user's old groups
+      ansible.builtin.set_fact:
+        tesp_refresh_slurm_groups: >-
+          {{ tesp_container_type != 'docker' and not ansible_check_mode
+             and (tesp_pulsar_docker_group is changed
+                  or tesp_pulsar_groups.stdout | default('') == 'docker') }}
+
+    - name: Make SLURM forget the Pulsar user's old groups
+      ansible.builtin.systemd_service:
+        name: "{{ slurmctld_service_name | default('slurmctld') }}"
+        state: restarted
+      when: tesp_refresh_slurm_groups | bool
+
+    # Pulsar's submissions fail while slurmctld is down.
+    - name: Wait for slurmctld after the restart
+      ansible.builtin.command: scontrol ping
+      register: tesp_slurmctld_ping
+      until: >-
+        tesp_slurmctld_ping.rc == 0
+        and tesp_slurmctld_ping.stdout is search(' is UP$', multiline=True)
+      retries: 30
+      delay: 2
+      changed_when: false
+      when: tesp_refresh_slurm_groups | bool
+
     - name: Restart Pulsar without the docker group
       ansible.builtin.systemd_service:
-        name: "{{ pulsar_systemd_service_name | default('pulsar') }}.service"
+        name: "{{ tesp_pulsar_unit }}"
         state: restarted
       when:
         - tesp_container_type != 'docker'
@@ -584,7 +592,7 @@
     # (pulsar_restart_handler_name in group_vars/all.yml).
     - name: Restart Pulsar
       ansible.builtin.systemd_service:
-        name: "{{ pulsar_systemd_service_name | default('pulsar') }}.service"
+        name: "{{ tesp_pulsar_unit }}"
         state: restarted
 
     - name: Restart Pulsar firewall
