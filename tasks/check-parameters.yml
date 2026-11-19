@@ -205,8 +205,10 @@
       Invalid token issuer {{ item.issuer | default('?') }}: allowed_client_ids
       (src_tes_oauth_client_ids) must be a non-empty list of client ids, and
       include every exempt_client_ids entry (src_tes_oauth_exempt_client_ids);
-      exempt clients need exempt_audiences (src_tes_oauth_exempt_audiences),
-      which name this TES and are no client id.
+      exempt clients need exempt_audiences (src_tes_oauth_exempt_audiences,
+      checked on their tokens only), which name this TES and are no client
+      id. Not src_tes_oauth_audiences: that one every token, Krini's too,
+      must carry.
       See "Access with LS Login" in the README.
 
 - name: Validate each token issuer's algorithms and entitlements

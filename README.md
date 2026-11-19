@@ -212,7 +212,7 @@ With tokens on, the gateway asks a small validator container (`files/tes-validat
 - `aud` is one of the configured audiences, if any are configured; an exempt client's token must also have one of `exempt_audiences`;
 - LS Login's userinfo response for the token lists a required entitlement in `eduperson_entitlement`: an exact value, or one starting with a configured prefix (which ends with `:`, so `…:ECP_CLN:` matches the subgroups of `ECP_CLN` but not `…:ECP_CLN_OTHER`). Exempt clients skip this check: a service such as proTES, which checks the user itself.
 
-Everything else gets `401`. If LS Login can't be reached (or rate-limits) and the token can't be checked, the answer is `503` with `Retry-After`, and the validator logs `unavailable: …`. For a valid token the gateway replaces the client's `Authorization` header with tesp-api's own Basic credentials, so tesp-api stays as it is. Basic credentials from an allowed address are passed to tesp-api unchanged, which checks them. The validator caches keys and userinfo answers (by a hash of the token, never the token; 5 minutes by default, `tesp_oauth_userinfo_cache_seconds`, and never past the token's expiry). Every call to LS Login has a timeout. When LS Login can't be reached, known keys stay in use, and a failed fetch is retried at most once a minute. The validator never logs tokens.
+A valid token of a user without a required entitlement gets `403` (logging in again won't help). If userinfo has no `eduperson_entitlement` at all, the validator also logs a warning: the client probably doesn't request the scope that releases it. Everything else gets `401`. If LS Login can't be reached (or rate-limits) and the token can't be checked, the answer is `503` with `Retry-After`, and the validator logs `unavailable: …`. For a valid token the gateway replaces the client's `Authorization` header with tesp-api's own Basic credentials, so tesp-api stays as it is. Basic credentials from an allowed address are passed to tesp-api unchanged, which checks them. The validator caches keys and userinfo answers (by a hash of the token, never the token; 5 minutes by default, `tesp_oauth_userinfo_cache_seconds`, and never past the token's expiry). Every call to LS Login has a timeout. When LS Login can't be reached, known keys stay in use, and a failed fetch is retried at most once a minute. The validator never logs tokens.
 
 **Audit of service clients.** When an exempt client such as proTES submits a task, the user it acts for is named only in the task's `tags` ([proTES#254](https://github.com/elixir-cloud-aai/proTES/issues/254), [generic-issues#108](https://github.com/elixir-cloud-aai/generic-issues/issues/108)). The gateway sends a copy of every task submission to the validator. For exempt clients only, the validator logs the client and the tags listed in `tesp_oauth_audit_tag_keys`, and nothing else of the task:
 
@@ -241,8 +241,8 @@ Component parameters (all optional). Lists are comma-separated **without spaces*
 | `src_tes_basic_auth_sources` | empty | IPs or CIDRs (at least /8 for IPv4, /16 for IPv6) that may use the Basic password, e.g. the Nextflow workspace's address. Empty: anywhere with tokens off, nowhere with tokens on |
 | `src_tes_oauth_client_ids` | empty | client ids whose tokens count (Krini: generic-issues#48); required with tokens on |
 | `src_tes_oauth_exempt_client_ids` | empty | service clients that skip the entitlement check (proTES: #47); must also be allowed, and need `src_tes_oauth_exempt_audiences` |
-| `src_tes_oauth_audiences` | empty | values of `aud` that every token must have one of |
-| `src_tes_oauth_exempt_audiences` | empty | values of `aud` naming this TES, which exempt clients' tokens must carry; required with exempt clients, never a client id |
+| `src_tes_oauth_audiences` | empty | values of `aud` that **every** token, Krini's too, must have one of. Leave it empty unless every client's tokens carry that value, or Krini users are locked out |
+| `src_tes_oauth_exempt_audiences` | empty | values of `aud` naming this TES that only **exempt** clients' tokens (proTES) must carry; required with exempt clients, never a client id. This is the one proTES needs |
 | `src_tes_oauth_audit_tag_keys` | empty | task tags that name the user of an exempt client's task, logged for audit (proTES#254) |
 | `src_tes_oauth_entitlements` | EOC-Compute and ADMIN (below) | `eduperson_entitlement` values, any one of which is enough |
 | `src_tes_oauth_entitlement_prefixes` | empty | prefixes ending with `:`, for subgroups |
@@ -274,7 +274,7 @@ curl -H "Authorization: Bearer $TOKEN" https://<workspace-fqdn>/tes/v1/tasks
 3. Check that a request without credentials is refused: `curl -i https://<workspace-fqdn>/tes/v1/tasks` gives `401`.
 4. Get an access token from the client, for example with its device-code flow, and put it in `$TOKEN` without echoing it.
 5. `curl -H "Authorization: Bearer $TOKEN" https://<workspace-fqdn>/tes/v1/tasks` gives `200`. Submit a task as in [Run a task](#4-run-a-task), with `-H "Authorization: Bearer $TOKEN"` instead of `-u`.
-6. With an account without the entitlement, or a token of another client, the same call gives `401`; `docker logs tesp-validator` on the workspace says which check failed.
+6. With an account without the entitlement the same call gives `403`, and with a token of another client `401`; `docker logs tesp-validator` on the workspace says which check failed.
 7. If `src_tes_basic_auth_sources` is set, check that the Basic password works from the Nextflow component, and that `curl -i -u 'tes:<password>' https://<workspace-fqdn>/tes/v1/tasks` from anywhere else gives `401`.
 
 ## Resource limits

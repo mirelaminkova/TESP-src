@@ -91,10 +91,11 @@ if docker logs tesp-validator 2>&1 | grep -q "audit: task from exempt client e2e
     fail=1
 fi
 
-expect "user without the entitlement" 401 -H "$(bearer "$(mint --sub plain-user)")" "$base/v1/tasks"
+# A valid token without the group: 403, not 401 (logging in again won't help).
+expect "user without the entitlement" 403 -H "$(bearer "$(mint --sub plain-user)")" "$base/v1/tasks"
+expect "client not allowed" 401 -H "$(bearer "$(mint --client other-client)")" "$base/v1/tasks"
 grep -qi '^WWW-Authenticate: Bearer realm="tes", error="invalid_token"' "$tmp/headers" ||
     { echo "FAIL no invalid_token challenge" >&2; fail=1; }
-expect "client not allowed" 401 -H "$(bearer "$(mint --client other-client)")" "$base/v1/tasks"
 expect "expired token" 401 -H "$(bearer "$(mint --exp-in -600)")" "$base/v1/tasks"
 expect "ID token (typ JWT)" 401 -H "$(bearer "$(mint --typ JWT)")" "$base/v1/tasks"
 expect "signed with another key" 401 -H "$(bearer "$(mint --other-key)")" "$base/v1/tasks"
@@ -115,7 +116,7 @@ got=$(curl -sS -o /dev/null -w '%{http_code}' -H "$(bearer "$(mint --sub plain-u
     -H "Authorization: Basic $(printf '%s' "$user:wrong-$password" | base64 -w0)" \
     "$base/v1/tasks" || true)
 case $got in
-    400|401) echo "ok   two Authorization headers ($got)" ;;
+    400|401|403) echo "ok   two Authorization headers ($got)" ;;
     *) echo "FAIL two Authorization headers: got $got" >&2; fail=1 ;;
 esac
 

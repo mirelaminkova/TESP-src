@@ -545,11 +545,14 @@
                 < conf.index('auth_request /_tes_auth;')
               # Every client-facing location sends them (add_header in a
               # location replaces the server's): service-info, the public
-              # docs, /, /v1/tasks and the two error locations. Not the
+              # docs, /, /v1/tasks and the three error locations. Not the
               # internal /_tes_auth and /_tes_audit, nor the rewrite.
-              - conf.count('add_header Access-Control-Allow-Origin') == 6
+              - conf.count('add_header Access-Control-Allow-Origin') == 7
               # The issuer can't be reached: 503, not a misleading 401.
               - "'error_page 500 = @auth_error;' in conf"
+              # No required group: 403, with the CORS headers too.
+              - "'error_page 403 = @forbidden;' in conf"
+              - "'location @forbidden {' in conf"
               - "'if ($tes_auth_status ~ \"^50[234]\") {' in conf"
               - conf is search('WWW-Authenticate .Basic realm')
           vars:

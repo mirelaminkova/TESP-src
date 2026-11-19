@@ -211,6 +211,7 @@ server {
         # error_page here replaces the server's, so 401 is repeated.
         error_page 500 = @auth_error;
         error_page 401 = @unauthorized;
+        error_page 403 = @forbidden;
         proxy_set_header Host $http_host;
         # Replaces every Authorization header the client sent.
         proxy_set_header Authorization $tes_upstream_authorization;
@@ -271,6 +272,14 @@ server {
 {% endif %}
 
 {% if oauth %}
+    # A valid token of a user without the required group: 403, so clients
+    # don't ask the user to log in again (that's for 401).
+    location @forbidden {
+{{ cors_headers() }}
+        default_type application/json;
+        return 403 '{"detail": "Not allowed: the account lacks the required group"}';
+    }
+
     # The validator answers 503 when the issuer can't be reached: then the
     # client gets 503, not a 401 that would look like bad credentials.
     location @auth_error {
