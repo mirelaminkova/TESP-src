@@ -12,6 +12,7 @@ import base64
 import dataclasses
 import hashlib
 import hmac
+import http.client
 import json
 import sys
 import threading
@@ -812,11 +813,19 @@ def test_audit_rejects_bad_requests(audit_service):
 
 
 def test_audit_logs_a_task_too_large_to_read(audit_service, caplog):
-    big = b" " * (tv.MAX_AUDIT_BODY_BYTES + 1)
+    # Only the header: the validator answers before reading the body, so
+    # sending a real 1 MiB body could end in a broken pipe.
+    host, port = audit_service.removeprefix("http://").split(":")
+    conn = http.client.HTTPConnection(host, int(port), timeout=5)
     with caplog.at_level("INFO", logger="tes-validator"):
-        status = post(audit_service + "/audit", big,
-                      {"X-Tes-Auth-Exempt": "1", "X-Tes-Auth-Client": EXEMPT,
-                       "X-Request-Id": "r1"})
+        conn.putrequest("POST", "/audit")
+        for name, value in {"Content-Length": str(tv.MAX_AUDIT_BODY_BYTES + 1),
+                            "X-Tes-Auth-Exempt": "1", "X-Tes-Auth-Client": EXEMPT,
+                            "X-Request-Id": "r1"}.items():
+            conn.putheader(name, value)
+        conn.endheaders()
+        status = conn.getresponse().status
+        conn.close()
     assert status == 413
     assert f"audit: [r1] task from exempt client {EXEMPT}; body too large" in caplog.text
 
