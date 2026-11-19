@@ -36,7 +36,10 @@
         group: root
         mode: '0644'
         backup: true
+      # Issue #41: only when it changes, not on every run.
+      notify: Restart chronyd
 
+  handlers:
     - name: Restart chronyd
       ansible.builtin.service:
         name: chronyd
@@ -70,10 +73,9 @@
     # no_log here and on the other tasks that set or read a secret (also in
     # tasks/pulsar-token.yml): -v would print it. Templates that render one
     # have diff: false instead, as --diff is what would print them.
-    - name: Generate TESP-API basic auth password
-      ansible.builtin.set_fact:
-        tesp_basic_auth_password: "{{ lookup('community.general.random_string', base64=True, length=24) }}"
-      no_log: true
+    # Issue #41: the same password on every run, like the Pulsar token.
+    - name: Get the TES password
+      ansible.builtin.include_tasks: tasks/basic-auth-password.yml
 
     - name: Install Dependencies
       ansible.builtin.apt:
@@ -140,10 +142,16 @@
       # role reloads systemd. The role's systemd task reloads it, and the
       # role's server.ini change (the socket options) restarts Pulsar.
 
+    # ---- nginx locations (SRC's nginx serves /tes/ and the welcome page) ----
+    # Issue #41: uusrc.general.nginx_reverse_proxy, only when what it writes
+    # would change, as it restarts nginx every time it runs.
+    - name: Write the nginx locations
+      ansible.builtin.include_tasks: tasks/nginx-locations.yml
+
   roles:
     - geerlingguy.docker
     - usegalaxy_eu.apptainer
-    - uusrc.general.nginx_reverse_proxy
+    # uusrc.general.nginx_reverse_proxy: in pre_tasks (issue #41).
     # https://github.com/galaxyproject/pulsar/issues/375
     - role: galaxyproject.pulsar
       # --diff would print app.yml, which holds the Pulsar token. Not no_log,
@@ -329,12 +337,28 @@
     # Lets TES clients submit jobs that are translated into Pulsar jobs and run
     # on this node's SLURM/DRMAA. Deployed as a Docker Compose stack
     # (tesp-api + MongoDB + a token-injecting Pulsar proxy).
+    # Issue #41: force: true resets the checkout's own settings.toml, which
+    # the template below overwrites, so the clone and the template changed on
+    # every run. Skipped when the checkout is already at the pinned commit
+    # with the pinned remote; tesp_api_version is a commit, so then nothing
+    # would change but that reset.
+    # The git module has no read-only way to ask this.
+    - name: Find the TESP-API checkout's commit and remote  # noqa: command-instead-of-module
+      ansible.builtin.shell: |
+        git -C {{ tesp_install_dir | quote }} rev-parse --verify --quiet 'HEAD^{commit}' &&
+        git -C {{ tesp_install_dir | quote }} remote get-url origin
+      register: tesp_api_checkout
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
     - name: Clone TESP-API repository
       ansible.builtin.git:
         repo: "{{ tesp_api_repo }}"
         dest: "{{ tesp_install_dir }}"
         version: "{{ tesp_api_version }}"
         force: true
+      when: tesp_api_checkout.stdout_lines != [tesp_api_version, tesp_api_repo]
 
     - name: Ensure TESP-API MongoDB data directory exists
       ansible.builtin.file:

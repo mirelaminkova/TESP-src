@@ -1,0 +1,16 @@
+---
+# Stand-in for uusrc.general.nginx_reverse_proxy in tests/nginx-locations.yml:
+# writes one file per location, as the role does, and counts its runs (the
+# real role restarts nginx on every run).
+- name: Write the location files
+  ansible.builtin.copy:
+    content: "location {{ item.location }} {}\n"
+    dest: "{{ nginx_apps_location }}/{{ item.name }}.conf"
+    mode: '0644'
+  loop: "{{ nginx_reverse_proxy_locations }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Count the restarts
+  ansible.builtin.shell: echo restart >> {{ nginx_apps_location | quote }}/../restarts
+  changed_when: true

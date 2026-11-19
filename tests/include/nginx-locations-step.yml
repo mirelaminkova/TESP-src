@@ -1,0 +1,45 @@
+---
+# One step of tests/nginx-locations.yml: optionally changes something
+# (step.before), runs tasks/nginx-locations.yml with step.locations, and
+# checks how often the role has run so far (step.runs).
+- name: "Edit a location file before: {{ step.why }}"
+  ansible.builtin.copy:
+    content: "location /elsewhere/ {}\n"
+    dest: "{{ nginx_apps_location }}/tes.conf"
+    mode: '0644'
+  when: step.before | default('') == 'edit'
+
+- name: "Delete a location file before: {{ step.why }}"
+  ansible.builtin.file:
+    path: "{{ nginx_apps_location }}/about.conf"
+    state: absent
+  when: step.before | default('') == 'delete'
+
+- name: "Pin another collection version before: {{ step.why }}"
+  ansible.builtin.copy:
+    content: "collections: [{name: uusrc.general, version: two}]\n"
+    dest: "{{ tesp_requirements_file }}"
+    mode: '0644'
+  when: step.before | default('') == 'pin'
+
+- name: "Remove the stamp before: {{ step.why }}"
+  ansible.builtin.file:
+    path: "{{ tesp_nginx_locations_stamp }}"
+    state: absent
+  when: step.before | default('') == 'unstamp'
+
+- name: "Write the nginx locations: {{ step.why }}"
+  ansible.builtin.include_tasks: ../../tasks/nginx-locations.yml
+  vars:
+    nginx_reverse_proxy_locations: "{{ step.locations | default(default_locations) }}"
+    default_locations:
+      - {name: about, location: '=/'}
+      - {name: tes, location: /tes/}
+
+- name: "The role ran as often as expected: {{ step.why }}"
+  ansible.builtin.assert:
+    that: runs | int == step.runs
+    fail_msg: "after '{{ step.why }}' the role has run {{ runs }} times, expected {{ step.runs }}"
+    quiet: true
+  vars:
+    runs: "{{ lookup('ansible.builtin.file', nginx_apps_location ~ '/../restarts').splitlines() | length }}"

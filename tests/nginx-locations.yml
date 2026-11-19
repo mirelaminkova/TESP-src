@@ -1,0 +1,60 @@
+---
+# Issue #41: tasks/nginx-locations.yml runs the nginx reverse proxy role (a
+# stand-in here, tests/roles/stub_nginx_reverse_proxy, which counts its runs
+# as the real one restarts nginx) only when something would change.
+#
+#   ansible-playbook -i localhost, -c local tests/nginx-locations.yml
+- name: Check when the nginx locations are written
+  hosts: localhost
+  gather_facts: false
+  vars:
+    tesp_nginx_role: stub_nginx_reverse_proxy
+    nginx_reverse_proxy_locations:
+      - {name: about, location: '=/'}
+      - {name: tes, location: /tes/}
+    steps:
+      - {why: first run, runs: 1}
+      - {why: re-run, runs: 1}
+      - {why: another re-run, runs: 1}
+      - {why: a changed location, runs: 2, locations: [{name: about, location: '=/'}, {name: tes, location: /tes2/}]}
+      - {why: re-run after it, runs: 2, locations: [{name: about, location: '=/'}, {name: tes, location: /tes2/}]}
+      - {why: back to the first locations, runs: 3}
+      - {why: a location file edited by hand, runs: 4, before: edit}
+      - {why: a location file deleted, runs: 5, before: delete}
+      - {why: a new collection pin, runs: 6, before: pin}
+      - {why: no stamp (deployed before this check), runs: 7, before: unstamp}
+      - {why: re-run at the end, runs: 7}
+  tasks:
+    - name: Create a scratch directory
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: nginx-locations
+      register: scratch
+
+    - name: Set up the nginx and requirements directories
+      ansible.builtin.file:
+        path: "{{ scratch.path }}/nginx/app-location-conf.d"
+        state: directory
+        mode: '0755'
+
+    - name: Write a requirements file
+      ansible.builtin.copy:
+        content: "collections: [{name: uusrc.general, version: one}]\n"
+        dest: "{{ scratch.path }}/requirements.yml"
+        mode: '0644'
+
+    - name: Run the steps
+      ansible.builtin.include_tasks: include/nginx-locations-step.yml
+      loop: "{{ steps }}"
+      loop_control:
+        loop_var: step
+        label: "{{ step.why }}"
+      vars:
+        nginx_apps_location: "{{ scratch.path }}/nginx/app-location-conf.d"
+        tesp_nginx_locations_stamp: "{{ scratch.path }}/nginx-locations.json"
+        tesp_requirements_file: "{{ scratch.path }}/requirements.yml"
+
+    - name: Remove the scratch directory
+      ansible.builtin.file:
+        path: "{{ scratch.path }}"
+        state: absent
