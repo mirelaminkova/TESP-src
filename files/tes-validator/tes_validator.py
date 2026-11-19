@@ -267,10 +267,12 @@ class Config:
 
 
 def fetch_json(url: str, timeout: float, token: str | None = None) -> Any:
-    """GET a JSON document, with a size limit and a total deadline.
+    """GET a JSON document, with a timeout and a size limit.
 
-    urllib's timeout applies to each socket operation; reading in chunks
-    against a deadline also stops an endpoint that trickles bytes.
+    urllib's timeout applies to each socket operation (connecting, the status
+    line and headers, each read). Reading the body in chunks against a
+    deadline also stops one that trickles bytes, after about twice the
+    timeout; headers trickled line by line are bounded only per line.
     """
     headers = {"Accept": "application/json"}
     if token is not None:
@@ -549,8 +551,12 @@ class Validator:
                 raise Unavailable("JWKS refresh still running")
         elif fetching:
             self._fetch_jwks(issuer, state, now, done)
-        elif state.fetched_at is None:
-            # The first fetch failed and the backoff holds.
+        elif state.fetched_at is None or (
+                state.keys.get(kid) is None and state.attempted_at is not None
+                and state.attempted_at > state.fetched_at):
+            # The last fetch failed (or hung) and the back-off holds: a
+            # rotated key we couldn't fetch is an outage (503), not a bad
+            # token (401).
             raise Unavailable("JWKS fetch failed recently; retrying after "
                               f"{self.config.jwks_min_refresh_seconds}s")
         if state.fetched_at is None and not state.keys:
@@ -579,10 +585,10 @@ class Validator:
             if not state.keys:
                 raise Unavailable(f"JWKS fetch failed: {e}") from None
         else:
-            # Only if this is still the current refresh: one given up on
-            # must not overwrite a newer one's result.
+            # Only if no newer refresh started: one given up on must not
+            # overwrite a newer one's result, but may publish its own.
             with state.lock:
-                if state.refreshing is done:
+                if state.refreshing in (done, None):
                     state.keys = keys
                     state.fetched_at = now
         finally:

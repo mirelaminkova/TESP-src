@@ -1132,3 +1132,27 @@ def test_server_closes_connections_beyond_the_thread_cap(idp, monkeypatch, caplo
         monkeypatch.setattr(tv, "MAX_THREADS", 100)
         server.shutdown()
     assert "too many connections" in caplog.text
+
+
+def test_unknown_kid_during_backoff_after_a_failed_fetch_is_unavailable(idp):
+    now = [time.time()]
+    v = tv.Validator(idp.config(), clock=lambda: now[0])
+    check(v, idp.token(client_id=EXEMPT))  # keys known
+    idp.jwks_status = 503
+    now[0] += 61
+    # The refresh for the rotated kid fails; the next try is a minute away.
+    with pytest.raises(tv.Denied):
+        check(v, idp.token(kid="rotated"))
+    now[0] += 10
+    with pytest.raises(tv.Unavailable, match="retrying after"):
+        check(v, idp.token(kid="rotated"))
+    # Known keys still work meanwhile.
+    assert check(v, idp.token(client_id=EXEMPT)).kind == "bearer"
+
+
+def test_a_late_fetch_publishes_when_no_newer_one_started(idp):
+    v = tv.Validator(idp.config())
+    state = v._state[idp.issuer]
+    old = threading.Event()  # given up on: refreshing was cleared
+    v._fetch_jwks(v.config.issuers[idp.issuer], state, time.time(), old)
+    assert state.keys and state.fetched_at is not None

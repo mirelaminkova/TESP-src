@@ -581,7 +581,9 @@
               # Excess requests are queued, not refused (no nodelay): a 429
               # aborts a Nextflow run (nf-ga4gh doesn't retry it).
               - conf is search('limit_req_zone \\$tes_rate_key zone=tes_per_ip:10m rate=20r/s;')
-              - conf.count('limit_req zone=tes_per_ip burst=40;') == 2
+              - conf.count('limit_req zone=tes_per_ip burst=40 delay=20;') == 2
+              - conf.count('limit_conn tes_conn_per_ip 40;') == 2
+              - conf is search('limit_conn_zone \\$tes_rate_key zone=tes_conn_per_ip:10m;')
               - "'nodelay' not in conf"
               # Allowlisted sources (Basic sources, src_tes_rate_exempt_sources)
               # aren't limited: an empty key is not counted.

@@ -160,18 +160,15 @@ grep -qi '^Retry-After: 30' "$tmp/headers" || { echo "FAIL no Retry-After on 503
 # Rate limit per client address (20/s; up to 40 more are queued, the rest
 # get 429). The runner is a Basic source here, so exempt; X-Real-IP (trusted
 # from the runner's Docker range) makes it another, limited address.
-burst() {  # burst <name> <extra curl args...>: 100 parallel requests
-    local name=$1
-    shift
+burst() {  # burst <extra curl args...>: 100 parallel requests, prints the 429s
     rm -rf "$tmp/burst"
     mkdir -p "$tmp/burst"
     for i in $(seq 1 100); do
         curl -s -o /dev/null -D "$tmp/burst/$i" -w '%{http_code}\n' \
             -H "Origin: $portal" "$@" "$base/v1/tasks" &
     done | grep -c '^429$' || true
-    wait
 }
-n429=$(burst limited -H 'X-Real-IP: 203.0.113.9')
+n429=$(burst -H 'X-Real-IP: 203.0.113.9')
 if [ "$n429" -gt 0 ]; then
     echo "ok   rate limit: $n429 of 100 got 429"
 else
@@ -190,25 +187,28 @@ fi
 sleep 3
 # An exempt source (the Basic source, the co-located Nextflow) is never
 # limited: a 429 would abort its Nextflow run.
-n429=$(burst exempt)
+n429=$(burst)
 if [ "$n429" = 0 ]; then
     echo "ok   exempt source: no 429 in a burst of 100"
 else
     echo "FAIL exempt source got $n429 x 429" >&2
     fail=1
 fi
-# A client polling one request after another at the rate is queued, never
-# refused (no nodelay).
-n429=0
-for _ in $(seq 1 60); do
-    c=$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Real-IP: 203.0.113.10' "$base/v1/tasks" || true)
-    [ "$c" = 429 ] && n429=$((n429 + 1))
-    sleep 0.04
+# Clients polling faster than the rate, but one request at a time each (as
+# Nextflow does), are slowed down, never refused: 4 pollers without pauses
+# for 4 s. With nodelay this would give 429s.
+for p in 1 2 3 4; do
+    (end=$((SECONDS + 4)); while [ $SECONDS -lt $end ]; do
+        curl -s -o /dev/null -w '%{http_code}\n' -H 'X-Real-IP: 203.0.113.10' "$base/v1/tasks" || true
+    done) > "$tmp/poller$p" &
 done
+wait
+polls=$(cat "$tmp"/poller* | wc -l)
+n429=$(cat "$tmp"/poller* | grep -c '^429$' || true)
 if [ "$n429" = 0 ]; then
-    echo "ok   sequential polling at the limit: no 429"
+    echo "ok   4 pollers over the rate: $polls requests, no 429"
 else
-    echo "FAIL sequential polling got $n429 x 429" >&2
+    echo "FAIL 4 pollers over the rate got $n429 x 429 in $polls requests" >&2
     fail=1
 fi
 sleep 3

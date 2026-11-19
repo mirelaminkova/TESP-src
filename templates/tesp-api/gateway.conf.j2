@@ -18,7 +18,11 @@
    wait (no nodelay); only past the burst do they get 429, with CORS headers.
    A 429 fails a Nextflow task, or aborts its run (nf-ga4gh doesn't retry). #}
 {% macro rate_limit() %}
-        limit_req zone=tes_per_ip burst={{ tesp_gateway_rate_burst | int }};
+        # Half the burst passes at once, the rest waits (short queues, few
+        # held connections); limit_conn caps what one address keeps open.
+        limit_req zone=tes_per_ip burst={{ tesp_gateway_rate_burst | int }} delay={{ (tesp_gateway_rate_burst | int) // 2 }};
+        limit_conn tes_conn_per_ip {{ tesp_gateway_rate_burst | int }};
+        limit_conn_status 429;
         limit_req_status 429;
         # An error_page in a location replaces all of the server's, so 401
         # is repeated here.
@@ -169,6 +173,7 @@ map $tes_rate_exempt $tes_rate_key {
 }
 
 limit_req_zone $tes_rate_key zone=tes_per_ip:10m rate={{ tesp_gateway_rate_per_second | int }}r/s;
+limit_conn_zone $tes_rate_key zone=tes_conn_per_ip:10m;
 
 server {
     listen 8080;
