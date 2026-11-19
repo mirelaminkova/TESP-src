@@ -1033,8 +1033,9 @@
                 in files['task-fence.sh']
               - ('for o in lo docker0 br-+') in files['task-fence.sh']
               - ('-o lo -p tcp --dport 6817 -j RETURN') in files['task-fence.sh']
-              - "'RequiredBy=pulsar.service slurmd.service' in files['task-fence.service']"
-              - "'Before=pulsar.service slurmd.service' in files['task-fence.service']"
+              - "('RequiredBy=' ~ tesp_pulsar_unit ~ ' slurmd.service') in files['task-fence.service']"
+              - "('Before=' ~ tesp_pulsar_unit ~ ' slurmd.service') in files['task-fence.service']"
+              - tesp_pulsar_unit == 'pulsar.service'
               - "'After=ufw.service netfilter-persistent.service' in files['task-fence.service']"
               - "'for ipt in iptables ip6tables' in files['task-fence.sh']"
               - "'ExecStart=/usr/local/sbin/tesp-task-fence' in files['task-fence.service']"
@@ -1056,6 +1057,26 @@
             that:
               - docker_users == []
               - tesp_container_type == 'singularity'
+
+        # slurmctld caches each user's groups for about 10 minutes (measured
+        # on the test bed): without a restart, new jobs keep the docker gid
+        # that long after gpasswd. Right after it, before anything can fail.
+        - name: SLURM forgets the docker group right after gpasswd
+          ansible.builtin.assert:
+            that:
+              - post_task_names is search(gpasswd_then_slurm)
+              - slurm_task['ansible.builtin.systemd_service'].name == 'slurmctld'
+              - slurm_task['ansible.builtin.systemd_service'].state == 'restarted'
+              - slurm_task.when | join(' ') is search('tesp_pulsar_docker_group')
+          vars:
+            tesp_play: >-
+              {{ plays | selectattr('name', 'match', 'Install TESP') | first }}
+            post_task_names: >-
+              |{{ tesp_play.post_tasks | map(attribute='name') | join('|') }}|
+            gpasswd_then_slurm: >-
+              \|Take the Pulsar user out of the docker group\|Make SLURM forget the Pulsar user's old groups\|
+            slurm_task: >-
+              {{ tesp_play.post_tasks | selectattr('name', 'eq', "Make SLURM forget the Pulsar user's old groups") | first | default({}) }}
 
         - name: Task fence renders a slurmctld port range as iptables needs it
           ansible.builtin.assert:

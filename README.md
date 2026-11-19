@@ -317,7 +317,7 @@ The `tesp-task-fence` systemd unit adds an iptables and ip6tables chain, `TESP-T
 - They can't answer connections that others open. The one exception is Pulsar on port 8913, over IPv4, to loopback and the Docker bridges, where `pulsar-proxy` is. A task can still open a listening port and receive datagrams on it, but it can't answer, so no TCP connection to it is ever set up.
 - Everything else is untouched: tasks still pull images and download and upload inputs and outputs (S3, http(s)) themselves.
 
-Pulsar runs as `pulsar` too, so it is fenced as well. That is why its uwsgi HTTP router hands requests to its worker over a unix socket in `/run/pulsar` (`tesp_pulsar_uwsgi_socket`; a drop-in for `pulsar.service` creates the directory) instead of uwsgi's default TCP port on loopback. For the same reason, `pulsar` is no longer in the `docker` group, which is root-equivalent and would let a task step around the fence. It is added only with `tesp_container_type: docker`. On hosts deployed before, the playbook removes it and restarts Pulsar if its process still has the group. SLURM jobs that were already running keep it until they end.
+Pulsar runs as `pulsar` too, so it is fenced as well. That is why its uwsgi HTTP router hands requests to its worker over a unix socket in `/run/pulsar` (`tesp_pulsar_uwsgi_socket`; a drop-in for `pulsar.service` creates the directory) instead of uwsgi's default TCP port on loopback. For the same reason, `pulsar` is no longer in the `docker` group, which is root-equivalent and would let a task step around the fence. It is added only with `tesp_container_type: docker`. On hosts deployed before, the playbook removes it and restarts Pulsar if its process still has the group. slurmctld caches each user's groups for about 10 minutes (`scontrol reconfigure` doesn't clear that), so the playbook then restarts slurmctld, and new tasks start without the group at once. SLURM jobs that were already running keep it until they end.
 
 Pulsar and slurmd require the unit, so they won't start if the rules can't be applied. That includes jobs that SLURM restarts at boot. At boot it runs after `ufw` and `netfilter-persistent`, if they are installed. Each run loads the chain with one `iptables-restore` and one `ip6tables-restore`, so re-applying never leaves it empty. It also puts the jump back in first place if something else has added rules ahead of it. The playbook runs the script on every deploy, so a re-run repairs rules that something else has dropped. Check the rules with `iptables -S TESP-TASKS`, `ip6tables -S TESP-TASKS`, `iptables -S OUTPUT` and `ip6tables -S OUTPUT`. If something rewrites the firewall later (`ufw enable` or `ufw reload`, a full `iptables-restore`), re-run `/usr/local/sbin/tesp-task-fence` or the playbook. Don't use `systemctl restart tesp-task-fence` for this: restarting the unit restarts Pulsar and slurmd, and stopping it stops them but leaves the rules in place. To take the fence off by hand, delete the jump (`iptables -D OUTPUT -m owner --uid-owner pulsar -j TESP-TASKS`, and the same with `ip6tables`).
 
@@ -327,6 +327,7 @@ What it doesn't cover:
 - Tasks still share one user, `pulsar`, with each other and with Pulsar. A task can see and stop the files and processes of other tasks, and use what Pulsar can use: its unix socket, its config, and slurmctld (for example `scancel` on other tasks). A task could also stop Pulsar and take over port 8913 itself, and then receive tesp-api's requests to Pulsar. So against a hostile task, the fence protects everything else on the workspace, but not Pulsar and the other tasks. Running tasks as a user other than Pulsar's, and per-user isolation, are separate changes.
 - Only IP traffic is fenced. Unix sockets that the `pulsar` user can open (Pulsar's, munge's) are not.
 - `srun` inside a task doesn't work: slurmd and the job's callbacks are on ports that the fence refuses.
+- Only Docker's default bridge names are fenced: `docker0` and `br-*` (compose networks). A Docker network with a custom bridge name (`com.docker.network.bridge.name`) would be reachable.
 - Other workspaces and services reachable over the network (for example, on a collaboration's private network) are not fenced.
 - The workspace's security group (the catalog item's access rules) still decides which ports are open from outside; the fence only stops tasks from answering on them.
 - The script needs both iptables and ip6tables. On a kernel booted with IPv6 disabled it fails, and Pulsar doesn't start.
@@ -341,8 +342,11 @@ docker compose -f docker-compose.deploy.yml ps
 docker compose -f docker-compose.deploy.yml logs -f tesp-api
 docker compose -f docker-compose.deploy.yml logs -f gateway
 systemctl status pulsar
+systemctl status tesp-task-fence
 squeue
 ```
+
+**Tasks stay QUEUED and Pulsar or slurmd is down:** check `systemctl status tesp-task-fence` and `journalctl -u tesp-task-fence`. Pulsar and slurmd require the [task network fence](#task-network-fence), so if its rules can't be applied (at boot, for example), they don't start, on purpose. Fix the cause, then `systemctl start tesp-task-fence pulsar slurmd`.
 
 ## Configuration notes
 

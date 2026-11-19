@@ -123,7 +123,7 @@
     # in Pulsar's runtime directory. Before the role starts Pulsar.
     - name: Create the Pulsar unit's drop-in directory
       ansible.builtin.file:
-        path: /etc/systemd/system/pulsar.service.d
+        path: /etc/systemd/system/{{ tesp_pulsar_unit }}.d
         state: directory
         owner: root
         group: root
@@ -132,7 +132,7 @@
     - name: Give Pulsar a runtime directory for its uwsgi socket
       ansible.builtin.template:
         src: templates/pulsar-uwsgi-socket.conf.j2
-        dest: /etc/systemd/system/pulsar.service.d/tesp-uwsgi-socket.conf
+        dest: /etc/systemd/system/{{ tesp_pulsar_unit }}.d/tesp-uwsgi-socket.conf
         owner: root
         group: root
         mode: '0644'
@@ -214,8 +214,8 @@
     # fails later doesn't lose the fix.
     - name: Check that Pulsar and slurmd require the task network fence
       ansible.builtin.shell: |
-        for unit in pulsar slurmd; do
-          [ -L "/etc/systemd/system/$unit.service.requires/tesp-task-fence.service" ] || echo "$unit"
+        for unit in {{ tesp_pulsar_unit | quote }} slurmd.service; do
+          [ -L "/etc/systemd/system/$unit.requires/tesp-task-fence.service" ] || echo "$unit"
         done
       register: tesp_task_fence_links
       changed_when: false
@@ -247,6 +247,31 @@
       changed_when: tesp_pulsar_docker_group.rc == 0
       failed_when: tesp_pulsar_docker_group.rc not in [0, 3]
       when: tesp_container_type != 'docker'
+
+    # slurmctld caches each user's groups for new jobs (about 10 minutes on
+    # SLURM 21.08, measured on the test bed), so new tasks would keep the
+    # docker gid that long. Only a restart of slurmctld empties that cache
+    # (scontrol reconfigure and a slurmd restart don't); it keeps its saved
+    # state, so queued and running jobs carry on. Running jobs keep their
+    # groups until they end.
+    - name: Make SLURM forget the Pulsar user's old groups
+      ansible.builtin.systemd_service:
+        name: slurmctld
+        state: restarted
+      when:
+        - tesp_container_type != 'docker'
+        - tesp_pulsar_docker_group.rc | default(3) == 0
+
+    - name: Wait for slurmctld after the restart
+      ansible.builtin.command: scontrol ping
+      register: tesp_slurmctld_ping
+      until: "'UP' in tesp_slurmctld_ping.stdout"
+      retries: 30
+      delay: 2
+      changed_when: false
+      when:
+        - tesp_container_type != 'docker'
+        - tesp_pulsar_docker_group.rc | default(3) == 0
 
     # From the running process rather than a handler: a run that fails after
     # gpasswd would leave Pulsar with the group, and the next one would see

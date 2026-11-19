@@ -9,7 +9,7 @@
 [Unit]
 Description=Fence the network of TES tasks (user {{ pulsar_user.name }})
 After=ufw.service netfilter-persistent.service
-Before=pulsar.service slurmd.service
+Before={{ tesp_pulsar_unit }} slurmd.service
 
 [Service]
 Type=oneshot
@@ -18,4 +18,4 @@ ExecStart=/usr/local/sbin/tesp-task-fence
 
 [Install]
 WantedBy=multi-user.target
-RequiredBy=pulsar.service slurmd.service
+RequiredBy={{ tesp_pulsar_unit }} slurmd.service

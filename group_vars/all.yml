@@ -129,6 +129,8 @@ pulsar_uwsgi_options:
   socket: "{{ tesp_pulsar_uwsgi_socket }}"
   http-to: "{{ tesp_pulsar_uwsgi_socket }}"
   chmod-socket: 600
+# Pulsar's systemd unit, as the galaxyproject.pulsar role names it.
+tesp_pulsar_unit: "{{ pulsar_systemd_service_name | default('pulsar') }}.service"
 # /run/pulsar: the RuntimeDirectory in templates/pulsar-uwsgi-socket.conf.j2.
 tesp_pulsar_uwsgi_socket: /run/pulsar/uwsgi.sock
 
