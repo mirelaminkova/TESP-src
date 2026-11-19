@@ -59,7 +59,7 @@ hog() {
     printf 'python3 -c %q' \
         "import time; b = b'x' * ($1 << 20); time.sleep($2); print('held $1 MiB')"
 }
-ram_within_ok=
+ram_within_ran='' ram_within_ok=''
 FAILED_STATES=" EXECUTOR_ERROR SYSTEM_ERROR "
 failures=0
 passes=0
@@ -96,7 +96,8 @@ EOF
 }
 
 # run <case> <task json>: submits it and waits. Sets ID, STATE (the final
-# state, or SUBMIT_ERROR / "<state>(timeout ...)"), SECONDS_TAKEN, DETAIL.
+# state, or SUBMIT_ERROR / "<state>(timeout ...)"), SECONDS_TAKEN, and
+# DETAIL (all the task's logs; only the end is printed).
 # Never exits the script: a failed poll is retried until TIMEOUT.
 run() {
     local t0 state=UNKNOWN
@@ -135,9 +136,11 @@ for log in j.get("logs") or []:
         parts.append("exit_code=%s" % e.get("exit_code"))
         parts += [e.get("stdout") or "", e.get("stderr") or ""]
 text = " | ".join(p.strip().replace("\n", " ") for p in parts if p and p.strip())
-print(text[-300:] if text else "no reason reported")
+print(text or "no reason reported")
 ') || DETAIL="task logs unavailable"
-    echo "   $1: task $ID -> $STATE in ${SECONDS_TAKEN}s; $DETAIL"
+    local shown=$DETAIL
+    (( ${#shown} <= 300 )) || shown=${shown: -300}
+    echo "   $1: task $ID -> $STATE in ${SECONDS_TAKEN}s; $shown"
 }
 
 pass() { echo "PASS $1"; passes=$((passes + 1)); }
@@ -178,6 +181,8 @@ case_ram-too-big() {
 }
 
 case_ram-within() {
+    [ -z "$ram_within_ran" ] || return 0
+    ram_within_ran=1
     run ram-within "$(task 1 1 "$HOG_IMAGE" "$(hog 256 30)")"
     expect_complete ram-within
     if [ "$STATE" = COMPLETE ]; then ram_within_ok=1; fi
@@ -186,7 +191,7 @@ case_ram-within() {
 # The task must fail because SLURM killed it for its memory: the hog never
 # finished, and slurmstepd's message reached the task's logs.
 case_ram-overuse() {
-    [ -n "$ram_within_ok" ] || case_ram-within
+    case_ram-within  # the control; runs once
     run ram-overuse "$(task 1 0.5 "$HOG_IMAGE" "$(hog 1536 90)")"
     if [ -z "$ram_within_ok" ]; then
         fail "ram-overuse (inconclusive: the control task 'ram-within' didn't complete)"
