@@ -14,6 +14,26 @@
     - name: Check component parameters and settings
       ansible.builtin.include_tasks: tasks/check-parameters.yml
 
+    # tesp_task_fence_enabled: false (issue #48), first step. Pulsar and
+    # slurmd require the fence's unit while it is enabled, so on a host where
+    # the fence can't start (no IPv6, a broken iptables) every later restart
+    # of them (the roles' handlers, a stale Pulsar config) would fail before
+    # the rest of the off block below runs. Disabling removes those links.
+    - name: Unlink the task network fence from Pulsar and slurmd
+      when: not (tesp_task_fence_enabled | bool)
+      block:
+        - name: Look for the task network fence unit (to unlink it)
+          ansible.builtin.stat:
+            path: /etc/systemd/system/tesp-task-fence.service
+          register: tesp_task_fence_unit_early
+
+        - name: Disable the task network fence unit
+          ansible.builtin.systemd_service:
+            name: tesp-task-fence
+            enabled: false
+            daemon_reload: true
+          when: tesp_task_fence_unit_early.stat.exists
+
 - name: Install pre-requisites (SLURM, DRMAA, time sync)
   hosts: "{{ lookup('env', 'variable_host') | default('localhost', true) }}" # workaround because SRC needs localhost, but molecule needs specifc hostvars
   # slurm.conf names it as TaskProlog (group_vars/all.yml). Installed first:
@@ -314,13 +334,18 @@
             path: /etc/systemd/system/tesp-task-fence.service
           register: tesp_task_fence_unit_file
 
-        # First: that removes the RequiredBy links, so stopping the unit
-        # next doesn't stop Pulsar and slurmd.
-        - name: Disable the task network fence unit
-          ansible.builtin.systemd_service:
-            name: tesp-task-fence
-            enabled: false
-            daemon_reload: true
+        # Disabled in the first play, which removed the RequiredBy links. A
+        # dependency added another way (a drop-in with Requires=, BindsTo=)
+        # would make the stop below stop Pulsar or slurmd too.
+        - name: Check that nothing still requires the task network fence
+          # The systemd module can't read reverse dependencies.
+          ansible.builtin.command: systemctl show -p RequiredBy,BoundBy,PartOf,ConsistsOf --value tesp-task-fence  # noqa: command-instead-of-module
+          register: tesp_task_fence_dependents
+          changed_when: false
+          check_mode: false
+          failed_when: >-
+            tesp_task_fence_dependents.rc != 0
+            or tesp_task_fence_dependents.stdout_lines | select | list | length > 0
           when: tesp_task_fence_unit_file.stat.exists
 
         - name: Stop the task network fence unit
