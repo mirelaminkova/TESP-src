@@ -61,6 +61,14 @@ pulsar_systemd_environment:
 
 pulsar_create_user: true
 pulsar_user: {name: pulsar, shell: /bin/bash}
+# Privacy (issue #8): with a shared group the role (tasks/paths.yml) creates
+# pulsar_root and every directory under it 0750 instead of 0755, owned by
+# root:pulsar (config) or pulsar:pulsar (job staging, persistence,
+# dependencies). Only root and the Pulsar user can read them: app.yml and
+# its backups hold private_token, and job scripts in staging hold presigned
+# S3 URLs. The role applies one mode to all of them, so the config
+# directory can't be restricted alone. Users get results through TES or S3.
+pulsar_group: pulsar
 
 pulsar_optional_dependencies:
   - pyOpenSSL
@@ -87,6 +95,14 @@ pulsar_host: "0.0.0.0"
 pulsar_port: 8913
 pulsar_uwsgi_options:
   buffer-size: 32768
+  # uwsgi logs each request's URL with its query string, which carries the
+  # private_token that pulsar-proxy adds, and, when the client has gone (for
+  # example pulsar-proxy being recreated), a write error with the same URL.
+  # Pulsar's own log lines still go to the journal (journalctl -u pulsar).
+  disable-logging: true
+  ignore-sigpipe: true
+  ignore-write-errors: true
+  disable-write-exception: true
 
 pulsar_yaml_config:
   managers:
@@ -187,6 +203,10 @@ tesp_s3_output_presign_expiry_seconds: 86400
 # be baked into an image layer. Bind-mounted read-only as /app/.secrets.toml.
 tesp_secrets_dir: /etc/tesp-api
 tesp_secrets_file: "{{ tesp_secrets_dir }}/secrets.toml"
+# pulsar-proxy's nginx config, which holds the Pulsar token. Here rather than
+# in tesp_install_dir, the image build context (`COPY . .`), so that no image
+# layer holds the token. Bind-mounted read-only into pulsar-proxy.
+tesp_pulsar_proxy_conf: "{{ tesp_secrets_dir }}/pulsar-token-proxy.conf"
 # Pulsar's private_token, generated on the first run and reused on later ones
 # (tasks/pulsar-token.yml). Delete it and re-run to rotate the token.
 tesp_pulsar_token_file: "{{ tesp_secrets_dir }}/pulsar_token"

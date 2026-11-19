@@ -113,9 +113,13 @@
     - name: Get the Pulsar token
       ansible.builtin.include_tasks: tasks/pulsar-token.yml
 
+    # no_log here and on the other tasks that set or read a secret (also in
+    # tasks/pulsar-token.yml): -v would print it. Templates that render one
+    # have diff: false instead, as --diff is what would print them.
     - name: Generate TESP-API basic auth password
       ansible.builtin.set_fact:
         tesp_basic_auth_password: "{{ lookup('community.general.random_string', base64=True, length=24) }}"
+      no_log: true
 
     - name: Install Dependencies
       ansible.builtin.apt:
@@ -166,7 +170,10 @@
     - usegalaxy_eu.apptainer
     - uusrc.general.nginx_reverse_proxy
     # https://github.com/galaxyproject/pulsar/issues/375
-    - galaxyproject.pulsar
+    - role: galaxyproject.pulsar
+      # --diff would print app.yml, which holds the Pulsar token. Not no_log,
+      # which would also hide the role's errors.
+      diff: false
 
   post_tasks:
     # The role's restart (pulsar_restart_handler_name) is a handler: if a run
@@ -205,6 +212,7 @@
         owner: www-data
         group: www-data
         mode: '0640'
+      diff: false  # shows the TES password
 
     # ---- TESP-API: GA4GH TES front-end for Pulsar ----
     # Lets TES clients submit jobs that are translated into Pulsar jobs and run
@@ -230,6 +238,7 @@
         owner: root
         group: root
         mode: '0640'
+      diff: false  # holds the TES password
 
     # Holds the S3 secret key. no_log so it is never shown (not even with
     # --diff or -v).
@@ -245,10 +254,20 @@
     - name: Template Pulsar token-injection proxy config
       ansible.builtin.template:
         src: templates/tesp-api/pulsar-token-proxy.conf.j2
-        dest: "{{ tesp_install_dir }}/pulsar-token-proxy.conf"
+        dest: "{{ tesp_pulsar_proxy_conf }}"
         owner: root
         group: root
         mode: '0640'  # holds the Pulsar token
+      # --diff would print the token; diff: false rather than no_log keeps
+      # template errors visible.
+      diff: false
+
+    # Earlier versions wrote it into the image build context, so every image
+    # built from there holds the token.
+    - name: Remove the Pulsar proxy config from the tesp-api build context
+      ansible.builtin.file:
+        path: "{{ tesp_install_dir }}/pulsar-token-proxy.conf"
+        state: absent
 
     # pulsar-proxy keeps the file it started with: the template replaces the
     # bind-mounted file (new inode) and nginx reads it only at start. The
@@ -257,14 +276,18 @@
     # on a later run if this one stops before the stack is up.
     - name: Checksum the Pulsar proxy config
       ansible.builtin.stat:
-        path: "{{ tesp_install_dir }}/pulsar-token-proxy.conf"
+        path: "{{ tesp_pulsar_proxy_conf }}"
         get_checksum: true
         checksum_algorithm: sha256
       register: tesp_pulsar_proxy_conf_stat
 
     - name: Remember the Pulsar proxy config checksum
       ansible.builtin.set_fact:
-        tesp_pulsar_proxy_conf_checksum: "{{ tesp_pulsar_proxy_conf_stat.stat.checksum }}"
+        # Under --check on a host without it, the file isn't written yet.
+        tesp_pulsar_proxy_conf_checksum: >-
+          {{ tesp_pulsar_proxy_conf_stat.stat.checksum
+             if not ansible_check_mode
+             else tesp_pulsar_proxy_conf_stat.stat.checksum | default('check-mode') }}
 
     - name: Template TESP-API deployment compose file
       ansible.builtin.template:
