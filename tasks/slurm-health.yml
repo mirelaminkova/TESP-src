@@ -1,0 +1,104 @@
+---
+# Issue #43: fail the deploy when SLURM doesn't work, instead of leaving a
+# workspace whose tasks all fail or queue forever. A bad slurm.conf setting
+# (task/cgroup on cgroup v2, task/affinity on a pinned node, more CPUs or
+# memory than slurmd finds) stops slurmd or drains the node, and nothing
+# else in the deploy notices.
+#
+# Included by playbook.yml after the SLURM handlers have run. Variables
+# (defaults in group_vars/all.yml):
+#   tesp_slurm_health_job_user  also run a one-second batch job as this user
+#                               ('' = no job); only when every node is idle,
+#                               so a re-run doesn't wait behind running tasks
+#   tesp_slurm_health_retries, tesp_slurm_health_delay
+#                               how long to wait after a restart
+#   tesp_slurmd_log_file, tesp_slurmctld_log_file
+#                               shown when the check fails
+- name: Check that SLURM works
+  block:
+    - name: Wait for slurmd and slurmctld to run
+      # is-active only reads; the systemd module would start them.
+      ansible.builtin.command: systemctl is-active slurmd slurmctld  # noqa: command-instead-of-module
+      register: tesp_slurm_daemons
+      until: tesp_slurm_daemons.rc == 0
+      retries: "{{ tesp_slurm_health_retries }}"
+      delay: "{{ tesp_slurm_health_delay }}"
+      changed_when: false
+
+    # %T: the long state. A trailing * is a node that doesn't respond (yet,
+    # just after a restart); drained, draining, down and the rest never take
+    # a task. Every node must be usable: this is a one-node cluster.
+    - name: Wait for the SLURM node to be usable
+      ansible.builtin.command: sinfo -h -N -o '%N %T'
+      register: tesp_slurm_nodes
+      until: >-
+        tesp_slurm_nodes.rc == 0
+        and tesp_slurm_nodes.stdout_lines | length > 0
+        and tesp_slurm_nodes.stdout_lines
+            | map('split') | map('last')
+            | reject('in', tesp_slurm_usable_states) | list | length == 0
+      retries: "{{ tesp_slurm_health_retries }}"
+      delay: "{{ tesp_slurm_health_delay }}"
+      changed_when: false
+
+    # sbatch, as Pulsar submits through DRMAA, and as Pulsar's user, so it
+    # also goes through the task network fence. --wait returns the job's exit
+    # code. Bounded by timeout; the rescue cancels a job left queued.
+    - name: Run a test job through SLURM
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - "{{ tesp_slurm_health_job_user }}"
+          - --
+          - timeout
+          - "{{ tesp_slurm_health_job_timeout }}"
+          - sbatch
+          - --wait
+          - --quiet
+          - --job-name={{ tesp_slurm_health_job_name }}
+          - --nodes=1
+          - --ntasks=1
+          - --time=1
+          - --chdir=/tmp
+          - --output=/dev/null
+          - --wrap=true
+      register: tesp_slurm_test_job
+      changed_when: false
+      when:
+        - tesp_slurm_health_job_user | length > 0
+        - tesp_slurm_nodes.stdout_lines | map('split') | map('last') | unique == ['idle']
+
+  rescue:
+    - name: Collect what SLURM says
+      ansible.builtin.shell: |
+        if [ -n {{ tesp_slurm_health_job_user | quote }} ]; then
+          scancel --quiet --name={{ tesp_slurm_health_job_name | quote }} \
+            --user={{ tesp_slurm_health_job_user | quote }} 2>&1
+        fi
+        echo "== systemctl is-active slurmd slurmctld"
+        systemctl is-active slurmd slurmctld 2>&1
+        echo "== sinfo -N -o '%N %T %E'"
+        sinfo -N -o '%N %T %E' 2>&1
+        echo "== sinfo -R"
+        sinfo -R 2>&1
+        for log in {{ tesp_slurmd_log_file | quote }} {{ tesp_slurmctld_log_file | quote }}; do
+          echo "== tail -n 20 $log"
+          tail -n 20 "$log" 2>&1
+        done
+      register: tesp_slurm_diagnostics
+      changed_when: false
+      failed_when: false
+
+    - name: Stop the deploy because SLURM does not work
+      ansible.builtin.fail:
+        msg: >-
+          {{ ['SLURM does not work, so no TES task could run. Failed: '
+              ~ ansible_failed_task.name ~ ' ('
+              ~ (((ansible_failed_result.stdout_lines | default([]))
+                  + (ansible_failed_result.stderr_lines | default([]))
+                  + [ansible_failed_result.msg | default('')])
+                 | map('trim') | select | join('; '))
+              ~ '). A drained node stays drained once the cause is fixed: '
+              ~ 'scontrol update nodename=<node> state=resume.']
+             + tesp_slurm_diagnostics.stdout_lines }}

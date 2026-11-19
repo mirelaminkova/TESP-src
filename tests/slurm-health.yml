@@ -1,0 +1,119 @@
+---
+# Issue #43: the deploy-time SLURM check (tasks/slurm-health.yml), against
+# stand-in systemctl, sinfo, sbatch, runuser, scancel and SLURM logs, and
+# its place in playbook.yml.
+#
+#   ansible-playbook -i localhost, -c local tests/slurm-health.yml
+#
+# Each broken case prints a red "fatal" line and counts as "rescued": that is
+# the expected outcome. The play fails only if a case gives the wrong result.
+- name: Check the deploy-time SLURM check
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+  vars:
+    slurm_health_cases:
+      - why: a healthy node runs the test job as the given user
+        states: [idle]
+        expect_ok: true
+        expect_job: pulsar
+      - why: a node that responds only after a restart
+        states: ['idle*', 'idle*', idle]
+        expect_ok: true
+        expect_job: pulsar
+      - why: a busy node is usable; no test job behind running tasks
+        states: [allocated]
+        expect_ok: true
+      - why: a mixed node is usable
+        states: [mixed]
+        expect_ok: true
+      - why: no test job without a job user
+        states: [idle]
+        job_user: ''
+        expect_ok: true
+      - why: slurmd down
+        daemons: [active, inactive]
+        expect: ['Wait for slurmd and slurmctld to run', 'inactive', 'slurmd.log', 'stand-in slurmd log line']
+      - why: slurmctld down
+        daemons: [inactive, active]
+        states: []
+        expect: ['Wait for slurmd and slurmctld to run', 'slurmctld.log']
+      - why: a drained node
+        states: [drained]
+        expect: ['Wait for the SLURM node to be usable', 'localhost drained', 'Low socket*core*thread count', 'state=resume']
+      - why: a node that stays down
+        states: ['down*']
+        expect: ['Wait for the SLURM node to be usable', 'down*']
+      - why: a node still draining
+        states: [draining]
+        expect: ['Wait for the SLURM node to be usable']
+      - why: sinfo lists no node
+        states: ['']
+        expect: ['Wait for the SLURM node to be usable']
+      - why: a test job that fails
+        states: [idle]
+        job_rc: 1
+        expect: ['Run a test job through SLURM', 'stand-in sbatch failed', 'scancel --quiet --name=tesp-deploy-check --user=pulsar']
+  tasks:
+    - name: Create a directory for the stand-ins
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: slurm-health
+      register: stub_dir
+
+    - name: Run the cases
+      ansible.builtin.include_tasks: include/slurm-health-case.yml
+      loop: "{{ slurm_health_cases }}"
+      loop_control:
+        loop_var: case
+        label: "{{ case.why }}"
+
+    # The checks only help where the playbook runs them: after the SLURM
+    # handlers (which restart slurmd and slurmctld), and again with a test job
+    # as the Pulsar user before the tesp-api stack starts.
+    - name: Read playbook.yml
+      ansible.builtin.set_fact:
+        plays: "{{ lookup('ansible.builtin.file', '../playbook.yml') | from_yaml }}"
+
+    - name: Find the checks in playbook.yml
+      ansible.builtin.set_fact:
+        slurm_post_tasks: "{{ slurm_play.post_tasks | map(attribute='name') | list }}"
+        tesp_post_tasks: "{{ tesp_play.post_tasks | map(attribute='name') | list }}"
+        slurm_check: "{{ slurm_play.post_tasks | selectattr('name', 'eq', 'Check that SLURM works') | first }}"
+        pulsar_check: >-
+          {{ tesp_play.post_tasks
+             | selectattr('name', 'eq', 'Check that the Pulsar user can run SLURM jobs') | first }}
+      vars:
+        slurm_play: "{{ plays | selectattr('roles', 'defined') | selectattr('roles', 'contains', 'galaxyproject.slurm') | first }}"
+        tesp_play: "{{ plays | selectattr('name', 'eq', 'Install TESP (GA4GH TES API backed by Pulsar)') | first }}"
+
+    - name: The playbook checks SLURM after its handlers, and as the Pulsar user before the stack
+      ansible.builtin.assert:
+        that:
+          - slurm_check['ansible.builtin.include_tasks'] == 'tasks/slurm-health.yml'
+          - slurm_post_tasks[-1] == 'Check that SLURM works'
+          - slurm_post_tasks[-2] == 'Run the SLURM handlers now'
+          - (slurm_play_flush | first)['ansible.builtin.meta'] == 'flush_handlers'
+          - pulsar_check['ansible.builtin.include_tasks'] == 'tasks/slurm-health.yml'
+          # Rendered or not, depending on ansible-core.
+          - pulsar_check.vars.tesp_slurm_health_job_user is search('pulsar')
+          - >-
+            tesp_post_tasks.index('Check that the Pulsar user can run SLURM jobs')
+            > tesp_post_tasks.index('Apply the task network fence')
+          - >-
+            tesp_post_tasks.index('Check that the Pulsar user can run SLURM jobs')
+            > tesp_post_tasks.index('Restart Pulsar without the docker group')
+          - >-
+            tesp_post_tasks.index('Check that the Pulsar user can run SLURM jobs')
+            < tesp_post_tasks.index('Build and start the TESP-API stack')
+        quiet: true
+      vars:
+        slurm_play_flush: >-
+          {{ (plays | selectattr('roles', 'defined') | selectattr('roles', 'contains', 'galaxyproject.slurm') | first).post_tasks
+             | selectattr('name', 'eq', 'Run the SLURM handlers now') | list }}
+
+    - name: Remove the stand-ins
+      ansible.builtin.file:
+        path: "{{ stub_dir.path }}"
+        state: absent

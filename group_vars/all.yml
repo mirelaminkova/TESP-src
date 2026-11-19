@@ -61,6 +61,20 @@ tesp_slurm_real_memory_mb: >-
         - (tesp_slurm_reserved_memory_mb | int),
       (ansible_facts['memtotal_mb'] | int) // 2] | max }}
 
+# Deploy-time SLURM check (issue #43, tasks/slurm-health.yml): after a
+# restart, wait up to retries x delay seconds for the daemons and the node.
+tesp_slurm_health_retries: 15
+tesp_slurm_health_delay: 2
+# Node states (sinfo %T) that can take a task.
+tesp_slurm_usable_states: [idle, mixed, allocated, completing]
+# The test job (as the Pulsar user, at the end of the TESP play).
+tesp_slurm_health_job_name: tesp-deploy-check
+tesp_slurm_health_job_timeout: 120
+tesp_slurm_health_job_user: ''
+# galaxyproject.slurm's defaults; shown when the check fails.
+tesp_slurmd_log_file: "{{ slurm_config.SlurmdLogFile | default('/var/log/slurm/slurmd.log') }}"
+tesp_slurmctld_log_file: "{{ slurm_config.SlurmctldLogFile | default('/var/log/slurm/slurmctld.log') }}"
+
 # Pulsar
 pulsar_root: "{{ src_pulsar_storage_path | default('/mnt/pulsar', true) }}" # component variable attached_storage_path
 
