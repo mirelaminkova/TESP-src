@@ -1148,7 +1148,6 @@
           ansible.builtin.assert:
             that:
               - slurm_config.TaskProlog == tesp_task_prolog_path
-              - tesp_task_prolog_path == '/usr/local/sbin/tesp-task-prolog'
           vars:
             ansible_facts:
               processor_vcpus: 8
@@ -1187,6 +1186,23 @@
               - install[0]['ansible.builtin.template'].src == 'templates/task-prolog.sh.j2'
               - install[0]['ansible.builtin.template'].dest is search('[{][{] *tesp_task_prolog_path *[}][}]')
               - install[0]['ansible.builtin.template'].mode == '0755'
+
+        # A failed run after slurm.conf changed would drop the role's restart
+        # handlers; the next run must still get the prolog loaded.
+        - name: The playbook makes SLURM load the TaskProlog on every run
+          vars:
+            prereq: "{{ plays | selectattr('name', 'eq', 'Install pre-requisites (SLURM, DRMAA, time sync)') | first }}"
+            names: "{{ prereq.post_tasks | map(attribute='name') | list }}"
+          ansible.builtin.assert:
+            that:
+              - names[:4] == ['Restart SLURM for a changed slurm.conf now',
+                              'Read the TaskProlog SLURM has loaded',
+                              'Restart SLURM to load the task prolog',
+                              'Wait for slurmctld after loading the task prolog']
+              - prereq.post_tasks[0]['ansible.builtin.meta'] == 'flush_handlers'
+              - prereq.post_tasks[1]['ansible.builtin.command'] == 'scontrol show config'
+              - prereq.post_tasks[2].when is search('tesp_slurm_live_config.stdout is not search')
+              - prereq.post_tasks[2].when is search('not ansible_check_mode')
 
         # Without a socket, uwsgi's HTTP router reaches its worker over TCP on
         # loopback, which the fence blocks for the Pulsar user: Pulsar answers

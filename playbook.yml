@@ -30,6 +30,49 @@
     - galaxyproject.repos
     - galaxyproject.slurm
   post_tasks:
+    # The role restarts slurmctld and slurmd for a changed slurm.conf in
+    # handlers, at the end of the play. If a later task here fails, the next
+    # run sees slurm.conf unchanged and never restarts them, and tasks keep
+    # running without the task prolog. So: restart now, and on every run
+    # compare what slurmctld has loaded.
+    - name: Restart SLURM for a changed slurm.conf now
+      ansible.builtin.meta: flush_handlers
+
+    - name: Read the TaskProlog SLURM has loaded
+      ansible.builtin.command: scontrol show config
+      register: tesp_slurm_live_config
+      # slurmctld may still be starting after the handlers.
+      until: tesp_slurm_live_config.rc == 0
+      retries: 15
+      delay: 2
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    # slurmctld and slurmd read slurm.conf only when they start.
+    - name: Restart SLURM to load the task prolog
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        state: restarted
+      loop:
+        - "{{ slurmctld_service_name | default('slurmctld') }}"
+        - "{{ slurmd_service_name | default('slurmd') }}"
+      when: >-
+        not ansible_check_mode
+        and tesp_slurm_live_config.stdout is not search('^TaskProlog\\s*=\\s*' ~ (tesp_task_prolog_path | regex_escape) ~ '\\s*$', multiline=True)
+      register: tesp_slurm_prolog_restart
+
+    - name: Wait for slurmctld after loading the task prolog
+      ansible.builtin.command: scontrol ping
+      register: tesp_slurm_prolog_ping
+      until: >-
+        tesp_slurm_prolog_ping.rc == 0
+        and tesp_slurm_prolog_ping.stdout is search(' is UP$', multiline=True)
+      retries: 30
+      delay: 2
+      changed_when: false
+      when: tesp_slurm_prolog_restart.results | default([]) | selectattr('changed') | list | length > 0
+
     - name: Install Dependencies
       ansible.builtin.apt:
         update_cache: true

@@ -338,14 +338,16 @@ What it doesn't cover:
 
 Tasks run as the same user as Pulsar (`pulsar`). In the workspace's PID namespace, a task would see Pulsar's processes and could stop them. Where Apptainer runs setuid, a task could also read Pulsar's config through `/proc/<Pulsar's pid>/root`, with its `private_token`, and open Pulsar's unix socket the same way, and so list, cancel or submit Pulsar jobs (issue #47). On the test bed, Apptainer runs in user-namespace mode, which closes that `/proc` path but still lets a task signal Pulsar. With `apptainer-suid` installed, a task read the token.
 
-So every task gets a PID namespace of its own: it sees only its own processes, and Pulsar's `/proc` entries don't exist for it. SLURM's `TaskProlog` (`tesp_task_prolog_path`, `/usr/local/sbin/tesp-task-prolog`) sets `APPTAINER_PID=1` in every job's environment, which is `apptainer exec --pid` for tesp-api's `singularity exec`. This works whichever way Apptainer runs, setuid or user namespace. A task can't turn it off: its environment variables go into the container only.
+So every task gets a PID namespace of its own: it sees only its own processes, and Pulsar's `/proc` entries don't exist for it. SLURM's `TaskProlog` (`tesp_task_prolog_path`, `/usr/local/sbin/tesp-task-prolog`) sets `APPTAINER_PID=1` in every task's environment, which is `apptainer exec --pid` for tesp-api's `singularity exec`. This works whichever way Apptainer runs, setuid or user namespace (shown on the test bed in both). The playbook checks on every run that slurmctld has loaded the prolog (`scontrol show config`) and restarts SLURM if not. A task can't turn it off: its environment variables go into the container only.
 
 Limits:
 
 - If the prolog file is missing, slurmd logs `Could not run slurm task_prolog` and runs the task anyway, without a PID namespace. Re-run the playbook, which puts it back.
-- Tasks still share `/tmp` and the Pulsar user's home directory (`/home/pulsar`), both of which Apptainer binds into every container. That includes Apptainer's image cache, so a task can change an image that later tasks run.
+- Tasks still share `/tmp` and the Pulsar user's home directory (`/home/pulsar`), both of which Apptainer binds into every container. That includes Apptainer's image cache, so a task can change an image that later tasks run (#53).
 - A task could listen on port 8913 while Pulsar is down (for example, while a redeploy restarts it) and receive tesp-api's requests, which carry the `private_token`.
 - With `tesp_container_type: docker`, the prolog has no effect.
+- It relies on Apptainer, which reads `APPTAINER_PID` (the catalog item installs it), and on `allow pid ns = yes` in `apptainer.conf` (Apptainer's default). SingularityCE reads only `SINGULARITY_PID`.
+- Only the PID namespace is new. Tasks still share the IPC namespace and `/dev/shm` with Pulsar, and the network namespace, so abstract unix sockets too (Pulsar uses none: its socket is a file in `/run/pulsar`, which isn't in the container). The network fence covers the rest of the network (see [Task network fence](#task-network-fence)).
 
 ## Troubleshooting
 
