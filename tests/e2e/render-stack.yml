@@ -25,6 +25,8 @@
         pulsar_token: e2e-pulsar-token
         tesp_basic_auth_password: "{{ lookup('env', 'E2E_TES_PASSWORD') }}"
         tesp_first_deploy_time: "2026-11-18T09:30:00Z"
+        # Set by playbook.yml from the proxy config (#19's label).
+        tesp_pulsar_proxy_conf_checksum: e2e
 
     - name: The test password is set
       ansible.builtin.assert:
