@@ -95,7 +95,7 @@
       <ul>
         {% set co_admins = fact_co_groups.src_co_admin %}
         <li><strong>Admins:</strong> {{ co_admins | join(', ') if co_admins is iterable and co_admins is not string else co_admins }}</li>
-        <li><strong>Job storage:</strong> <code>{{ pulsar_root }}</code></li>
+        <li><strong>Job storage:</strong> <code>{{ pulsar_root }}</code>, readable only by root and the Pulsar service user. Get task results through TES or S3.</li>
         <li><strong>TESP-API version:</strong> <code>{{ tesp_api_version }}</code></li>
       </ul>
     </section>
