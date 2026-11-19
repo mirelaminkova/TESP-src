@@ -130,10 +130,9 @@
       src_tes_basic_auth_sources and src_tes_rate_exempt_sources must be IP
       addresses or CIDRs (e.g. 145.38.1.2 or 145.38.0.0/16, at least /8 or
       /16 for IPv6), comma-separated without spaces; tesp_gateway_rate_per_second
-      and tesp_gateway_conn_per_address must be whole numbers above 0,
-      tesp_gateway_conn_per_address below 64, and tesp_gateway_rate_burst
-      at least 2. See
-      "Access with LS Login" in the README.
+      must be a whole number above 0, tesp_gateway_conn_per_address one from
+      1 to 63, and tesp_gateway_rate_burst at least 2. See "Access with LS
+      Login" in the README.
 
 - name: Validate the CORS origins (src_tes_cors_origins)
   vars:

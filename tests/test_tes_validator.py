@@ -1077,17 +1077,18 @@ def test_a_hung_refresh_is_given_up_on_after_the_backoff(idp):
     assert state.refreshing is None and idp.hits["jwks"] == 1
 
 
-def test_an_abandoned_fetch_doesnt_clobber_a_newer_one(idp):
+def test_an_abandoned_fetch_publishes_while_a_newer_one_runs(idp):
+    """Fetch 1, given up on, finishes while fetch 2 runs: its keys are newer
+    than the ones in use, so it publishes; fetch 2 overwrites them if it
+    succeeds, and keeps the refresh."""
     v = tv.Validator(idp.config())
     state = v._state[idp.issuer]
     newer = threading.Event()
-    state.refreshing = newer
+    state.refreshing, state.generation = newer, 2
     old = threading.Event()
     v._fetch_jwks(v.config.issuers[idp.issuer], state, time.time(), old, 1)
-    assert old.is_set()
-    # The newer refresh still owns the state; the late result isn't published.
-    assert state.refreshing is newer
-    assert state.keys == {} and state.fetched_at is None
+    assert old.is_set() and state.refreshing is newer
+    assert state.keys and state.published == 1
 
 
 def test_fetch_json_has_a_total_deadline(idp):
@@ -1146,8 +1147,10 @@ def test_unknown_kid_during_backoff_after_a_failed_fetch_is_unavailable(idp):
     now[0] += 10
     with pytest.raises(tv.Unavailable, match="retrying after"):
         check(v, idp.token(kid="rotated"))
-    # Known keys still work meanwhile.
+    # Known keys still work meanwhile, and a token without a kid (not a
+    # rotated key) is checked against the one key known.
     assert check(v, idp.token(client_id=EXEMPT)).kind == "bearer"
+    assert check(v, idp.token(kid=None)).kind == "bearer"
 
 
 def test_a_late_fetch_publishes_when_no_newer_one_started(idp):
@@ -1181,26 +1184,26 @@ def test_a_newer_fetch_publishes_after_the_clock_steps_back(idp):
     state = v._state[idp.issuer]
     stale = {"revoked": object()}
     state.keys = stale
-    now[0] -= 3600  # the clock steps back an hour, then the keys age out
-    state.fetched_at = now[0] + 3600
-    state.attempted_at = None
+    # The clock steps back an hour: the last fetch and attempt look like
+    # they happened in the future. The back-off mustn't hold for the hour.
+    now[0] -= 3600
     check(v, idp.token(client_id=EXEMPT))  # its kid is unknown now
     assert state.keys is not stale and state.published == 2
     assert state.fetched_at == now[0]
 
 
-def test_a_kidless_token_isnt_an_outage_during_the_backoff(idp):
-    """A token without a kid isn't a rotated key: after a failed fetch,
-    it is checked against the one key known, not refused with a 503."""
+def test_a_kidless_token_doesnt_wait_for_a_refresh(idp):
+    """Like a known kid, a kid-less token with the one key known is checked
+    at once while another request refreshes, not after abandoned_after."""
     now = [time.time()]
-    v = tv.Validator(idp.config(), clock=lambda: now[0])
+    v = tv.Validator(idp.config(http_timeout_seconds=5), clock=lambda: now[0])
     check(v, idp.token(client_id=EXEMPT))
-    idp.jwks_status = 503
-    now[0] += 61
-    with pytest.raises(tv.Denied):
-        check(v, idp.token(kid="rotated"))  # the failed refresh
-    now[0] += 10
+    state = v._state[idp.issuer]
+    state.refreshing = threading.Event()  # someone else fetches, slowly
+    state.attempted_at = now[0]
+    start = time.monotonic()
     assert check(v, idp.token(kid=None)).kind == "bearer"
+    assert time.monotonic() - start < 2
 
 
 def test_unknown_kid_right_after_a_failed_fetch_is_unavailable(idp):

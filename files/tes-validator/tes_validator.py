@@ -346,10 +346,10 @@ class _IssuerState:
     # Set while one request fetches the JWKS; others wait on it, without
     # holding the lock (which guards only these fields, never a fetch).
     refreshing: threading.Event | None = None
-    # Fetches are numbered as they start; the keys published come from
-    # fetch number `published`. A late fetch publishes only if it started
-    # after that one: no clock comparison, so a clock step can't block or
-    # roll back a refresh.
+    # Fetches are numbered as they start; `published` is the number of the
+    # one whose keys are in use. A fetch publishes only if its number is
+    # higher: ordered by number, not by clock, so a clock step can't roll
+    # back a refresh (see _after_clock_step for the back-off).
     generation: int = 0
     published: int = 0
 
@@ -496,6 +496,7 @@ class Validator:
         """The issuer's public key for this kid, from its (cached) JWKS."""
         state = self._state[issuer.issuer]
         now = self._clock()
+        self._after_clock_step(state, now)
         key = self._cached_key(state, kid, now)
         if key is None:
             key = self._refreshed_key(issuer, state, kid, now)
@@ -508,6 +509,17 @@ class Validator:
         except jwt.PyJWTError:
             raise Denied("key type does not match the algorithm") from None
         return key
+
+    def _after_clock_step(self, state: _IssuerState, now: float) -> None:
+        """If the clock stepped back past the last fetch or attempt (NTP on a
+        VM that booted in the future), the keys count as stale and the
+        back-off as over: otherwise a rotated key couldn't be fetched, and
+        old keys kept, for as long as the step."""
+        with state.lock:
+            if state.fetched_at is not None and state.fetched_at > now:
+                state.fetched_at = now - self.config.jwks_cache_seconds
+            if state.attempted_at is not None and state.attempted_at > now:
+                state.attempted_at = now - self.config.jwks_min_refresh_seconds
 
     def _cached_key(self, state: _IssuerState, kid: Any, now: float) -> Any:
         """A known key without waiting: fresh, or old while another request
@@ -527,6 +539,11 @@ class Validator:
         """Refetches the JWKS if due and allowed, or waits for the request
         that is fetching it. No lock is held during a fetch."""
         abandoned_after = 2 * self.config.http_timeout_seconds + 1
+
+        def known() -> bool:  # a kid-less token uses the only key, if one
+            return state.keys.get(kid) is not None or (
+                kid is None and len(state.keys) == 1)
+
         with state.lock:
             waiting_for = state.refreshing
             # A fetch that hangs (an issuer trickling bytes) is given up on,
@@ -546,16 +563,17 @@ class Validator:
                        now - state.attempted_at >=
                        self.config.jwks_min_refresh_seconds)
             fetching = (waiting_for is None and may_try and
-                        (state.keys.get(kid) is None or stale))
+                        (not known() or stale))
             if fetching:
                 state.attempted_at = now
                 state.refreshing = done = threading.Event()
                 state.generation += 1
                 generation = state.generation
         if waiting_for is not None:
-            # Another request fetches: its result, or what we have.
-            if not waiting_for.wait(abandoned_after) and \
-                    state.keys.get(kid) is None:
+            # Another request fetches: its result, or what we have. A known
+            # key doesn't wait (kid-less ones get here: _cached_key skips them).
+            if not known() and not waiting_for.wait(abandoned_after) \
+                    and not known():
                 raise Unavailable("JWKS refresh still running")
         elif fetching:
             self._fetch_jwks(issuer, state, now, done, generation)
@@ -601,18 +619,17 @@ class Validator:
             if not state.keys:
                 raise Unavailable(f"JWKS fetch failed: {e}") from None
         else:
-            # Only if no newer refresh started or finished: one given up on
-            # must not overwrite newer keys (a revoked kid would come back),
-            # but may publish its own.
+            # Only if no newer fetch has published: one given up on must not
+            # overwrite newer keys (a revoked kid would come back). A newer
+            # one still running overwrites these when it succeeds.
             with state.lock:
-                if state.refreshing in (done, None) and \
-                        generation > state.published:
+                if generation > state.published:
                     state.keys = keys
                     state.fetched_at = now
                     state.published = generation
                 else:
-                    log.info("JWKS of %s from an abandoned refresh discarded: "
-                             "a newer one started", issuer.issuer)
+                    log.info("JWKS refresh of %s finished after it was given "
+                             "up on; discarded", issuer.issuer)
         finally:
             with state.lock:
                 if state.refreshing is done:
@@ -833,6 +850,7 @@ def _challenge(authorization: str | None) -> str:
     return 'Bearer realm="tes"'
 
 
+# group_vars' tesp_gateway_conn_per_address must stay below this.
 MAX_CONCURRENT_CHECKS = 64
 
 
