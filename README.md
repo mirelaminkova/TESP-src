@@ -35,6 +35,7 @@ What the playbook sets up:
 | Welcome page with your endpoint and credentials | `templates/welcome.html` |
 | Host firewall rule for Pulsar's port | `templates/pulsar-firewall.*.j2`, `playbook.yml`, `group_vars/all.yml` (`pulsar_port`) |
 | Network fence for TES tasks, and Pulsar's uwsgi socket | `templates/task-fence.*.j2`, `templates/pulsar-uwsgi-socket.conf.j2`, `playbook.yml`, `group_vars/all.yml` (`tesp_task_fence_loopback_tcp_ports`, `tesp_pulsar_uwsgi_socket`, `docker_users`); see [Task network fence](#task-network-fence) |
+| PID namespace for TES tasks | `templates/task-prolog.sh.j2`, `playbook.yml`, `group_vars/all.yml` (`slurm_config.TaskProlog`, `tesp_task_prolog_path`); see [Task PID namespace](#task-pid-namespace) |
 
 Secrets are generated at deploy time: a random Pulsar token (only used between `pulsar-proxy` and Pulsar) and a random password for the TES endpoint. The Pulsar token is generated once and kept in `/etc/tesp-api/pulsar_token` (root, 0600), so re-running the playbook keeps it.
 
@@ -325,13 +326,26 @@ Pulsar and slurmd require the unit, so they won't start if the rules can't be ap
 What it doesn't cover:
 
 - With `tesp_container_type: docker`, tasks run in Docker containers as root, not as `pulsar`, so the fence doesn't apply. Use `singularity` (the default).
-- Tasks still share one user, `pulsar`, with each other and with Pulsar. A task can see and stop the files and processes of other tasks, and use what Pulsar can use: its unix socket, its config, and slurmctld (for example `scancel` on other tasks). A task could also stop Pulsar and take over port 8913 itself, and then receive tesp-api's requests to Pulsar. So against a hostile task, the fence protects everything else on the workspace, but not Pulsar and the other tasks. Running tasks as a user other than Pulsar's, and per-user isolation, are separate changes (#47).
+- Tasks still share one user, `pulsar`, with each other and with Pulsar. Each task's own PID namespace (see [Task PID namespace](#task-pid-namespace)) keeps it away from Pulsar's processes, but not from what the tasks share: see the limits there.
 - Only IP traffic is fenced. Unix sockets that the `pulsar` user can open (Pulsar's, munge's) are not.
 - `srun` inside a task doesn't work: slurmd and the job's callbacks are on ports that the fence refuses.
 - Of Docker's networks, only those with the default bridge names (`docker0`, `br-*`) are fenced. Containers on a network with a custom bridge name (`com.docker.network.bridge.name`) are reachable (#49).
 - Other workspaces and services reachable over the network (for example, on a collaboration's private network) are not fenced.
 - The workspace's security group (the catalog item's access rules) still decides which ports are open from outside; the fence only stops tasks from answering on them.
 - The script needs both iptables and ip6tables. On a kernel booted with IPv6 disabled it fails, and Pulsar doesn't start.
+
+## Task PID namespace
+
+Tasks run as the same user as Pulsar (`pulsar`). In the workspace's PID namespace, a task would see Pulsar's processes and could stop them. Where Apptainer runs setuid, a task could also read Pulsar's config through `/proc/<Pulsar's pid>/root`, with its `private_token`, and open Pulsar's unix socket the same way, and so list, cancel or submit Pulsar jobs (issue #47). On the test bed, Apptainer runs in user-namespace mode, which closes that `/proc` path but still lets a task signal Pulsar. With `apptainer-suid` installed, a task read the token.
+
+So every task gets a PID namespace of its own: it sees only its own processes, and Pulsar's `/proc` entries don't exist for it. SLURM's `TaskProlog` (`tesp_task_prolog_path`, `/usr/local/sbin/tesp-task-prolog`) sets `APPTAINER_PID=1` in every job's environment, which is `apptainer exec --pid` for tesp-api's `singularity exec`. This works whichever way Apptainer runs, setuid or user namespace. A task can't turn it off: its environment variables go into the container only.
+
+Limits:
+
+- If the prolog file is missing, slurmd logs `Could not run slurm task_prolog` and runs the task anyway, without a PID namespace. Re-run the playbook, which puts it back.
+- Tasks still share `/tmp` and the Pulsar user's home directory (`/home/pulsar`), both of which Apptainer binds into every container. That includes Apptainer's image cache, so a task can change an image that later tasks run.
+- A task could listen on port 8913 while Pulsar is down (for example, while a redeploy restarts it) and receive tesp-api's requests, which carry the `private_token`.
+- With `tesp_container_type: docker`, the prolog has no effect.
 
 ## Troubleshooting
 

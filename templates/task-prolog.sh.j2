@@ -1,0 +1,21 @@
+#!/bin/sh
+# Managed by Ansible (TESP-src). Do not edit by hand.
+#
+# SLURM TaskProlog (slurm.conf). slurmstepd runs it as the job's user before
+# every task of every job, and puts each "export NAME=value" line it prints
+# into that task's environment.
+#
+# TES tasks run as SLURM jobs of the Pulsar user ({{ pulsar_user.name }}),
+# the same user as Pulsar. In the host's PID namespace a task sees Pulsar's
+# processes and can signal them, and where Apptainer runs setuid it can also
+# read Pulsar's config (its private_token) and open its unix socket through
+# /proc/<pid>/root (issue #47). APPTAINER_PID=1 is `apptainer exec --pid`:
+# tesp-api's `singularity exec` then starts the task's container in a PID
+# namespace of its own, in setuid and user-namespace mode alike. The task
+# can't change it: its own environment variables reach the container only
+# (tesp-api passes them as APPTAINERENV_*).
+#
+# If this file is missing, slurmd logs an error and runs the task anyway,
+# without a PID namespace. The playbook installs it before slurm.conf names
+# it, and puts it back on every run.
+echo export APPTAINER_PID=1

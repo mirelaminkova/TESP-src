@@ -16,6 +16,16 @@
 
 - name: Install pre-requisites (SLURM, DRMAA, time sync)
   hosts: "{{ lookup('env', 'variable_host') | default('localhost', true) }}" # workaround because SRC needs localhost, but molecule needs specifc hostvars
+  # slurm.conf names it as TaskProlog (group_vars/all.yml). Installed first:
+  # slurmd runs a task without it, outside a PID namespace, if it's missing.
+  pre_tasks:
+    - name: Install the task prolog (PID namespace for tasks)
+      ansible.builtin.template:
+        src: templates/task-prolog.sh.j2
+        dest: "{{ tesp_task_prolog_path }}"
+        owner: root
+        group: root
+        mode: '0755'
   roles:
     - galaxyproject.repos
     - galaxyproject.slurm

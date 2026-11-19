@@ -69,6 +69,7 @@
             - pulsar-firewall.service.j2
             - task-fence.sh.j2
             - task-fence.service.j2
+            - task-prolog.sh.j2
             - pulsar-uwsgi-socket.conf.j2
             - tesp-api/docker-compose.yml.j2
             - tesp-api/pulsar-token-proxy.conf.j2
@@ -86,6 +87,7 @@
             - pulsar-firewall.sh
             - task-fence.sh
             - task-fence.service
+            - task-prolog.sh
             - pulsar-uwsgi-socket.conf
             - pulsar-token-proxy.conf
             - settings.toml
@@ -1137,6 +1139,54 @@
               - "'After=ufw.service netfilter-persistent.service' in files['task-fence.service']"
               - "'for ipt in iptables ip6tables' in files['task-fence.sh']"
               - "'ExecStart=/usr/local/sbin/tesp-task-fence' in files['task-fence.service']"
+
+        # Issue #47. Tasks run as the Pulsar user: without a PID namespace a
+        # task sees Pulsar's processes, can signal them, and in Apptainer's
+        # setuid mode reads Pulsar's config (private_token) and reaches its
+        # unix socket through /proc/<pid>/root (shown on the test bed).
+        - name: SLURM's TaskProlog gives every task its own PID namespace
+          ansible.builtin.assert:
+            that:
+              - slurm_config.TaskProlog == tesp_task_prolog_path
+              - tesp_task_prolog_path == '/usr/local/sbin/tesp-task-prolog'
+          vars:
+            ansible_facts:
+              processor_vcpus: 8
+              processor_nproc: 8
+              memtotal_mb: 16000
+
+        - name: The TaskProlog is a sh script
+          ansible.builtin.assert:
+            that:
+              - files['task-prolog.sh'] is match('#!/bin/sh\n')
+
+        - name: Run the TaskProlog
+          ansible.builtin.command: sh {{ out.path }}/task-prolog.sh
+          register: tesp_test_prolog
+          changed_when: false
+
+        # slurmstepd reads "export NAME=value" lines; anything else it ignores
+        # or logs, so the output must be exactly this.
+        - name: The TaskProlog exports APPTAINER_PID=1 and nothing else
+          ansible.builtin.assert:
+            that:
+              - tesp_test_prolog.stdout_lines == ['export APPTAINER_PID=1']
+              - tesp_test_prolog.stderr == ''
+
+        # slurmd runs the TaskProlog named in slurm.conf; a missing file only
+        # logs an error and the task runs without a PID namespace. So the file
+        # goes in before galaxyproject.slurm writes slurm.conf.
+        - name: The TaskProlog is installed before SLURM is configured
+          vars:
+            prereq: "{{ plays | selectattr('name', 'eq', 'Install pre-requisites (SLURM, DRMAA, time sync)') | first }}"
+            install: "{{ prereq.pre_tasks | default([]) | selectattr('name', 'eq', 'Install the task prolog (PID namespace for tasks)') | list }}"
+          ansible.builtin.assert:
+            that:
+              - "'galaxyproject.slurm' in prereq.roles"
+              - install | length == 1
+              - install[0]['ansible.builtin.template'].src == 'templates/task-prolog.sh.j2'
+              - install[0]['ansible.builtin.template'].dest is search('[{][{] *tesp_task_prolog_path *[}][}]')
+              - install[0]['ansible.builtin.template'].mode == '0755'
 
         # Without a socket, uwsgi's HTTP router reaches its worker over TCP on
         # loopback, which the fence blocks for the Pulsar user: Pulsar answers
