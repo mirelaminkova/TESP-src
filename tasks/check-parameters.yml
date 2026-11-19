@@ -155,9 +155,9 @@
 - name: Validate the stack subnet (src_tes_stack_subnet)
   vars:
     octet: '(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
-    # /16 to /28: room for the stack's containers, and not half the
-    # private ranges.
-    subnet_re: '({{ octet }}\.){3}{{ octet }}/(1[6-9]|2[0-8])\Z'
+    # /16 to /27: halves of at least /28 leave room for the stack's
+    # containers; not half the private ranges.
+    subnet_re: '({{ octet }}\.){3}{{ octet }}/(1[6-9]|2[0-7])\Z'
     octets: "{{ tesp_stack_subnet.split('/')[0].split('.') | map('int') | list }}"
     host_bits: "{{ 32 - tesp_stack_subnet.split('/')[1] | int }}"
     address: >-
@@ -175,7 +175,7 @@
              or (octets[0] == 100 and octets[1] in range(64, 128)))
     fail_msg: >-
       Invalid stack subnet. src_tes_stack_subnet must be an IPv4 network
-      address with a prefix from /16 to /28, such as 172.16.97.0/24 (not a
+      address with a prefix from /16 to /27, such as 172.16.97.0/24 (not a
       host address such as 172.16.97.1/24), in a private range (10.0.0.0/8,
       172.16.0.0/12, 192.168.0.0/16, or 100.64.0.0/10): traffic from the
       workspace to a public address in it would go to the bridge. See "Who

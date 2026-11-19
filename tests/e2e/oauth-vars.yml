@@ -10,10 +10,10 @@ tesp_oauth_issuers:
     exempt_audiences: [tes]
     entitlements:
       any_of: ["urn:e2e:group:ECP_CLN"]
-# The runner reaches the gateway's published port from the stack network's
-# gateway address, as the host nginx does, so Basic is allowed from there;
+# The runner reaches the gateway's published port from a stack network's
+# bridge address, as the host nginx does, so Basic is allowed from there;
 # check-oauth.sh sends X-Real-IP to be elsewhere.
-tesp_basic_auth_sources: ["{{ tesp_stack_gateway }}"]
+tesp_basic_auth_sources: ["{{ tesp_stack_gateway }}", "{{ tesp_stack_auth_gateway }}"]
 # Never rate-limited; check-oauth.sh claims it with X-Real-IP (issue #44).
 tesp_rate_exempt_sources: [198.51.100.7]
 # A browser portal such as Krini.

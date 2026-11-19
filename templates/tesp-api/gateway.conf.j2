@@ -185,7 +185,7 @@ server {
 
     # The client's address, as the host nginx saw it: it sets X-Real-IP to
     # $remote_addr (SRC's reverse-proxy role). Only connections from the
-    # stack network's gateway address, where the host's connections to the
+    # stack networks' bridge addresses, where the host's connections to the
     # published (127.0.0.1-only) port arrive from, may set it; other
     # containers connect from their own addresses (issue #44).
 {% for proxy in tesp_gateway_trusted_proxies %}

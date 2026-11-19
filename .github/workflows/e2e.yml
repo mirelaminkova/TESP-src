@@ -84,19 +84,23 @@ jobs:
         run: |
           out=$(python3 files/check_stack_subnet.py 172.16.97.0/24 tesp-api)
           echo "$out"
-          test "$out" = '{"own_subnet": null}'
+          test "$out" = '{"own_subnets": {}}'
 
       - name: start the stack
         working-directory: ${{ env.E2E_DIR }}/tesp-api
         run: docker compose up -d --build
 
-      - name: the stack's own network passes the subnet check; others don't
+      - name: the stack's own networks pass the subnet check; others don't
         run: |
-          docker network inspect -f '{{range .IPAM.Config}}{{.Subnet}} {{.Gateway}}{{end}}' tesp-api_default
           out=$(python3 files/check_stack_subnet.py 172.16.97.0/24 tesp-api)
           echo "$out"
-          test "$out" = '{"own_subnet": "172.16.97.0/24"}'
-          # As another project, the stack's network is a conflict; so is
+          if [ "${{ matrix.auth }}" = oauth ]; then
+            want='{"own_subnets": {"auth": "172.16.97.128/25", "default": "172.16.97.0/25"}}'
+          else
+            want='{"own_subnets": {"default": "172.16.97.0/25"}}'
+          fi
+          test "$(echo "$out" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin), sort_keys=True))')" = "$want"
+          # As another project, the stack's networks are a conflict; so is
           # Docker's default bridge.
           ! python3 files/check_stack_subnet.py 172.16.97.0/24 other-project
           ! python3 files/check_stack_subnet.py 172.17.0.0/24 tesp-api

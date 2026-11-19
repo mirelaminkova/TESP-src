@@ -260,9 +260,9 @@
       - why: a stack subnet wider than /16
         expect: Invalid stack subnet
         vars: {src_tes_stack_subnet: 172.16.0.0/12}
-      - why: a stack subnet narrower than /28
+      - why: a stack subnet narrower than /27 (two networks of /28)
         expect: Invalid stack subnet
-        vars: {src_tes_stack_subnet: 172.16.97.0/29}
+        vars: {src_tes_stack_subnet: 172.16.97.0/28}
       - why: a stack subnet with an octet over 255
         expect: Invalid stack subnet
         vars: {src_tes_stack_subnet: 172.16.300.0/24}
@@ -314,12 +314,15 @@
       vars:
         tesp_oauth_http_timeout_seconds: 20
 
-    - name: The default stack subnet; its gateway alone may set X-Real-IP
+    - name: The default stack subnet; its two bridge addresses alone may set X-Real-IP
       ansible.builtin.assert:
         that:
           - tesp_stack_subnet == '172.16.97.0/24'
+          - tesp_stack_default_subnet == '172.16.97.0/25'
           - tesp_stack_gateway == '172.16.97.1'
-          - tesp_gateway_trusted_proxies == ['172.16.97.1/32']
+          - tesp_stack_auth_subnet == '172.16.97.128/25'
+          - tesp_stack_auth_gateway == '172.16.97.129'
+          - tesp_gateway_trusted_proxies == ['172.16.97.1/32', '172.16.97.129/32']
 
     - name: A stack subnet from the component parameter passes the checks
       ansible.builtin.include_tasks: ../tasks/check-parameters.yml
@@ -330,8 +333,11 @@
       ansible.builtin.assert:
         that:
           - tesp_stack_subnet == '10.213.16.0/20'
+          - tesp_stack_default_subnet == '10.213.16.0/21'
           - tesp_stack_gateway == '10.213.16.1'
-          - tesp_gateway_trusted_proxies == ['10.213.16.1/32']
+          - tesp_stack_auth_subnet == '10.213.24.0/21'
+          - tesp_stack_auth_gateway == '10.213.24.1'
+          - tesp_gateway_trusted_proxies == ['10.213.16.1/32', '10.213.24.1/32']
       vars:
         src_tes_stack_subnet: ' 10.213.16.0/20 '
 
@@ -339,7 +345,7 @@
       ansible.builtin.include_tasks: ../tasks/check-parameters.yml
       vars:
         src_tes_stack_subnet: "{{ item }}"
-      loop: [192.168.250.240/28, 10.200.0.0/16, 100.127.0.0/16, 172.31.255.0/24]
+      loop: [192.168.250.224/27, 10.200.0.0/16, 100.127.0.0/16, 172.31.255.0/24]
 
     - name: SRC component parameters reach the service info
       ansible.builtin.assert:

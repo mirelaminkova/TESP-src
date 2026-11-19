@@ -5,13 +5,13 @@
 The playbook runs it before `docker compose up`. SUBNET (tesp_stack_subnet)
 must not overlap another Docker network or a route of the host: Docker would
 refuse to create the network, or traffic to that range would go to the wrong
-place. The stack's own network (Compose project PROJECT, network "default",
-found by its labels) and its bridge's routes are left out, so a redeploy
-passes.
+place. The stack's own networks (those of Compose project PROJECT, found by
+their labels) and their bridges' routes are left out, so a redeploy passes.
 
-Exits 0 if the subnet is free and prints, as JSON, the own network's current
-subnet ({"own_subnet": "172.18.0.0/16"}, or null if there is none yet), so the
-playbook can recreate a network an earlier version left with another subnet.
+Exits 0 if the subnet is free and prints, as JSON, the own networks' current
+subnets by Compose network name ({"own_subnets": {"default":
+"172.18.0.0/16"}}, empty if there are none yet), so the playbook can recreate
+networks an earlier version left on other subnets.
 Exits 1 with the conflicts (or a failed command) on stderr, 2 on bad
 arguments.
 """
@@ -40,9 +40,8 @@ def _subnets(net: dict) -> list:
 
 
 def is_own(net: dict, project: str) -> bool:
-    """Whether net is the Compose project's default network."""
-    labels = net.get("Labels") or {}
-    return labels.get(PROJECT_LABEL) == project and labels.get(NETWORK_LABEL) == "default"
+    """Whether net is one of the Compose project's networks."""
+    return (net.get("Labels") or {}).get(PROJECT_LABEL) == project
 
 
 def conflicts(subnet: str, networks: list, routes: list, project: str) -> list:
@@ -75,13 +74,16 @@ def conflicts(subnet: str, networks: list, routes: list, project: str) -> list:
     return found
 
 
-def own_subnet(networks: list, project: str):
-    """The stack's own network's subnet, or None."""
+def own_subnets(networks: list, project: str) -> dict:
+    """The stack's own networks' (first) subnets, by Compose network name."""
+    found = {}
     for net in networks:
         if is_own(net, project):
             subnets = _subnets(net)
-            return subnets[0] if subnets else None
-    return None
+            found[net["Labels"].get(NETWORK_LABEL, net.get("Name"))] = (
+                subnets[0] if subnets else None
+            )
+    return found
 
 
 def _run(*cmd: str) -> str:
@@ -130,7 +132,7 @@ def main(argv: list) -> int:
             file=sys.stderr,
         )
         return 1
-    print(json.dumps({"own_subnet": own_subnet(networks, project)}))
+    print(json.dumps({"own_subnets": own_subnets(networks, project)}))
     return 0
 
 

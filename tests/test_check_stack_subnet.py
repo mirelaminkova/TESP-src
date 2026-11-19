@@ -20,13 +20,15 @@ import check_stack_subnet as css  # noqa: E402
 PROJECT = "tesp-api"
 
 
-def network(name, subnets, net_id="0123456789abcdef", bridge_name=None, project=None):
+def network(
+    name, subnets, net_id="0123456789abcdef", bridge_name=None, project=None, compose_net="default"
+):
     options = {}
     if bridge_name:
         options["com.docker.network.bridge.name"] = bridge_name
     labels = {}
     if project:
-        labels = {"com.docker.compose.project": project, "com.docker.compose.network": "default"}
+        labels = {"com.docker.compose.project": project, "com.docker.compose.network": compose_net}
     return {
         "Name": name,
         "Id": net_id,
@@ -72,16 +74,15 @@ def test_the_stacks_own_network_and_its_route_are_ignored():
     assert css.conflicts("172.16.97.0/24", [own], routes, PROJECT) == []
 
 
-def test_the_own_network_is_found_by_its_labels_not_its_name():
-    # Another project's network with the same name still counts.
-    own = network("x", ["172.16.97.0/24"], bridge_name="tesp0", project=PROJECT)
+def test_the_own_networks_are_found_by_their_labels_not_their_names():
+    # Another project's network with the stack's name still counts; the
+    # stack's auth network doesn't.
+    own = network("x", ["172.16.97.0/25"], bridge_name="tesp0", project=PROJECT)
+    auth = network("y", ["172.16.97.128/25"], bridge_name="tesp1", project=PROJECT, compose_net="auth")
     lookalike = network("tesp-api_default", ["172.16.97.0/24"], project="other")
-    other_net = network("y", ["172.16.97.0/24"], project=PROJECT)
-    other_net["Labels"]["com.docker.compose.network"] = "auth"
-    routes = [{"dst": "172.16.97.0/24", "dev": "tesp0"}]
-    assert css.conflicts("172.16.97.0/24", [own, lookalike, other_net], routes, PROJECT) == [
+    routes = [{"dst": "172.16.97.0/25", "dev": "tesp0"}, {"dst": "172.16.97.128/25", "dev": "tesp1"}]
+    assert css.conflicts("172.16.97.0/24", [own, auth, lookalike], routes, PROJECT) == [
         "Docker network tesp-api_default (172.16.97.0/24)",
-        "Docker network y (172.16.97.0/24)",
     ]
 
 
@@ -123,11 +124,16 @@ def test_networks_without_ipam_config_are_ignored():
     assert css.conflicts("172.16.97.0/24", networks, [], PROJECT) == []
 
 
-def test_own_subnet():
+def test_own_subnets():
     own = network("tesp-api_default", ["172.18.0.0/16"], project=PROJECT)
-    assert css.own_subnet([network("a", ["10.0.0.0/8"]), own], PROJECT) == "172.18.0.0/16"
-    assert css.own_subnet([network("a", ["10.0.0.0/8"])], PROJECT) is None
-    assert css.own_subnet([network("tesp-api_default", [], project=PROJECT)], PROJECT) is None
+    auth = network("tesp-api_auth", ["172.19.0.0/16"], project=PROJECT, compose_net="auth")
+    empty = network("tesp-api_x", [], project=PROJECT, compose_net="x")
+    assert css.own_subnets([network("a", ["10.0.0.0/8"]), own, auth, empty], PROJECT) == {
+        "default": "172.18.0.0/16",
+        "auth": "172.19.0.0/16",
+        "x": None,
+    }
+    assert css.own_subnets([network("a", ["10.0.0.0/8"])], PROJECT) == {}
 
 
 def fake_run(networks, routes, missing=()):
@@ -164,21 +170,21 @@ def test_main_reports_conflicts_and_fails(monkeypatch, capsys):
     assert ["ip", "-j", "-4", "route", "show"] in calls
 
 
-def test_main_prints_the_own_networks_old_subnet(monkeypatch, capsys):
+def test_main_prints_the_own_networks_old_subnets(monkeypatch, capsys):
     # Left by an earlier version with Docker's choice; a network removed
     # between ls and inspect is skipped.
     own = network("tesp-api_default", ["172.18.0.0/16"], net_id="bbb", project=PROJECT)
     run, _ = fake_run([own], ROUTES, missing=["gone"])
     monkeypatch.setattr(css.subprocess, "run", run)
     assert css.main(["172.16.97.0/24", PROJECT]) == 0
-    assert json.loads(capsys.readouterr().out) == {"own_subnet": "172.18.0.0/16"}
+    assert json.loads(capsys.readouterr().out) == {"own_subnets": {"default": "172.18.0.0/16"}}
 
 
 def test_main_with_no_networks_and_a_free_subnet(monkeypatch, capsys):
     run, calls = fake_run([], ROUTES)
     monkeypatch.setattr(css.subprocess, "run", run)
     assert css.main(["172.16.97.0/24", PROJECT]) == 0
-    assert json.loads(capsys.readouterr().out) == {"own_subnet": None}
+    assert json.loads(capsys.readouterr().out) == {"own_subnets": {}}
     assert not [c for c in calls if c[:3] == ["docker", "network", "inspect"]]
 
 

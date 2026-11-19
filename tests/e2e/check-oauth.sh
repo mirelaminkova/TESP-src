@@ -213,7 +213,7 @@ else
 fi
 sleep 3
 
-# Issue #44: only the stack network's gateway address, where the host's
+# Issue #44: only the stack networks' bridge addresses, where the host's
 # connections to the published port arrive from, may set X-Real-IP. From
 # inside the stack's network (here tesp-api's container), a claimed address
 # must not get Basic from a Basic source, escape the rate limit by changing
