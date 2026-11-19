@@ -433,6 +433,11 @@ tesp_native_spec_ram_gb: "--mem={ram_mib}"
 # cgroups manager for these flags and fails the task without one.
 tesp_container_resource_limits: auto
 
+# Task network fence (templates/task-fence.sh.j2, issue #45). Off (false)
+# only in a workspace where every user who can submit tasks may also reach
+# everything on it: the playbook then takes the rules and the unit away
+# (issue #48; see "Turning the fence off" in the README).
+tesp_task_fence_enabled: true
 # Task network fence (templates/task-fence.sh.j2, issue #45): TCP ports on
 # this host (any of its addresses: that traffic goes over lo) that the Pulsar
 # user may still connect to, besides DNS. Pulsar

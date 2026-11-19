@@ -1204,6 +1204,39 @@
               - prereq.post_tasks[2].when is search('tesp_slurm_live_config.stdout is not search')
               - prereq.post_tasks[2].when is search('not ansible_check_mode')
 
+        # Issue #48: tesp_task_fence_enabled. On: the unit and the rules, as
+        # before. Off: disable first (that drops the RequiredBy links, so
+        # stopping the unit then leaves Pulsar and slurmd running), stop,
+        # remove the unit, and last take the rules off, so a run that stops
+        # part-way leaves the fence in force.
+        - name: The task fence switch picks the right tasks, in order
+          vars:
+            main: "{{ plays | selectattr('name', 'eq', 'Install TESP (GA4GH TES API backed by Pulsar)') | first }}"
+            on_block: "{{ main.post_tasks | selectattr('name', 'eq', 'Put the task network fence in force') | list }}"
+            off_block: "{{ main.post_tasks | selectattr('name', 'eq', 'Take the task network fence off') | list }}"
+            off_names: "{{ off_block[0].block | map(attribute='name') | list }}"
+            script: "{{ main.post_tasks | selectattr('name', 'eq', 'Install the task network fence script') | list }}"
+          ansible.builtin.assert:
+            that:
+              - script | length == 1
+              - script[0].when is not defined
+              - on_block | length == 1
+              - on_block[0].when == 'tesp_task_fence_enabled | bool'
+              - off_block | length == 1
+              - off_block[0].when == 'not (tesp_task_fence_enabled | bool)'
+              - off_names == ['Look for the task network fence unit',
+                              'Disable the task network fence unit',
+                              'Stop the task network fence unit',
+                              'Remove the task network fence unit',
+                              'Reload systemd without the task network fence unit',
+                              'Remove the task network fence rules']
+              - off_block[0].block[1]['ansible.builtin.systemd_service'].enabled is sameas false
+              - off_block[0].block[2]['ansible.builtin.systemd_service'].state == 'stopped'
+              - off_block[0].block[5]['ansible.builtin.command'] == '/usr/local/sbin/tesp-task-fence --remove'
+              - "'Apply the task network fence' in (on_block[0].block | map(attribute='name'))"
+              - "'Take the Pulsar user out of the docker group' in (main.post_tasks | map(attribute='name'))"
+              - "'--remove) remove=1' in files['task-fence.sh']"
+
         # Without a socket, uwsgi's HTTP router reaches its worker over TCP on
         # loopback, which the fence blocks for the Pulsar user: Pulsar answers
         # 502 to every request (found on the test bed).
@@ -1284,7 +1317,7 @@
             post_task_names: >-
               |{{ tesp_play.post_tasks | map(attribute='name') | join('|') }}|
             fence_then_stack: >-
-              \|Enable and start the task network fence\|.*\|Build and start the TESP-API stack\|
+              \|Put the task network fence in force\|.*\|Build and start the TESP-API stack\|
             pulsar_role_in_roles: >-
               {{ tesp_play.roles | select('mapping')
                  | selectattr('role', 'eq', 'galaxyproject.pulsar') | list | length == 1 }}

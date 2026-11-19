@@ -40,6 +40,7 @@
         tesp_oauth_http_timeout_seconds: "{{ case.vars.tesp_oauth_http_timeout_seconds | default(10) }}"
         tesp_oauth_audit_tag_keys: "{{ case.vars.tesp_oauth_audit_tag_keys | default([]) }}"
         tesp_oauth_ca_bundle: "{{ case.vars.tesp_oauth_ca_bundle | default('') }}"
+        tesp_task_fence_enabled: "{{ case.vars.tesp_task_fence_enabled | default(true) }}"
 
     - name: The checks should have failed
       ansible.builtin.fail:

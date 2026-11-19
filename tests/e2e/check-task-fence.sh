@@ -234,5 +234,39 @@ expect "after replacing it: task -/-> loopback 8080" refused tcp 127.0.0.1 8080 
 calls=$(sh -x "$fence" 2>&1 | grep -cE '^\+ ip6?tables -w -[ID] OUTPUT' || true)
 if [ "$calls" = 0 ]; then pass "a run with nothing to do touches no OUTPUT rule"; else fail "a run with nothing to do made $calls -I/-D calls"; fi
 
+# ---- Removal (--remove, tesp_task_fence_enabled: false; issue #48) ---------
+# Another jump to the chain further down, and a stale one for another uid:
+# --remove takes every jump, then the chain, in both families.
+for t in iptables ip6tables; do
+    "$t" -A OUTPUT -o lo -j ACCEPT
+    "$t" -A OUTPUT -m owner --uid-owner 4242 -j TESP-TASKS
+done
+out=$(sh "$fence" --remove 2>&1) || fail "--remove exited non-zero: $out"
+if [ "$out" = changed ]; then pass "--remove reports: changed"; else fail "--remove printed: $out"; fi
+for t in iptables ip6tables; do
+    if "$t" -S TESP-TASKS >/dev/null 2>&1; then fail "$t: chain TESP-TASKS still there"; else pass "$t: chain TESP-TASKS gone"; fi
+    n=$("$t" -S OUTPUT | grep -c -- 'TESP-TASKS' || true)
+    if [ "$n" = 0 ]; then pass "$t: no jump left in OUTPUT"; else fail "$t: $n jump(s) left in OUTPUT"; fi
+    if "$t" -S OUTPUT | grep -qx -- '-A OUTPUT -o lo -j ACCEPT'; then pass "$t: other OUTPUT rules kept"; else fail "$t: other OUTPUT rules lost"; fi
+done
+expect "after --remove: task -> loopback 8080" open tcp 127.0.0.1 8080 "$task_user"
+expect "after --remove: task -> [::1]:8080" open tcp ::1 8080 "$task_user"
+out=$(sh "$fence" --remove 2>&1) || fail "--remove exited non-zero: $out"
+if [ -z "$out" ]; then pass "a second --remove changes nothing"; else fail "a second --remove printed: $out"; fi
+# Only the chain, with no jump (an earlier --remove that stopped part-way).
+iptables -N TESP-TASKS; iptables -A TESP-TASKS -j RETURN
+out=$(sh "$fence" --remove 2>&1) || fail "--remove exited non-zero: $out"
+if [ "$out" = changed ] && ! iptables -S TESP-TASKS >/dev/null 2>&1; then pass "--remove takes a chain left without a jump"; else fail "--remove with only the chain: printed '$out', chain $(iptables -S TESP-TASKS >/dev/null 2>&1 && echo kept || echo gone)"; fi
+# --remove doesn't need the task user (it may be gone).
+if out=$(sh "$fence" --remove 2>&1) && [ -z "$out" ]; then pass "--remove with nothing to do exits 0, silent"; else fail "--remove with nothing to do: $out"; fi
+for t in iptables ip6tables; do "$t" -D OUTPUT -o lo -j ACCEPT; done
+# Turned on again, the fence is whole.
+out=$(sh "$fence")
+if [ "$out" = changed ]; then pass "a run after --remove reports: changed"; else fail "a run after --remove printed: $out"; fi
+expect "on again: task -/-> loopback 8080" refused tcp 127.0.0.1 8080 "$task_user"
+expect "on again: task -/-> [::1]:8080" refused tcp ::1 8080 "$task_user"
+# An unknown argument is an error, not a run that applies (or removes) rules.
+if sh "$fence" --bogus >/dev/null 2>&1; then fail "an unknown argument was accepted"; else pass "an unknown argument is refused"; fi
+
 echo
 if [ "$fails" = 0 ]; then echo "task fence: all checks passed"; else echo "task fence: $fails check(s) failed"; exit 1; fi

@@ -58,6 +58,17 @@
       tesp_max_wait_seconds must be a whole number of seconds, 0 for no
       limit. See "Long tasks" in the README.
 
+# Issue #48: | bool turns any other string into false, so a typo would
+# switch the fence off.
+- name: Validate tesp_task_fence_enabled
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - tesp_task_fence_enabled | string | lower in ['true', 'false']
+    fail_msg: >-
+      tesp_task_fence_enabled must be true or false. See "Task network
+      fence" in the README.
+
 # Issue #25: what the gateway serves at /v1/service-info. The ELIXIR Cloud
 # Registry accepts only https URLs; register only test or prod there.
 - name: Validate the service info (src_tes_*, tesp_service_info_*)
