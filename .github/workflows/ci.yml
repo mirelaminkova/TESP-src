@@ -49,8 +49,16 @@ jobs:
       - name: push-stage hooks (ast-grep, semgrep)
         run: pre-commit run --all-files --hook-stage pre-push
 
-  unit:
+  unit-matrix:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 2.16.20: what the SRC catalog item's plugin installs (ansible 9.1.0,
+        # ansible-core ~=2.16.1), the oldest we support. 2.18.1: SRC's newer
+        # plugin version. 2.21.5: as in .pre-commit-config.yaml.
+        ansible-core: ["2.16.20", "2.18.1", "2.21.5"]
+    name: unit (ansible-core ${{ matrix.ansible-core }})
     steps:
       - name: check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -63,15 +71,26 @@ jobs:
           python-version: "3.12"
 
       - name: install ansible-core
-        # Same version as the local hooks in .pre-commit-config.yaml.
-        run: pip install "ansible-core==2.21.5"
+        run: pip install "ansible-core==${{ matrix.ansible-core }}"
 
       - name: run unit tests
         run: tests/run.sh
 
-  # Issue #31: SRC's ansible-core (2.16; see "Roles and collections" in the
-  # README; 2.16.20 is the last 2.16 release). The unit tests run there too,
-  # and the collections pinned in requirements.yml must support it.
+  # The check branch protection can require: one name for every
+  # ansible-core version above.
+  unit:
+    needs: unit-matrix
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: all unit jobs passed
+        env:
+          RESULT: ${{ needs.unit-matrix.result }}
+        run: test "$RESULT" = success
+
+  # Issue #31: the collections pinned in requirements.yml must support SRC's
+  # ansible-core (2.16; see "Roles and collections" in the README; 2.16.20
+  # is the last 2.16 release). The unit tests run on it in unit-matrix.
   src-ansible-core:
     runs-on: ubuntu-latest
     steps:
@@ -87,9 +106,6 @@ jobs:
 
       - name: install ansible-core
         run: pip install "ansible-core==2.16.20"
-
-      - name: run unit tests
-        run: tests/run.sh
 
       - name: pinned collections support this ansible-core
         run: tests/check-collections.sh

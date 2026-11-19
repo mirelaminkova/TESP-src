@@ -8,7 +8,8 @@ nginx_reverse_proxy_locations:
     try_files: $uri/index.html =404
   - name: tes
     location: /tes/
-    proxy_pass: "http://127.0.0.1:8080/"
+    # The gateway container, which fronts tesp-api (templates/tesp-api/).
+    proxy_pass: "http://127.0.0.1:{{ tesp_api_port }}/"
     auth: noauth
 # Pulsar is not published through nginx: only tesp-api talks to it, via the
 # token-injecting pulsar-proxy sidecar (templates/tesp-api/).
@@ -153,7 +154,9 @@ tesp_api_repo: "https://github.com/mirelaminkova/tesp-api.git"
 # https://github.com/mirelaminkova/tesp-api/actions/runs/40359853249
 tesp_api_version: "c3a9f2376df7a634ad6c33959800d169219b7560"
 tesp_install_dir: /srv/tesp-api
-tesp_api_port: 8080          # host-localhost port; must match the /tes/ nginx proxy_pass above
+# Host-localhost port of the gateway container (the /tes/ nginx proxy_pass
+# above). Named after tesp-api, which had this port before the gateway.
+tesp_api_port: 8080
 tesp_root_path: /tes         # public URL prefix (also passed to uvicorn --root-path)
 tesp_container_type: singularity  # docker | singularity -- how tesp-api wraps TES task containers.
                                   # NOTE: "both" is broken upstream (emits `singularity exec` but
@@ -161,6 +164,53 @@ tesp_container_type: singularity  # docker | singularity -- how tesp-api wraps T
                                   # apptainer/SLURM node so images resolve as docker://<image>.
 tesp_network_mtu: 1442       # SURF Research Cloud requires a lower MTU
 tesp_basic_auth_user: tes
+# Image of the gateway and pulsar-proxy containers. Bump deliberately:
+#   docker buildx imagetools inspect nginx:<version>-alpine
+tesp_nginx_image: "nginx:1.30.5-alpine@sha256:0985e772fb9f729e6fa0980da05fca5d9c468e870eed43071545afa9d2e27d94"
+# TES gateway (issue #25): an nginx container in the tesp-api stack between
+# the host nginx and tesp-api. It serves /v1/service-info itself and proxies
+# everything else to tesp-api, which has no host port. Its files live outside
+# tesp_install_dir, the image build context.
+tesp_gateway_dir: /etc/tesp-gateway
+
+# GA4GH service-info served at /tes/v1/service-info (see "Service info" in the
+# README). tesp-api's own answer is hard-coded for another provider (Masaryk
+# University, environment dev). Set from the optional src_tes_* component
+# parameters; blank counts as unset.
+# Reverse domain name of the workspace, e.g. nl.surf-hosted.src.<ws>.tes.
+# tasks/check-parameters.yml requires workspace_fqdn to be a domain name.
+tesp_service_info_id: >-
+  {{ (workspace_fqdn | default('') | lower).split('.') | reverse
+     | join('.') }}.tes
+tesp_service_info_name: >-
+  {{ src_tes_service_name | default('') | trim
+     | default('TESP on SURF Research Cloud', true) }}
+tesp_service_info_description: >-
+  GA4GH Task Execution Service on a SURF Research Cloud workspace: TESP-API
+  with Pulsar and SLURM.
+tesp_service_info_organization_name: >-
+  {{ src_tes_organization_name | default('') | trim | default('SURF', true) }}
+tesp_service_info_organization_url: >-
+  {{ src_tes_organization_url | default('') | trim
+     | default('https://www.surf.nl/', true) }}
+# test | prod: what the ELIXIR Cloud Registry accepts (see the README).
+tesp_service_info_environment: >-
+  {{ src_tes_environment | default('') | trim | default('test', true) }}
+tesp_service_info_contact_url: >-
+  {{ src_tes_contact_url | default('') | trim
+     | default('https://github.com/mirelaminkova/TESP-src/issues', true) }}
+tesp_service_info_documentation_url: "https://github.com/mirelaminkova/TESP-src#readme"
+# The TES version tesp-api implements and reports itself.
+tesp_service_info_tes_version: "1.0.0"
+tesp_service_info_version: "tesp-api-{{ tesp_api_version[:7] }}"
+# RFC 3339 UTC times, or '' to leave the field out. createdAt is the first
+# deploy (playbook.yml keeps it from the existing service-info.json);
+# updatedAt is left out, so redeploys don't change the file.
+tesp_service_info_created_at: "{{ tesp_first_deploy_time | default('') }}"
+tesp_service_info_updated_at: ""
+# RFC 3339 UTC, as the timestamps above.
+tesp_time_re: '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z'
+
 # Longest a TES task's Pulsar job may queue and run, in whole seconds. Past it
 # tesp-api cancels the job and the task ends in SYSTEM_ERROR. 0 = no limit:
 # tesp-api waits until the job finishes. See "Long tasks" in the README.

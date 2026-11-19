@@ -1,0 +1,65 @@
+---
+# Renders the tesp-api stack the way playbook.yml does, into a scratch
+# directory, for .github/workflows/e2e.yml (issue #25). Pulsar is not set up:
+# the checks only need tesp-api, MongoDB and the gateway.
+#
+#   ansible-playbook -i localhost, -c local tests/e2e/render-stack.yml \
+#     -e e2e_dir=/tmp/e2e
+#
+# The TES password comes from $E2E_TES_PASSWORD, a throwaway test value.
+- name: Render the tesp-api stack for the end-to-end test
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../../group_vars/all.yml
+  vars:
+    workspace_fqdn: tesp.example.src.surf-hosted.nl
+    templates_dir: "{{ playbook_dir }}/../../templates/tesp-api"
+  tasks:
+    # Facts, because group_vars/all.yml (vars_files) beats play vars.
+    - name: Set paths, test secrets and the deploy time
+      ansible.builtin.set_fact:
+        tesp_install_dir: "{{ e2e_dir }}/tesp-api"
+        tesp_secrets_dir: "{{ e2e_dir }}/secrets"
+        tesp_gateway_dir: "{{ e2e_dir }}/gateway"
+        pulsar_token: e2e-pulsar-token
+        tesp_basic_auth_password: "{{ lookup('env', 'E2E_TES_PASSWORD') }}"
+        tesp_first_deploy_time: "2026-11-18T09:30:00Z"
+        # Set by playbook.yml from the proxy config (#19's label).
+        tesp_pulsar_proxy_conf_checksum: e2e
+
+    - name: The test password is set
+      ansible.builtin.assert:
+        that: tesp_basic_auth_password | length > 0
+        fail_msg: set E2E_TES_PASSWORD
+
+    - name: Check out tesp-api at the pinned commit
+      ansible.builtin.git:
+        repo: "{{ tesp_api_repo }}"
+        dest: "{{ tesp_install_dir }}"
+        version: "{{ tesp_api_version }}"
+
+    - name: Create directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{ tesp_install_dir }}/docker/mongodb/data"
+        - "{{ tesp_secrets_dir }}"
+        - "{{ tesp_gateway_dir }}"
+
+    - name: Render the stack
+      ansible.builtin.template:
+        src: "{{ templates_dir }}/{{ item.src }}"
+        dest: "{{ item.dest }}"
+        mode: '0644'
+      loop:
+        - {src: settings.toml.j2, dest: "{{ tesp_install_dir }}/settings.toml"}
+        - {src: secrets.toml.j2, dest: "{{ tesp_secrets_file }}"}
+        # Outside the build context, like playbook.yml (#20).
+        - {src: pulsar-token-proxy.conf.j2, dest: "{{ tesp_pulsar_proxy_conf }}"}
+        - src: docker-compose.yml.j2
+          dest: "{{ tesp_install_dir }}/docker-compose.deploy.yml"
+        - {src: gateway.conf.j2, dest: "{{ tesp_gateway_dir }}/gateway.conf"}
+        - {src: service-info.json.j2, dest: "{{ tesp_gateway_dir }}/service-info.json"}

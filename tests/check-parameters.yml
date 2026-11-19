@@ -1,0 +1,119 @@
+---
+# Runs the playbook's parameter checks (tasks/check-parameters.yml): the
+# defaults pass, and each invalid case is rejected by the check meant for it.
+#
+#   ansible-playbook -i localhost, -c local tests/check-parameters.yml
+#
+# Each rejected case prints a red "fatal" line and counts as "rescued": that
+# is the expected outcome. The play fails only if a case is accepted or
+# rejected by another check.
+- name: Check the parameter checks
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+  vars:
+    workspace_fqdn: tesp.example.src.surf-hosted.nl
+    tesp_deploy_time: '2026-11-18T09:30:00Z'
+    # Issue #25: service info the ELIXIR Cloud Registry would refuse.
+    service_info_cases:
+      - why: an unknown environment
+        expect: Invalid service info
+        vars: {src_tes_environment: production}
+      # The ELIXIR Cloud Registry's rules allow only these two.
+      - why: environment dev
+        expect: Invalid service info
+        vars: {src_tes_environment: dev}
+      - why: environment staging
+        expect: Invalid service info
+        vars: {src_tes_environment: staging}
+      - why: no workspace_fqdn (the id would be localhost.tes)
+        expect: Invalid service info
+        vars: {workspace_fqdn: ''}
+      - why: workspace_fqdn localhost
+        expect: Invalid service info
+        vars: {workspace_fqdn: localhost}
+      - why: workspace_fqdn with a trailing dot
+        expect: Invalid service info
+        vars: {workspace_fqdn: tesp.example.src.surf-hosted.nl.}
+      - why: workspace_fqdn that is an IP address
+        expect: Invalid service info
+        vars: {workspace_fqdn: 127.0.0.1}
+      - why: an http organization URL
+        expect: Invalid service info
+        vars: {src_tes_organization_url: 'http://www.surf.nl/'}
+      - why: a service name without a letter or digit
+        expect: Invalid service info
+        vars: {src_tes_service_name: ' - '}
+      - why: an organization name that is only a dash
+        expect: Invalid service info
+        vars: {src_tes_organization_name: ' -'}
+      - why: an id with a space
+        expect: Invalid service info
+        vars: {tesp_service_info_id: 'my service'}
+      - why: a contact URL that is neither https nor mailto
+        expect: Invalid service info
+        vars: {src_tes_contact_url: 'ftp://example.org'}
+      - why: an http documentation URL
+        expect: Invalid service info
+        vars: {tesp_service_info_documentation_url: 'http://example.org/docs'}
+      - why: a timestamp that is not RFC 3339 UTC
+        expect: Invalid service info
+        vars: {tesp_service_info_created_at: '18-11-2026'}
+      - why: an updatedAt that is not RFC 3339 UTC
+        expect: Invalid service info
+        vars: {tesp_service_info_updated_at: '2026-11-18 09:30'}
+      - why: an organization URL with a bad host
+        expect: Invalid service info
+        vars: {src_tes_organization_url: 'https://-/'}
+    other_cases:
+      - why: an S3 endpoint without a scheme
+        expect: Invalid S3 component parameters
+        vars: {src_s3_endpoint_url: s3.example.org}
+      - why: a negative task runtime cap
+        expect: tesp_max_wait_seconds must be
+        vars: {tesp_max_wait_seconds: -1}
+  tasks:
+    - name: The defaults pass
+      ansible.builtin.include_tasks: ../tasks/check-parameters.yml
+
+    - name: SRC component parameters reach the service info
+      ansible.builtin.assert:
+        that:
+          - tesp_service_info_name == 'Demo TES'
+          - tesp_service_info_organization_name == 'ELIXIR-NL'
+          - tesp_service_info_organization_url == src_tes_organization_url
+          - tesp_service_info_environment == 'prod'
+          - tesp_service_info_contact_url == 'mailto:support@example.org'
+          - tesp_service_info_id == 'nl.surf-hosted.src.example.tesp.tes'
+      vars:
+        src_tes_service_name: ' Demo TES '
+        src_tes_organization_name: ELIXIR-NL
+        src_tes_organization_url: https://elixir-europe.org/about-us/who-we-are/nodes/netherlands
+        src_tes_environment: prod
+        src_tes_contact_url: mailto:support@example.org
+
+    - name: Blank parameters fall back to the defaults
+      ansible.builtin.assert:
+        that:
+          - tesp_service_info_name == 'TESP on SURF Research Cloud'
+          - tesp_service_info_organization_name == 'SURF'
+          - tesp_service_info_environment == 'test'
+      vars:
+        src_tes_service_name: '  '
+        src_tes_organization_name: ''
+        src_tes_environment: ' '
+
+    - name: Those parameters pass the checks
+      ansible.builtin.include_tasks: ../tasks/check-parameters.yml
+      vars:
+        src_tes_organization_url: https://elixir-europe.org/about-us/who-we-are/nodes/netherlands
+        src_tes_environment: prod
+        src_tes_contact_url: mailto:support@example.org
+
+    - name: Each invalid case is rejected by its check
+      ansible.builtin.include_tasks: include/expect-invalid.yml
+      loop: "{{ service_info_cases + other_cases }}"
+      loop_control:
+        loop_var: case
+        label: "{{ case.why }}"

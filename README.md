@@ -12,7 +12,9 @@ TES client (curl, Nextflow, ...)
    ▼
 nginx (host)            /tes/  →  127.0.0.1:8080
    ▼
-tesp-api (Docker)       ──►  MongoDB (Docker, task state)
+gateway (Docker)        answers /v1/service-info itself; everything else ↓
+   ▼
+tesp-api (Docker)       ──►  MongoDB (Docker, task state); no host port
    ▼
 pulsar-proxy (Docker)   adds Pulsar's private token to each request
    ▼
@@ -28,7 +30,7 @@ What the playbook sets up:
 | SLURM controller + worker on the same node, DRMAA, chrony | `playbook.yml` (first play), `group_vars/all.yml` (`slurm_*`, `tesp_slurm_*`; see [Resource limits](#resource-limits)) |
 | Pulsar with the `queued_drmaa` manager | `group_vars/all.yml` (`pulsar_*`) |
 | Docker, Apptainer, nginx reverse proxy with SRAM login | `playbook.yml`, `group_vars/all.yml` (`nginx_reverse_proxy_locations`) |
-| TESP-API stack: tesp-api, MongoDB, pulsar-proxy | `templates/tesp-api/`, `group_vars/all.yml` (`tesp_*`) |
+| TESP-API stack: gateway, tesp-api, MongoDB, pulsar-proxy | `templates/tesp-api/`, `group_vars/all.yml` (`tesp_*`; see [Service info](#service-info)) |
 | Welcome page with your endpoint and credentials | `templates/welcome.html` |
 | Host firewall rule for Pulsar's port | `templates/pulsar-firewall.*.j2`, `playbook.yml`, `group_vars/all.yml` (`pulsar_port`) |
 
@@ -83,10 +85,10 @@ Only members of your CO can open this page. It shows the TES credentials, but no
 
 ### 4. Run a task
 
-Check the service:
+Check the service (service info needs no credentials):
 
 ```bash
-curl -u 'tes:<password>' https://<workspace-fqdn>/tes/v1/service-info
+curl https://<workspace-fqdn>/tes/v1/service-info
 ```
 
 Submit a task. Every executor must name a container image:
@@ -165,6 +167,32 @@ aws {
 
 Nextflow has no `auto` addressing style: without `s3PathStyleAccess = true` it uses virtual-host addressing, which MinIO and many S3-compatible stores don't serve. Use `path` on both sides unless the store needs `virtual`.
 
+## Service info
+
+`GET /tes/v1/service-info` is public and describes this workspace for clients and for the [ELIXIR Cloud Registry](https://github.com/elixir-cloud-aai/cloud-registry). tesp-api's own answer is hard-coded for another provider: it names Masaryk University and says `environment: dev`. So the `gateway` container (`tesp-gateway`) answers it instead, from `/etc/tesp-gateway/service-info.json`. The gateway passes the other requests to tesp-api unchanged, with one exception: a request to the TES API (`/tes/v1/...`) without Basic credentials gets `401` from the gateway, where tesp-api would answer `500`. Service info and the API docs (Swagger UI at `/tes/swagger-ui.html`, ReDoc at `/tes/redoc`, `/tes/openapi.json`) stay public.
+
+These optional component parameters set it; blank means the default:
+
+| Parameter | Default | Field |
+| --- | --- | --- |
+| `src_tes_service_name` | `TESP on SURF Research Cloud` | `name` |
+| `src_tes_organization_name` | `SURF` | `organization.name` |
+| `src_tes_organization_url` | `https://www.surf.nl/` | `organization.url` (https only) |
+| `src_tes_environment` | `test` | `environment`: `test` or `prod`, what the registry accepts |
+| `src_tes_contact_url` | this repository's issues | `contactUrl` (`https://` or `mailto:`) |
+
+The other fields come from `tesp_service_info_*` in `group_vars/all.yml`: `id` is the workspace's domain name reversed, plus `.tes` (for example `nl.surf-hosted.src.<workspace>.tes`); the playbook stops if SRC hasn't set the domain name (`workspace_fqdn`). `type` is `org.ga4gh` / `tes` / `1.0.0`, the TES version tesp-api reports. `version` is `tesp-api-<commit>`. `createdAt` is the time of the first deploy, which later deploys keep. `updatedAt` is left out, so a redeploy that changes nothing leaves the file as it is. The playbook stops before installing anything if a value is invalid.
+
+**Registering at the ELIXIR Cloud Registry.** The registry reads only public service info and accepts only `https` URLs. Each deployment sets the environments it accepts; its `GET /service-info` lists them in `registrationRules`. ELIXIR On-Cloud registers `test` and `prod` services, so set `src_tes_environment` to one of those, and set the organization to whoever runs the workspace. Then log in to the registry (LS Login) and import the service info, in its web front end or with the API:
+
+```bash
+curl -X POST "https://<registry>/ga4gh/registry/v1/services/import" \
+  -H "Authorization: Bearer <your LS Login access token>" -H "Content-Type: application/json" \
+  -d '{"serviceInfoUrl": "https://<workspace-fqdn>/tes/v1/service-info"}'
+```
+
+The import returns the values for a registration and stores nothing. Check them, then register them with `POST /services`. Since a workspace's name ends up in its domain name and `id`, register a workspace that stays.
+
 ## Resource limits
 
 A task's `resources.cpu_cores` and `resources.ram_gb` become SLURM options for its job: tesp-api fills in `pulsar.native_specification.*` in `settings.toml` and Pulsar hands the result to SLURM through DRMAA. A task with `"cpu_cores": 2, "ram_gb": 1.5` runs as a job with `--cpus-per-task=2 --mem=1536` (MiB, rounded up). A task that leaves a resource out gets no option for it. The option formats are `tesp_native_spec_cpu_cores` and `tesp_native_spec_ram_gb` in `group_vars/all.yml`; set one to `""` to stop passing that resource to SLURM.
@@ -200,6 +228,7 @@ SSH to the workspace with your SRAM key and become root (`sudo su`), then:
 cd /srv/tesp-api
 docker compose -f docker-compose.deploy.yml ps
 docker compose -f docker-compose.deploy.yml logs -f tesp-api
+docker compose -f docker-compose.deploy.yml logs -f gateway
 systemctl status pulsar
 squeue
 ```
@@ -227,11 +256,13 @@ squeue
 - **MTU:** SRC needs a lower MTU on Docker networks (`tesp_network_mtu: 1442`).
 - **Roles and collections:** `requirements.yml` pins every role and collection, including `community.docker`'s dependency, so a new upstream release can't change what a new workspace installs (`tests/requirements-pinned.yml` checks this). SRC's catalog item runs Ansible 9.1.0 (its `remote_ansible_version`; the external plugin's default is 11.1.0), which is ansible-core ~=2.16.1, so the Galaxy collections are the newest releases whose `requires_ansible` covers 2.16 (versions and the cut-off in `requirements.yml`). Before bumping one, check its `requires_ansible` on Galaxy or in its `meta/runtime.yml`, and raise past 2.16 only together with SRC's Ansible version.
 
-  CI's `src-ansible-core` job runs the unit tests under ansible-core 2.16, installs the pinned collections and fails if one of them excludes that version (`tests/check-collections.sh`; needs network access).
+  CI's `src-ansible-core` job installs the pinned collections under ansible-core 2.16 and fails if one of them excludes that version (`tests/check-collections.sh`; needs network access). The unit tests run under 2.16 in the `unit` matrix.
+
+- **Gateway:** the compose service `gateway` (container `tesp-gateway`) runs nginx. Its config `gateway.conf` and `service-info.json` live in `tesp_gateway_dir` (`/etc/tesp-gateway`), mounted as `/etc/nginx/conf.d`, outside the image build context. It is the only container with a host port (`127.0.0.1:8080`, `tesp_api_port`); tesp-api is reachable only inside the stack. A changed `gateway.conf` changes a label on the container, so the playbook's `docker compose up` recreates it; `service-info.json` is read on every request. The gateway resolves `tesp-api` through Docker's DNS on each request, so it finds a rebuilt tesp-api container without a restart. The gateway and `pulsar-proxy` share one nginx image, `tesp_nginx_image`, pinned by digest.
 
 ## Checks
 
-CI (`.github/workflows/ci.yml`) runs on every pull request and every push to `main`. Its `lint` job runs the [pre-commit](https://pre-commit.com/) hooks in `.pre-commit-config.yaml`: yamllint, shellcheck, ansible-lint, ast-grep with the rules in `.ast-grep/`, and semgrep. Its `unit` job runs `tests/run.sh`, which runs every playbook test in `tests/`; the `src-ansible-core` job runs them again under SRC's ansible-core 2.16 and checks the pinned collections against it. Run the same checks locally before you push:
+CI (`.github/workflows/ci.yml`) runs on every pull request and every push to `main`. Its `lint` job runs the [pre-commit](https://pre-commit.com/) hooks in `.pre-commit-config.yaml`: yamllint, shellcheck, ansible-lint, ast-grep with the rules in `.ast-grep/`, and semgrep. Its `unit` jobs run `tests/run.sh`, which runs every playbook test in `tests/`, on ansible-core 2.16.20 (what SRC's plugin installs), 2.18.1 and 2.21.5; a job named `unit` sums them up for branch protection. The `src-ansible-core` job checks the pinned collections against ansible-core 2.16. `.github/workflows/e2e.yml` brings up the tesp-api stack as the playbook renders it (`tests/e2e/render-stack.yml`, without Pulsar) and checks the gateway with `tests/e2e/check-gateway.sh`: public service info, `401` without credentials, Basic auth through to tesp-api, and no host port for tesp-api. The workflow then recreates tesp-api with a new address and checks that the gateway finds it. Run the same checks locally before you push:
 
 ```bash
 pip install pre-commit==4.7.0 ansible-core==2.21.5

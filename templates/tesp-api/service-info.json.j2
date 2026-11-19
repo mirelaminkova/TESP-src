@@ -1,0 +1,17 @@
+{% set info = {
+  'id': tesp_service_info_id | trim,
+  'name': tesp_service_info_name | trim,
+  'type': {'group': 'org.ga4gh', 'artifact': 'tes',
+           'version': tesp_service_info_tes_version},
+  'description': tesp_service_info_description | trim,
+  'organization': {'name': tesp_service_info_organization_name | trim,
+                   'url': tesp_service_info_organization_url | trim},
+  'contactUrl': tesp_service_info_contact_url | trim,
+  'documentationUrl': tesp_service_info_documentation_url | trim,
+  'environment': tesp_service_info_environment | trim,
+  'version': tesp_service_info_version,
+} %}
+{% set times = {'createdAt': tesp_service_info_created_at,
+                'updatedAt': tesp_service_info_updated_at} %}
+{{ info | combine(times | dict2items | selectattr('value') | items2dict)
+   | to_nice_json(indent=2) }}

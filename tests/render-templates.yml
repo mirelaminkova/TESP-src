@@ -40,6 +40,10 @@
         src_s3_secret_access_key: test-s3-secret/Jw8+"\\
         # Given as an s3:// URL; the playbook keeps just the bucket name.
         src_s3_bucket: ' s3://tesp-test-bucket/ '
+        # Set by playbook.yml: the first deploy, kept across redeploys.
+        tesp_first_deploy_time: '2026-11-18T09:30:00Z'
+        # Set by playbook.yml from the rendered gateway.conf.
+        tesp_gateway_conf_checksum: 0123abcd
 
     - name: Create output directory
       ansible.builtin.tempfile:
@@ -64,6 +68,8 @@
             - tesp-api/pulsar-token-proxy.conf.j2
             - tesp-api/settings.toml.j2
             - tesp-api/secrets.toml.j2
+            - tesp-api/gateway.conf.j2
+            - tesp-api/service-info.json.j2
 
         - name: Read rendered files
           ansible.builtin.slurp:
@@ -75,6 +81,8 @@
             - settings.toml
             - secrets.toml
             - docker-compose.yml
+            - gateway.conf
+            - service-info.json
           register: rendered
 
         - name: Index rendered files by name
@@ -311,6 +319,109 @@
             conf: "{{ lookup('file', out.path ~ '/b64-pulsar-token-proxy.conf') }}"
             query_values: >-
               {{ conf | regex_findall('private_token=([^";]*)') }}
+        # Issue #25: the gateway answers service-info itself, with values
+        # the ELIXIR Cloud Registry accepts.
+        - name: Service info is valid JSON with our values
+          ansible.builtin.assert:
+            that:
+              - info.id == 'nl.surf-hosted.src.example.tesp.tes'
+              - info.name == 'TESP on SURF Research Cloud'
+              - >-
+                info.type == {'group': 'org.ga4gh', 'artifact': 'tes',
+                              'version': '1.0.0'}
+              - info.environment == 'test'
+              - info.organization.name == 'SURF'
+              - info.organization.url == 'https://www.surf.nl/'
+              - >-
+                info.contactUrl
+                == 'https://github.com/mirelaminkova/TESP-src/issues'
+              - >-
+                info.documentationUrl
+                == 'https://github.com/mirelaminkova/TESP-src#readme'
+              - info.version == 'tesp-api-' ~ tesp_api_version[:7]
+              - info.createdAt == '2026-11-18T09:30:00Z'
+              # Left out, so a redeploy doesn't change the file.
+              - "'updatedAt' not in info"
+              - "'Masaryk' not in files['service-info.json']"
+            fail_msg: "service-info.json: {{ files['service-info.json'] }}"
+          vars:
+            info: "{{ files['service-info.json'] | from_json }}"
+
+        - name: Welcome page shows the public service-info call
+          ansible.builtin.assert:
+            that:
+              - >-
+                ('<pre id="tes-info">curl https://' ~ workspace_fqdn
+                 ~ '/tes/v1/service-info</pre>') in files['welcome.html']
+              - "'<code id=\"service-env\">test</code>' in files['welcome.html']"
+
+        - name: Gateway fronts tesp-api, which has no host port
+          ansible.builtin.assert:
+            that:
+              - "'ports' not in compose.services['tesp-api']"
+              - >-
+                compose.services.gateway.ports
+                == ['127.0.0.1:' ~ tesp_api_port ~ ':8080']
+              - compose.services.gateway.container_name == 'tesp-gateway'
+              - compose.services.gateway.image is search('@sha256:[0-9a-f]{64}$')
+              - compose.services['pulsar-proxy'].image == compose.services.gateway.image
+              - >-
+                (tesp_gateway_dir ~ ':/etc/nginx/conf.d:ro')
+                in compose.services.gateway.volumes
+              - "'tesp-api' in compose.services.gateway.depends_on"
+              # A changed config recreates the container.
+              - >-
+                compose.services.gateway.labels['tesp.gateway-config-checksum']
+                == '0123abcd'
+              # Outside the image build context, like the secrets file.
+              - not tesp_gateway_dir.startswith(tesp_install_dir)
+              - >-
+                nginx_reverse_proxy_locations
+                | selectattr('name', '==', 'tes') | map(attribute='proxy_pass')
+                | first == 'http://127.0.0.1:' ~ tesp_api_port ~ '/'
+          vars:
+            compose: "{{ files['docker-compose.yml'] | from_yaml }}"
+
+        - name: Gateway serves service-info and proxies the rest to tesp-api
+          ansible.builtin.assert:
+            that:
+              - "'location = /v1/service-info {' in conf"
+              - "'location = /v1/service-info/ {' in conf"
+              - "'rewrite ^ /v1/service-info last;' in conf"
+              # Re-resolved, so a recreated tesp-api container is found.
+              - "'resolver 127.0.0.11' in conf"
+              - "'set $tesp_api_upstream http://tesp-api:8080;' in conf"
+              # The API docs stay public.
+              - "'|swagger-ui\\\\.html|redoc|openapi\\\\.json|' in conf"
+              - conf.count('proxy_pass $tesp_api_upstream;') == 2
+              # Never the decoded $uri: it would pass %0d%0a on as a line break.
+              - conf is not search('proxy_pass [^;]*\\$uri')
+              # Requests without Basic credentials get 401 at the gateway.
+              - "'if ($tes_has_basic = 0)' in conf"
+              - "'add_header Allow \"GET, HEAD\" always;' in conf"
+              # The gateway neither adds nor drops credentials.
+              - "'proxy_set_header Authorization' not in conf"
+              - tesp_basic_auth_password not in conf
+              - tesp_basic_auth_password not in files['service-info.json']
+          vars:
+            conf: "{{ files['gateway.conf'] }}"
+
+        - name: Render service info with characters JSON must escape
+          ansible.builtin.template:
+            src: "{{ templates_dir }}/tesp-api/service-info.json.j2"
+            dest: "{{ out.path }}/escaped-service-info.json"
+            mode: '0600'
+          vars:
+            tesp_service_info_name: 'TESP "demo" \ <b>'
+            tesp_service_info_description: "two\nlines"
+
+        - name: Service info stays valid JSON
+          ansible.builtin.assert:
+            that:
+              - info.name == 'TESP "demo" \ <b>'
+              - info.description == "two\nlines"
+          vars:
+            info: "{{ lookup('file', out.path ~ '/escaped-service-info.json') | from_json }}"
 
         - name: Pulsar token goes only to the proxy, TES password to tesp-api
           ansible.builtin.assert:

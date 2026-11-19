@@ -158,10 +158,13 @@
 
     <section>
       <h2>Quick check</h2>
-      <p>Show the service info:</p>
+      <p>Show the service info. It is public, and it is what the
+        <a href="https://github.com/elixir-cloud-aai/cloud-registry">ELIXIR Cloud Registry</a> imports
+        (environment <code id="service-env">{{ tesp_service_info_environment | trim }}</code>;
+        see "Service info" in the <a href="https://github.com/mirelaminkova/TESP-src#service-info">README</a>):</p>
       <div class="copy-box">
         <button class="copy-btn" onclick="copyToClipboard('tes-info', this)">Copy</button>
-        <pre id="tes-info">curl -u '{{ tes_user }}:{{ tes_password }}' {{ tes_url }}/v1/service-info</pre>
+        <pre id="tes-info">curl {{ tes_url }}/v1/service-info</pre>
       </div>
 
       <p>Submit a test task (it prints the task <code>id</code>):</p>

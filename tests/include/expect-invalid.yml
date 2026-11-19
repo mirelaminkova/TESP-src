@@ -1,0 +1,38 @@
+---
+# Runs tasks/check-parameters.yml with one invalid set of variables
+# (case.vars) and fails unless the check named case.expect rejected it: any
+# other failure (another check, a typo, an undefined variable) fails the test.
+- name: "Reject: {{ case.why }}"
+  block:
+    - name: Run the parameter checks
+      ansible.builtin.include_tasks: ../../tasks/check-parameters.yml
+      # Every variable a case may set; the rest keep a valid value.
+      vars:
+        src_s3_endpoint_url: "{{ case.vars.src_s3_endpoint_url | default('') }}"
+        workspace_fqdn: "{{ case.vars.workspace_fqdn | default('tesp.example.src.surf-hosted.nl') }}"
+        tesp_max_wait_seconds: "{{ case.vars.tesp_max_wait_seconds | default(0) }}"
+        src_tes_service_name: "{{ case.vars.src_tes_service_name | default('') }}"
+        src_tes_organization_name: "{{ case.vars.src_tes_organization_name | default('') }}"
+        src_tes_organization_url: "{{ case.vars.src_tes_organization_url | default('') }}"
+        src_tes_environment: "{{ case.vars.src_tes_environment | default('') }}"
+        src_tes_contact_url: "{{ case.vars.src_tes_contact_url | default('') }}"
+        tesp_service_info_id: "{{ case.vars.tesp_service_info_id | default('nl.example.tes') }}"
+        tesp_service_info_documentation_url: >-
+          {{ case.vars.tesp_service_info_documentation_url
+             | default('https://example.org/docs') }}
+        tesp_service_info_created_at: >-
+          {{ case.vars.tesp_service_info_created_at
+             | default('2026-11-18T09:30:00Z') }}
+        tesp_service_info_updated_at: "{{ case.vars.tesp_service_info_updated_at | default('') }}"
+
+    - name: The checks should have failed
+      ansible.builtin.fail:
+        msg: "accepted invalid parameters: {{ case.why }}"
+  rescue:
+    - name: "Rejected by the check: {{ case.expect }}"
+      ansible.builtin.assert:
+        that: ansible_failed_result.msg | default('') is search(case.expect)
+        fail_msg: >-
+          expected a {{ case.expect }} error, got:
+          {{ ansible_failed_result.msg | default(ansible_failed_result) }}
+        quiet: true

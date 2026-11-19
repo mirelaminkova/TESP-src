@@ -43,7 +43,7 @@ repos:
         language: python
         additional_dependencies: [ansible-core==2.21.5]
         pass_filenames: false
-        files: ^(playbook\.yml|requirements\.yml|group_vars/|templates/|tests/|\.github/workflows/)
+        files: ^(playbook\.yml|requirements\.yml|group_vars/|tasks/|templates/|tests/|\.github/workflows/)
       # Static analysis on every push; a finding blocks the push.
       - id: ast-grep
         name: ast-grep scan (+ rule tests)
