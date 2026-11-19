@@ -119,6 +119,27 @@
         state: started
         daemon_reload: true
 
+    # uwsgi's worker socket (pulsar_uwsgi_options in group_vars/all.yml) lives
+    # in Pulsar's runtime directory. Before the role starts Pulsar.
+    - name: Create the Pulsar unit's drop-in directory
+      ansible.builtin.file:
+        path: /etc/systemd/system/pulsar.service.d
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Give Pulsar a runtime directory for its uwsgi socket
+      ansible.builtin.template:
+        src: templates/pulsar-uwsgi-socket.conf.j2
+        dest: /etc/systemd/system/pulsar.service.d/tesp-uwsgi-socket.conf
+        owner: root
+        group: root
+        mode: '0644'
+      # No restart from here: handlers notified in pre_tasks run before the
+      # role reloads systemd. The role's systemd task reloads it, and the
+      # role's server.ini change (the socket options) restarts Pulsar.
+
   roles:
     - geerlingguy.docker
     - usegalaxy_eu.apptainer
@@ -154,6 +175,105 @@
       # A normal run tries the restart anyway, so the failure shows.
       when: >-
         tesp_pulsar_config_state.stdout == 'stale' or (tesp_pulsar_config_state.stdout == 'missing' and not ansible_check_mode)
+
+    # ---- Task network fence (issue #45) ----
+    # Tasks run as the Pulsar user on the host's network. Applied right after
+    # the Pulsar role, which creates that user (the rules match it by name),
+    # and before the tesp-api stack starts, so no task runs unfenced. A
+    # systemd unit that Pulsar and slurmd require applies it at boot.
+    - name: Install the task network fence script
+      ansible.builtin.template:
+        src: templates/task-fence.sh.j2
+        dest: /usr/local/sbin/tesp-task-fence
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Install the task network fence systemd unit
+      ansible.builtin.template:
+        src: templates/task-fence.service.j2
+        dest: /etc/systemd/system/tesp-task-fence.service
+        owner: root
+        group: root
+        mode: '0644'
+      register: tesp_task_fence_unit
+
+    # Under --check on a host deployed before the fence, the unit isn't
+    # there to enable.
+    - name: Enable and start the task network fence
+      ansible.builtin.systemd_service:
+        name: tesp-task-fence
+        enabled: true
+        state: started
+        daemon_reload: true
+      when: not (ansible_check_mode and tesp_task_fence_unit is changed)
+
+    # enabled: true above changes nothing where the unit is already enabled,
+    # so links added to [Install] later (RequiredBy=slurmd.service) would
+    # never appear. Checked from the links themselves, so that a run that
+    # fails later doesn't lose the fix.
+    - name: Check that Pulsar and slurmd require the task network fence
+      ansible.builtin.shell: |
+        for unit in pulsar slurmd; do
+          [ -L "/etc/systemd/system/$unit.service.requires/tesp-task-fence.service" ] || echo "$unit"
+        done
+      register: tesp_task_fence_links
+      changed_when: false
+      check_mode: false
+
+    # One call: disable-then-enable as two tasks could leave the unit disabled
+    # if the run stopped in between. Only the links change; the rules stay.
+    - name: Recreate the task network fence's [Install] links
+      ansible.builtin.command: systemctl reenable tesp-task-fence.service  # noqa: command-instead-of-module
+      changed_when: true
+      when: tesp_task_fence_links.stdout | length > 0
+
+    # Also on every run, not only when the unit starts: something may have
+    # dropped the rules since (ufw, a full iptables-restore), and a changed
+    # script must be in force before tesp-api can submit tasks. The script is
+    # idempotent and says "changed" when it had to change the rules.
+    - name: Apply the task network fence
+      ansible.builtin.command: /usr/local/sbin/tesp-task-fence
+      register: tesp_task_fence_run
+      changed_when: "'changed' in tesp_task_fence_run.stdout_lines"
+
+    # docker_users (group_vars/all.yml) no longer adds the Pulsar user to the
+    # docker group, but it stays in on hosts deployed before. New SLURM jobs
+    # get the user's groups when they start; Pulsar at its restart.
+    - name: Take the Pulsar user out of the docker group
+      ansible.builtin.command: gpasswd -d {{ pulsar_user.name }} docker
+      register: tesp_pulsar_docker_group
+      # 3: not a member, or no docker group (geerlingguy.docker creates it)
+      changed_when: tesp_pulsar_docker_group.rc == 0
+      failed_when: tesp_pulsar_docker_group.rc not in [0, 3]
+      when: tesp_container_type != 'docker'
+
+    # From the running process rather than a handler: a run that fails after
+    # gpasswd would leave Pulsar with the group, and the next one would see
+    # nothing left to change.
+    - name: Check whether Pulsar still runs with the docker group
+      ansible.builtin.shell: |
+        set -o pipefail
+        pid=$(systemctl show -p MainPID --value {{ (pulsar_systemd_service_name | default('pulsar')) | quote }}.service)
+        gid=$(getent group docker | cut -d: -f3)
+        if [ -n "$gid" ] && [ "${pid:-0}" != 0 ] \
+            && grep '^Groups:' "/proc/$pid/status" | tr -s ' \t' '\n' | grep -qx "$gid"; then
+          echo docker
+        fi
+      args:
+        executable: /bin/bash
+      register: tesp_pulsar_groups
+      changed_when: false
+      check_mode: false
+      when: tesp_container_type != 'docker'
+
+    - name: Restart Pulsar without the docker group
+      ansible.builtin.systemd_service:
+        name: "{{ pulsar_systemd_service_name | default('pulsar') }}.service"
+        state: restarted
+      when:
+        - tesp_container_type != 'docker'
+        - tesp_pulsar_groups.stdout == 'docker'
 
     - name: Create directory /srv/static/
       ansible.builtin.file:

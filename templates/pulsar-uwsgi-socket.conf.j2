@@ -1,0 +1,9 @@
+# Managed by Ansible (TESP-src). Do not edit by hand.
+# Drop-in for the galaxyproject.pulsar role's unit: /run/pulsar, owned by the
+# Pulsar user, for the uwsgi worker socket ({{ tesp_pulsar_uwsgi_socket }};
+# pulsar_uwsgi_options in group_vars/all.yml). systemd creates it at every
+# start and removes it at stop. A change here takes effect at Pulsar's next
+# restart; the server.ini change that came with it restarts Pulsar.
+[Service]
+RuntimeDirectory=pulsar
+RuntimeDirectoryMode=0750

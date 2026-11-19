@@ -6,6 +6,8 @@ name: e2e
 # tokens on; no Pulsar) and checks the gateway, once with Basic only and once
 # with LS Login tokens against a mock identity provider. Needs no secrets;
 # the password and keys are throwaway test values.
+# Issue #45 (job task-fence): applies the task network fence in a network
+# namespace and checks what a task user can reach.
 
 on:
   pull_request:
@@ -108,3 +110,30 @@ jobs:
         if: failure()
         working-directory: ${{ env.E2E_DIR }}/tesp-api
         run: docker compose logs --no-color --tail 200
+
+  task-fence:
+    # Issue #45: applies the task network fence as playbook.yml renders it, in
+    # a throwaway network namespace, and checks what a task user can reach.
+    # 22.04: the workspace's release (kernel netfilter, iptables 1.8.7).
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - name: check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: install ansible-core
+        # 2.16.20: what the SRC catalog item's plugin installs (ansible 9.1.0).
+        run: pip install "ansible-core==2.16.20"
+
+      - name: render the fence
+        run: ansible-playbook -i localhost, -c local tests/e2e/render-task-fence.yml -e "fence_out=$RUNNER_TEMP/tesp-task-fence"
+
+      - name: check the fence
+        run: sudo tests/e2e/check-task-fence.sh "$RUNNER_TEMP/tesp-task-fence" nobody

@@ -64,6 +64,9 @@
             - chrony.conf
             - pulsar-firewall.sh.j2
             - pulsar-firewall.service.j2
+            - task-fence.sh.j2
+            - task-fence.service.j2
+            - pulsar-uwsgi-socket.conf.j2
             - tesp-api/docker-compose.yml.j2
             - tesp-api/pulsar-token-proxy.conf.j2
             - tesp-api/settings.toml.j2
@@ -78,6 +81,9 @@
           loop:
             - welcome.html
             - pulsar-firewall.sh
+            - task-fence.sh
+            - task-fence.service
+            - pulsar-uwsgi-socket.conf
             - pulsar-token-proxy.conf
             - settings.toml
             - secrets.toml
@@ -1016,6 +1022,74 @@
         - name: Firewall script is valid sh
           ansible.builtin.command: sh -n {{ out.path }}/pulsar-firewall.sh
           changed_when: false
+
+        # Issue #45. tests/e2e/check-task-fence.sh checks what the rules do.
+        - name: Task fence matches the Pulsar user and spares Pulsar's port
+          ansible.builtin.assert:
+            that:
+              - ("TASK_USER=" ~ pulsar_user.name) in files['task-fence.sh']
+              - ('--uid-owner "$TASK_USER"') in files['task-fence.sh']
+              - ('-o $o -p tcp --sport ' ~ pulsar_port ~ ' -m conntrack --ctdir REPLY -j RETURN')
+                in files['task-fence.sh']
+              - ('for o in lo docker0 br-+') in files['task-fence.sh']
+              - ('-o lo -p tcp --dport 6817 -j RETURN') in files['task-fence.sh']
+              - "'RequiredBy=pulsar.service slurmd.service' in files['task-fence.service']"
+              - "'Before=pulsar.service slurmd.service' in files['task-fence.service']"
+              - "'After=ufw.service netfilter-persistent.service' in files['task-fence.service']"
+              - "'for ipt in iptables ip6tables' in files['task-fence.sh']"
+              - "'ExecStart=/usr/local/sbin/tesp-task-fence' in files['task-fence.service']"
+
+        # Without a socket, uwsgi's HTTP router reaches its worker over TCP on
+        # loopback, which the fence blocks for the Pulsar user: Pulsar answers
+        # 502 to every request (found on the test bed).
+        - name: Pulsar's uwsgi router reaches its worker over a unix socket
+          ansible.builtin.assert:
+            that:
+              - pulsar_uwsgi_options.socket == tesp_pulsar_uwsgi_socket
+              - pulsar_uwsgi_options['http-to'] == tesp_pulsar_uwsgi_socket
+              - tesp_pulsar_uwsgi_socket is match('/run/pulsar/[^/]+$')
+              - "'RuntimeDirectory=pulsar' in files['pulsar-uwsgi-socket.conf']"
+              - pulsar_uwsgi_socket is not defined
+
+        - name: The Pulsar user is in the docker group only for Docker tasks
+          ansible.builtin.assert:
+            that:
+              - docker_users == []
+              - tesp_container_type == 'singularity'
+
+        - name: Task fence renders a slurmctld port range as iptables needs it
+          ansible.builtin.assert:
+            that:
+              - "'--dport 6817:6818 -j RETURN' in ranged"
+          vars:
+            ranged: >-
+              {{ lookup('ansible.builtin.template', templates_dir ~ '/task-fence.sh.j2',
+                        template_vars={'tesp_task_fence_loopback_tcp_ports': ['6817-6818']}) }}
+
+        - name: Task fence script is valid sh
+          ansible.builtin.command: sh -n {{ out.path }}/task-fence.sh
+          changed_when: false
+
+        # After the role that creates the Pulsar user (the rules name it),
+        # before the stack whose tesp-api submits tasks.
+        - name: The fence is applied before tesp-api starts
+          ansible.builtin.assert:
+            that:
+              - post_task_names is search(fence_then_stack)
+              - pulsar_role_in_roles
+            fail_msg: >-
+              playbook.yml must start tesp-task-fence in post_tasks (after the
+              galaxyproject.pulsar role) and before the tesp-api stack
+          vars:
+            tesp_play: >-
+              {{ plays | selectattr('name', 'match', 'Install TESP') | first }}
+            post_task_names: >-
+              |{{ tesp_play.post_tasks | map(attribute='name') | join('|') }}|
+            fence_then_stack: >-
+              \|Enable and start the task network fence\|.*\|Build and start the TESP-API stack\|
+            pulsar_role_in_roles: >-
+              {{ tesp_play.roles | select('mapping')
+                 | selectattr('role', 'eq', 'galaxyproject.pulsar') | list | length == 1 }}
 
         # Issue #35: under --check, a host without a stored token (deployed
         # before #19) gets no file from copy, so file and slurp must not run,

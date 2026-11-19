@@ -1,0 +1,113 @@
+#!/bin/sh
+# Managed by Ansible (TESP-src). Do not edit by hand.
+#
+# Task network fence (issue #45). TES tasks run as SLURM jobs of the Pulsar
+# user ({{ pulsar_user.name }}) on the host's network: Apptainer gives them no
+# network namespace of their own. Without this, any task could reach MongoDB
+# (no auth) and tesp-api on the Docker bridges, the gateway and Pulsar on
+# loopback, and anything else on this host, and serve on any port the
+# workspace's security group opens.
+#
+# Matched by socket owner, so it fences every process of the user
+# {{ pulsar_user.name }}, Pulsar itself included, and nobody else (root, sshd,
+# Docker, other users). For {{ pulsar_user.name }}, in iptables and ip6tables:
+#   - connections it opens to this host's own addresses (loopback included),
+#     to containers on Docker bridges (docker0, br-*) and to link-local
+#     addresses (cloud metadata) are refused, except DNS (53) and slurmctld
+#     on this host, which Pulsar needs (traffic to any of the host's own
+#     addresses goes over lo). Everything else (image pulls, S3 and http(s)
+#     staging) is untouched;
+#   - it can't answer connections that others open, except Pulsar on port
+#     {{ pulsar_port }} over IPv4 to loopback and the Docker bridges, where
+#     pulsar-proxy is (Pulsar doesn't listen on IPv6). A task may listen on a
+#     port and still receive datagrams and SYNs, but can't answer them;
+#   - packets conntrack can't place (invalid, untracked) and broadcast or
+#     multicast packets are dropped or refused.
+# Only IP traffic: unix sockets are not affected. Pulsar itself serves through
+# a unix socket for that reason (pulsar_uwsgi_options in group_vars/all.yml).
+#
+# Each table is loaded with one iptables-restore, so a re-run swaps the rules
+# atomically and the chain is never empty in between. The jump must be
+# OUTPUT's first rule: a rule ahead of it (ufw puts "-o lo -j ACCEPT" first)
+# would let traffic past. Something that rewrites OUTPUT later (ufw
+# enable/reload, a full iptables-restore) can drop or move the jump; running
+# this script again puts it back first. Idempotent: safe to run again
+# (Ansible deploys, reboots). Prints "changed" if it had to change anything.
+set -eu
+
+CHAIN=TESP-TASKS
+TASK_USER={{ pulsar_user.name | quote }}
+
+# The rules of $CHAIN for one family: $1 = iptables or ip6tables. In order:
+# Pulsar may answer on its port; nothing else may answer; nothing conntrack
+# can't place; DNS and the allowed ports on this host; the rest of this host
+# (the addrtype rules; the "-o lo" one is a backstop); broadcast and
+# multicast; Docker bridges; link-local. TCP gets a reset rather than an ICMP
+# error, so a task fails at once.
+rules() {
+    # Pulsar answers over IPv4 only; IPv6 has no broadcast.
+    if [ "$1" = iptables ]; then
+        link_local=169.254.0.0/16; reject=icmp-port-unreachable
+        broadcast="-A $CHAIN -m addrtype --dst-type BROADCAST -j REJECT --reject-with $reject"
+        pulsar_answers=$(for o in lo docker0 br-+; do
+            echo "-A $CHAIN -o $o -p tcp --sport {{ pulsar_port }} -m conntrack --ctdir REPLY -j RETURN"
+        done)
+    else
+        link_local=fe80::/10; reject=icmp6-port-unreachable; broadcast=; pulsar_answers=
+    fi
+    cat <<EOF
+*filter
+:$CHAIN - [0:0]
+$pulsar_answers
+-A $CHAIN -m conntrack --ctdir REPLY -j DROP
+-A $CHAIN -m conntrack --ctstate INVALID,UNTRACKED -j DROP
+-A $CHAIN -o lo -p udp --dport 53 -j RETURN
+-A $CHAIN -o lo -p tcp --dport 53 -j RETURN
+{% for port in tesp_task_fence_loopback_tcp_ports %}
+-A $CHAIN -o lo -p tcp --dport {{ port | string | replace('-', ':') }} -j RETURN
+{% endfor %}
+-A $CHAIN -p tcp -m addrtype --dst-type LOCAL -j REJECT --reject-with tcp-reset
+-A $CHAIN -m addrtype --dst-type LOCAL -j REJECT --reject-with $reject
+-A $CHAIN -o lo -j REJECT --reject-with $reject
+$broadcast
+-A $CHAIN -m addrtype --dst-type MULTICAST -j REJECT --reject-with $reject
+-A $CHAIN -p tcp -o docker0 -j REJECT --reject-with tcp-reset
+-A $CHAIN -o docker0 -j REJECT --reject-with $reject
+-A $CHAIN -p tcp -o br-+ -j REJECT --reject-with tcp-reset
+-A $CHAIN -o br-+ -j REJECT --reject-with $reject
+-A $CHAIN -p tcp -d $link_local -j REJECT --reject-with tcp-reset
+-A $CHAIN -d $link_local -j REJECT --reject-with $reject
+COMMIT
+EOF
+}
+
+# The jump, as iptables -S prints it (by uid: a re-created user gets a new one).
+JUMP="-A OUTPUT -m owner --uid-owner $(id -u "$TASK_USER") -j $CHAIN"
+
+# "<number> <rule>" for each rule of OUTPUT that jumps to $CHAIN ($1 =
+# iptables or ip6tables). Line 1 of -S is the policy.
+jumps() { "$1" -w -S OUTPUT | tail -n +2 | grep -n -- "-j $CHAIN\$" | sed 's/:/ /'; }
+
+# What this script manages, to tell whether a run changed anything.
+state() {
+    for ipt in iptables ip6tables; do
+        "$ipt" -w -S "$CHAIN" 2>/dev/null || true
+        jumps "$ipt" || true
+    done
+}
+
+before=$(state)
+for ipt in iptables ip6tables; do
+    # The user must exist: the owner match resolves the name when loaded.
+    rules "$ipt" | "$ipt-restore" -w --noflush
+    # The jump goes first unless it is there already; then every other jump
+    # to $CHAIN goes, last first so the numbers stay right. Deleting by number
+    # races with another program changing OUTPUT at the same moment; a re-run
+    # repairs that.
+    [ "$(jumps "$ipt" | head -n 1)" = "1 $JUMP" ] \
+        || "$ipt" -w -I OUTPUT 1 -m owner --uid-owner "$TASK_USER" -j "$CHAIN"
+    for n in $(jumps "$ipt" | tail -n +2 | cut -d' ' -f1 | sort -rn); do
+        "$ipt" -w -D OUTPUT "$n"
+    done
+done
+[ "$before" = "$(state)" ] || echo changed
