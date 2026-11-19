@@ -346,6 +346,7 @@ class Validator:
         self._clock = clock
         self._state = {iss: _IssuerState() for iss in config.issuers}
         self._userinfo = TTLCache(config.cache_max_entries, clock)
+        self._warned = TTLCache(1000, clock)
         self._algorithms = get_default_algorithms()
 
     # -- Authorization header -------------------------------------------
@@ -421,6 +422,13 @@ class Validator:
         if not self._entitled(issuer, token, claims):
             raise Forbidden(f"no matching entitlement (client {client_id})")
         return Decision("bearer", f"entitled, client {client_id}", client_id)
+
+    def _warn_once(self, key: str, seconds: int = 3600) -> bool:
+        """True the first time per key and period, for rate-limited warnings."""
+        if self._warned.get(key):
+            return False
+        self._warned.put(key, True, self._clock() + seconds)
+        return True
 
     def _resolve_endpoints(self, issuer: IssuerConfig,
                            state: _IssuerState) -> None:
@@ -554,9 +562,11 @@ class Validator:
             raise error(f"userinfo failed: {e}") from None
         if not isinstance(info, dict) or info.get("sub") != claims["sub"]:
             raise Denied("userinfo is for another subject")
-        if "eduperson_entitlement" not in info:
+        if ("eduperson_entitlement" not in info
+                and self._warn_once(f"no-entitlement:{claims.get('client_id')}")):
             # Usually the client didn't ask for the scope that releases it
-            # (Krini's default scopes don't): every user is refused.
+            # (Krini's default scopes don't): every user is refused. Logged
+            # once an hour per client, not for every token.
             log.warning("userinfo has no eduperson_entitlement for a token of "
                         "client %s: does the client request the scope that "
                         "releases it?", _printable(claims.get("client_id"), 128))

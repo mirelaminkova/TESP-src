@@ -255,21 +255,51 @@
         mode: '0755'
 
     # Root-only: with OAuth on it holds tesp-api's Basic credentials. Read by
-    # the nginx master process, which runs as root.
+    # the nginx master process, which runs as root. nginx -t checks the new
+    # file before it replaces the old one (validate), so a config nginx
+    # rejects never reaches the gateway; only when the content changes.
     - name: Template the TES gateway config
-      ansible.builtin.template:
-        src: templates/tesp-api/gateway.conf.j2
-        dest: "{{ tesp_gateway_dir }}/gateway.conf"
-        owner: root
-        group: root
-        mode: '0600'
-        # nginx -t on the new file before it replaces the old one, so a
-        # config nginx rejects never reaches the gateway.
-        validate: >-
-          docker run --rm --entrypoint nginx
-          -v %s:/etc/nginx/conf.d/gateway.conf:ro {{ tesp_nginx_image }} -t
-      register: tesp_gateway_conf
-      no_log: true
+      block:
+        - name: Template the TES gateway config
+          ansible.builtin.template:
+            src: templates/tesp-api/gateway.conf.j2
+            dest: "{{ tesp_gateway_dir }}/gateway.conf"
+            owner: root
+            group: root
+            mode: '0600'
+            validate: >-
+              docker run --rm --entrypoint nginx
+              -v %s:/etc/nginx/conf.d/gateway.conf:ro {{ tesp_nginx_image }} -t
+          register: tesp_gateway_conf
+          no_log: true
+      rescue:
+        # no_log above hides nginx's reason; nginx -t names file and line,
+        # not their content.
+        - name: Keep the rejected gateway config for inspection
+          ansible.builtin.template:
+            src: templates/tesp-api/gateway.conf.j2
+            dest: "{{ tesp_gateway_dir }}/gateway.conf.rejected"
+            owner: root
+            group: root
+            mode: '0600'
+          no_log: true
+
+        - name: Show why nginx rejects the gateway config
+          ansible.builtin.command: >-
+            docker run --rm --entrypoint nginx
+            -v {{ tesp_gateway_dir }}/gateway.conf.rejected:/etc/nginx/conf.d/gateway.conf:ro
+            {{ tesp_nginx_image }} -t
+          register: tesp_gateway_conf_check
+          changed_when: false
+          failed_when: false
+
+        - name: Stop on the rejected gateway config
+          ansible.builtin.fail:
+            msg: >-
+              nginx rejects the new gateway config, kept as
+              {{ tesp_gateway_dir }}/gateway.conf.rejected; the running
+              gateway keeps the old one. nginx -t says:
+              {{ tesp_gateway_conf_check.stderr | default('') }}
 
     # Goes into a label of the gateway container, so a changed config
     # recreates it (nginx reads its config only at start).

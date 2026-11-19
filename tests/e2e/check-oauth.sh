@@ -92,7 +92,12 @@ if docker logs tesp-validator 2>&1 | grep -q "audit: task from exempt client e2e
 fi
 
 # A valid token without the group: 403, not 401 (logging in again won't help).
-expect "user without the entitlement" 403 -H "$(bearer "$(mint --sub plain-user)")" "$base/v1/tasks"
+expect "user without the entitlement" 403 -H "Origin: https://portal.e2e.test" \
+    -H "$(bearer "$(mint --sub plain-user)")" "$base/v1/tasks"
+grep -qiF 'Access-Control-Allow-Origin: https://portal.e2e.test' "$tmp/headers" ||
+    { echo "FAIL no CORS header on 403" >&2; fail=1; }
+grep -qi '^WWW-Authenticate: Bearer realm="tes", error="insufficient_scope"' "$tmp/headers" ||
+    { echo "FAIL no insufficient_scope challenge on 403" >&2; fail=1; }
 expect "client not allowed" 401 -H "$(bearer "$(mint --client other-client)")" "$base/v1/tasks"
 grep -qi '^WWW-Authenticate: Bearer realm="tes", error="invalid_token"' "$tmp/headers" ||
     { echo "FAIL no invalid_token challenge" >&2; fail=1; }
@@ -115,6 +120,7 @@ expect "wrong Basic password" 401 -u "$user:wrong-$password" "$base/v1/tasks"
 got=$(curl -sS -o /dev/null -w '%{http_code}' -H "$(bearer "$(mint --sub plain-user)")" \
     -H "Authorization: Basic $(printf '%s' "$user:wrong-$password" | base64 -w0)" \
     "$base/v1/tasks" || true)
+# 403 if nginx passes the first header (a valid token without the group).
 case $got in
     400|401|403) echo "ok   two Authorization headers ($got)" ;;
     *) echo "FAIL two Authorization headers: got $got" >&2; fail=1 ;;

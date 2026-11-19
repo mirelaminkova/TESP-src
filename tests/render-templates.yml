@@ -553,7 +553,10 @@
               # No required group: 403, with the CORS headers too.
               - "'error_page 403 = @forbidden;' in conf"
               - "'location @forbidden {' in conf"
-              - "'if ($tes_auth_status ~ \"^50[234]\") {' in conf"
+              - "'error=\"insufficient_scope\"' in conf"
+              # A stopped validator (no upstream status) is 503 as well.
+              - "'if ($tes_auth_status ~ \"^(50[234])?$\") {' in conf"
+              - "'~^50[234]' in conf"
               - conf is search('WWW-Authenticate .Basic realm')
           vars:
             conf: "{{ lookup('file', out.path ~ '/oauth-gateway.conf') }}"

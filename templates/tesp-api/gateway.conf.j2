@@ -61,6 +61,7 @@ access_log /var/log/nginx/access.log tes_gateway;
 # Only for a 503 of the validator (the issuer can't be reached).
 map $tes_auth_status $tes_retry_after {
     "~^50[234]"  "30";
+    ""           "30";
     default      "";
 }
 
@@ -276,6 +277,8 @@ server {
     # don't ask the user to log in again (that's for 401).
     location @forbidden {
 {{ cors_headers() }}
+        # RFC 6750: the token is fine, its permissions are not.
+        add_header WWW-Authenticate 'Bearer realm="tes", error="insufficient_scope"' always;
         default_type application/json;
         return 403 '{"detail": "Not allowed: the account lacks the required group"}';
     }
@@ -288,7 +291,8 @@ server {
         default_type application/json;
         # 503 from the validator (issuer unreachable), or the validator
         # itself not answering (502, 504).
-        if ($tes_auth_status ~ "^50[234]") {
+        # Empty: the validator's name doesn't resolve (container stopped).
+        if ($tes_auth_status ~ "^(50[234])?$") {
             return 503 '{"detail": "Token check unavailable, try again later"}';
         }
         return 500 '{"detail": "Internal error"}';

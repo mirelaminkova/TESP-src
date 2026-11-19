@@ -325,18 +325,18 @@ def test_userinfo_without_entitlement_claim_is_logged(idp, caplog):
             check(v, idp.token())
     assert "userinfo has no eduperson_entitlement" in caplog.text
     assert CLIENT in caplog.text
+    # Once per client and hour, not for every token.
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="tes-validator"):
+        with pytest.raises(tv.Forbidden):
+            check(v, idp.token(sub="user-1", iat=1))
+    assert "userinfo has no eduperson_entitlement" not in caplog.text
 
 
 def test_http_missing_group_is_403(idp, service):
     idp.userinfo["eduperson_entitlement"] = []
     status, headers = call(service + "/auth", "Bearer " + idp.token())
     assert status == 403 and "WWW-Authenticate" not in headers
-
-
-def test_user_without_entitlement_is_refused(idp):
-    idp.userinfo["eduperson_entitlement"] = ["urn:example:group:vo:other"]
-    v = tv.Validator(idp.config())
-    denied(v, "Bearer " + idp.token(), "no matching entitlement")
 
 
 def test_exact_entitlement_is_not_a_prefix(idp):
