@@ -186,8 +186,9 @@
 
       <p>A task's <code>resources.cpu_cores</code> and <code>resources.ram_gb</code> are passed to SLURM
         (<code>--cpus-per-task</code>, <code>--mem</code>): a task waits until that much is free on this node,
-        and fails if it asks for more than the node has. SLURM reserves the resources but doesn't cap what a
-        running task uses.</p>
+        and fails if it asks for more than the node has. A running task is stopped if it uses more memory
+        than it asked for (checked every 10 seconds; without <code>ram_gb</code> it gets a per-CPU share of
+        the node's memory). CPUs aren't capped: a task can use more than it asked for.</p>
 
       <p>Long tasks are fine: the service waits until a task's job finishes, however long it queues or runs.
 {% if tesp_max_wait_seconds | default(0) | int > 0 %}

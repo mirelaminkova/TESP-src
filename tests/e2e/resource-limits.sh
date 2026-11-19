@@ -30,6 +30,11 @@
 #   ram-too-big   ram_gb 4096: the same. SLURM rejected oversize memory at
 #                 submission even before #21, so this case guards the memory
 #                 path, not the #21 fix.
+#   ram-within    ram_gb 1, holds 256 MiB for 30 s: must reach COMPLETE
+#   ram-overuse   ram_gb 0.5, holds 1.5 GiB for 90 s: must be killed by
+#                 SLURM (EXECUTOR_ERROR/SYSTEM_ERROR, "exceeded memory
+#                 limit" in its logs) before it finishes (issue #13). Runs
+#                 ram-within first: the control for the same image.
 # tesp-api reports no reason for a rejection yet (mirelaminkova/tesp-api#66);
 # on the workspace, `sacct` and slurmctld's log show it.
 #
@@ -46,9 +51,18 @@ TIMEOUT=${TIMEOUT:-240}
 REJECT_SECONDS=${REJECT_SECONDS:-60}
 read -r -a curl_opts <<<"${CURL_OPTS:-}"
 
-ALL_CASES=(fits cpu-too-big ram-too-big)
+ALL_CASES=(fits cpu-too-big ram-too-big ram-within ram-overuse)
+# hog <MiB> <seconds>: a shell command that holds that much memory, every
+# page written (bytes * n), then prints "held <MiB> MiB"
+HOG_IMAGE=python:3.13-alpine
+hog() {
+    printf 'python3 -c %q' \
+        "import time; b = b'x' * ($1 << 20); time.sleep($2); print('held $1 MiB')"
+}
+ram_within_ran='' ram_within_ok=''
 FAILED_STATES=" EXECUTOR_ERROR SYSTEM_ERROR "
 failures=0
+passes=0
 control_ok=
 
 # Prints the response body; fails on an HTTP error. The credentials go
@@ -82,7 +96,8 @@ EOF
 }
 
 # run <case> <task json>: submits it and waits. Sets ID, STATE (the final
-# state, or SUBMIT_ERROR / "<state>(timeout ...)"), SECONDS_TAKEN, DETAIL.
+# state, or SUBMIT_ERROR / "<state>(timeout ...)"), SECONDS_TAKEN, and
+# DETAIL (all the task's logs; only the end is printed).
 # Never exits the script: a failed poll is retried until TIMEOUT.
 run() {
     local t0 state=UNKNOWN
@@ -121,12 +136,14 @@ for log in j.get("logs") or []:
         parts.append("exit_code=%s" % e.get("exit_code"))
         parts += [e.get("stdout") or "", e.get("stderr") or ""]
 text = " | ".join(p.strip().replace("\n", " ") for p in parts if p and p.strip())
-print(text[-300:] if text else "no reason reported")
+print(text or "no reason reported")
 ') || DETAIL="task logs unavailable"
-    echo "   $1: task $ID -> $STATE in ${SECONDS_TAKEN}s; $DETAIL"
+    local shown=$DETAIL
+    (( ${#shown} <= 300 )) || shown=${shown: -300}
+    echo "   $1: task $ID -> $STATE in ${SECONDS_TAKEN}s; $shown"
 }
 
-pass() { echo "PASS $1"; }
+pass() { echo "PASS $1"; passes=$((passes + 1)); }
 fail() { echo "FAIL $1"; failures=$((failures + 1)); }
 
 expect_complete() {  # <case>
@@ -163,6 +180,32 @@ case_ram-too-big() {
     expect_rejected ram-too-big
 }
 
+case_ram-within() {
+    [ -z "$ram_within_ran" ] || return 0
+    ram_within_ran=1
+    run ram-within "$(task 1 1 "$HOG_IMAGE" "$(hog 256 30)")"
+    expect_complete ram-within
+    if [ "$STATE" = COMPLETE ]; then ram_within_ok=1; fi
+}
+
+# The task must fail because SLURM killed it for its memory: the hog never
+# finished, and slurmstepd's message reached the task's logs.
+case_ram-overuse() {
+    case_ram-within  # the control; runs once
+    run ram-overuse "$(task 1 0.5 "$HOG_IMAGE" "$(hog 1536 90)")"
+    if [ -z "$ram_within_ok" ]; then
+        fail "ram-overuse (inconclusive: the control task 'ram-within' didn't complete)"
+    elif [[ "$FAILED_STATES" != *" $STATE "* ]]; then
+        fail "ram-overuse (expected EXECUTOR_ERROR or SYSTEM_ERROR)"
+    elif [[ "$DETAIL" == *"held 1536 MiB"* ]]; then
+        fail "ram-overuse (the task held its memory to the end: not killed)"
+    elif [[ "$DETAIL" != *"exceeded memory limit"* ]]; then
+        fail "ram-overuse (failed without SLURM's \"exceeded memory limit\")"
+    else
+        pass ram-overuse
+    fi
+}
+
 cases=("$@")
 [ ${#cases[@]} -gt 0 ] || cases=("${ALL_CASES[@]}")
 for c in "${cases[@]}"; do
@@ -176,5 +219,5 @@ run_cases=(fits)
 for c in "${cases[@]}"; do [ "$c" = fits ] || run_cases+=("$c"); done
 for c in "${run_cases[@]}"; do "case_$c"; done
 
-echo "Summary: $(( ${#run_cases[@]} - failures )) passed, $failures failed"
+echo "Summary: $passes passed, $failures failed"
 [ "$failures" -eq 0 ]
