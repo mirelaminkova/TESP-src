@@ -113,8 +113,9 @@
     - name: The test job ran as expected
       ansible.builtin.assert:
         that: >-
-          (lookup('ansible.builtin.file', stubs ~ '/job.user') == case.expect_job)
-          if case.expect_job is defined else not job_user_file.stat.exists
+          (case.expect_job is defined
+           and lookup('ansible.builtin.file', stubs ~ '/job.user') == case.expect_job)
+          or (case.expect_job is not defined and not job_user_file.stat.exists)
         fail_msg: "test job: expected {{ case.expect_job | default('none') }}: {{ case.why }}"
         quiet: true
 
