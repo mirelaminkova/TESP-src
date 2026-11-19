@@ -1083,7 +1083,7 @@ def test_an_abandoned_fetch_doesnt_clobber_a_newer_one(idp):
     newer = threading.Event()
     state.refreshing = newer
     old = threading.Event()
-    v._fetch_jwks(v.config.issuers[idp.issuer], state, time.time(), old)
+    v._fetch_jwks(v.config.issuers[idp.issuer], state, time.time(), old, 1)
     assert old.is_set()
     # The newer refresh still owns the state; the late result isn't published.
     assert state.refreshing is newer
@@ -1154,8 +1154,8 @@ def test_a_late_fetch_publishes_when_no_newer_one_started(idp):
     v = tv.Validator(idp.config())
     state = v._state[idp.issuer]
     old = threading.Event()  # given up on: refreshing was cleared
-    v._fetch_jwks(v.config.issuers[idp.issuer], state, time.time(), old)
-    assert state.keys and state.fetched_at is not None
+    v._fetch_jwks(v.config.issuers[idp.issuer], state, time.time(), old, 1)
+    assert state.keys and state.fetched_at is not None and state.published == 1
 
 
 def test_a_late_fetch_doesnt_bring_back_older_keys(idp):
@@ -1166,9 +1166,41 @@ def test_a_late_fetch_doesnt_bring_back_older_keys(idp):
     issuer = v.config.issuers[idp.issuer]
     started = time.time()
     newer = {"new-kid": object()}
-    state.keys, state.fetched_at = newer, started + 5  # completed later
-    v._fetch_jwks(issuer, state, started, threading.Event())
+    # Fetch 2 started later and completed first.
+    state.keys, state.fetched_at, state.published = newer, started + 5, 2
+    v._fetch_jwks(issuer, state, started, threading.Event(), 1)
     assert state.keys is newer and state.fetched_at == started + 5
+
+
+def test_a_newer_fetch_publishes_after_the_clock_steps_back(idp):
+    """Ordering is by fetch number, not wall clock: after an NTP step
+    backwards, a refresh still replaces the keys."""
+    now = [time.time()]
+    v = tv.Validator(idp.config(), clock=lambda: now[0])
+    check(v, idp.token(client_id=EXEMPT))
+    state = v._state[idp.issuer]
+    stale = {"revoked": object()}
+    state.keys = stale
+    now[0] -= 3600  # the clock steps back an hour, then the keys age out
+    state.fetched_at = now[0] + 3600
+    state.attempted_at = None
+    check(v, idp.token(client_id=EXEMPT))  # its kid is unknown now
+    assert state.keys is not stale and state.published == 2
+    assert state.fetched_at == now[0]
+
+
+def test_a_kidless_token_isnt_an_outage_during_the_backoff(idp):
+    """A token without a kid isn't a rotated key: after a failed fetch,
+    it is checked against the one key known, not refused with a 503."""
+    now = [time.time()]
+    v = tv.Validator(idp.config(), clock=lambda: now[0])
+    check(v, idp.token(client_id=EXEMPT))
+    idp.jwks_status = 503
+    now[0] += 61
+    with pytest.raises(tv.Denied):
+        check(v, idp.token(kid="rotated"))  # the failed refresh
+    now[0] += 10
+    assert check(v, idp.token(kid=None)).kind == "bearer"
 
 
 def test_unknown_kid_right_after_a_failed_fetch_is_unavailable(idp):

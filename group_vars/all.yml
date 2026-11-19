@@ -257,8 +257,9 @@ tesp_gateway_rate_per_second: 20
 # timeout (Nextflow's HTTP client: 10 s).
 tesp_gateway_rate_burst: 40
 # Connections one address may keep open: requests in progress, not a rate.
-# Room for the rate times a slow LS Login answer (20/s x 5 s).
-tesp_gateway_conn_per_address: 100
+# Below the validator's 64 concurrent checks, so one address can't take
+# them all while LS Login answers slowly.
+tesp_gateway_conn_per_address: 32
 # Addresses (IP or CIDR) that are never rate-limited, from
 # src_tes_rate_exempt_sources, e.g. proTES's, which submits for all its
 # users. The Basic sources are exempt too.

@@ -346,6 +346,12 @@ class _IssuerState:
     # Set while one request fetches the JWKS; others wait on it, without
     # holding the lock (which guards only these fields, never a fetch).
     refreshing: threading.Event | None = None
+    # Fetches are numbered as they start; the keys published come from
+    # fetch number `published`. A late fetch publishes only if it started
+    # after that one: no clock comparison, so a clock step can't block or
+    # roll back a refresh.
+    generation: int = 0
+    published: int = 0
 
 
 @dataclass(frozen=True)
@@ -544,15 +550,18 @@ class Validator:
             if fetching:
                 state.attempted_at = now
                 state.refreshing = done = threading.Event()
+                state.generation += 1
+                generation = state.generation
         if waiting_for is not None:
             # Another request fetches: its result, or what we have.
             if not waiting_for.wait(abandoned_after) and \
                     state.keys.get(kid) is None:
                 raise Unavailable("JWKS refresh still running")
         elif fetching:
-            self._fetch_jwks(issuer, state, now, done)
+            self._fetch_jwks(issuer, state, now, done, generation)
         elif state.fetched_at is None or (
-                state.keys.get(kid) is None and state.attempted_at is not None
+                kid is not None and state.keys.get(kid) is None
+                and state.attempted_at is not None
                 and state.attempted_at > state.fetched_at):
             # The last fetch failed (or hung) and the back-off holds: a
             # rotated key we couldn't fetch is an outage (503), not a bad
@@ -578,7 +587,8 @@ class Validator:
             return key
 
     def _fetch_jwks(self, issuer: IssuerConfig, state: _IssuerState,
-                    now: float, done: threading.Event) -> None:
+                    now: float, done: threading.Event,
+                    generation: int) -> None:
         """Fetches the JWKS (this request only) and publishes the result."""
         try:
             self._resolve_endpoints(issuer, state)
@@ -595,10 +605,14 @@ class Validator:
             # must not overwrite newer keys (a revoked kid would come back),
             # but may publish its own.
             with state.lock:
-                if state.refreshing in (done, None) and (
-                        state.fetched_at is None or now > state.fetched_at):
+                if state.refreshing in (done, None) and \
+                        generation > state.published:
                     state.keys = keys
                     state.fetched_at = now
+                    state.published = generation
+                else:
+                    log.info("JWKS of %s from an abandoned refresh discarded: "
+                             "a newer one started", issuer.issuer)
         finally:
             with state.lock:
                 if state.refreshing is done:

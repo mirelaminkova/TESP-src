@@ -117,6 +117,9 @@
       - why: no connections per address
         expect: Invalid access settings
         vars: {tesp_gateway_conn_per_address: 0}
+      - why: as many connections per address as the validator has checks
+        expect: Invalid access settings
+        vars: {tesp_gateway_conn_per_address: 64}
       - why: Basic sources with a space (as SRC would split them)
         expect: Invalid access settings
         vars: {src_tes_basic_auth_sources: '10.0.0.1 10.0.0.2'}
