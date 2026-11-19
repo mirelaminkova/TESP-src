@@ -35,10 +35,11 @@
 #                 SLURM (EXECUTOR_ERROR/SYSTEM_ERROR, "exceeded memory
 #                 limit" in its logs) before it finishes (issue #13). Runs
 #                 ram-within first: the control for the same image.
-#   cpu-pinned    cpu_cores 1: must reach COMPLETE with nproc 1, that is
-#                 pinned to one CPU (issue #39). Fails where the deploy
-#                 warned that the node's CPUs can't be pinned (task/none).
-#                 Proves nothing on a 1-CPU node.
+#   cpu-pinned    cpu_cores 1, then 2: must reach COMPLETE with nproc 1 and
+#                 2, that is pinned to as many CPUs as asked for (issue
+#                 #39). Fails where the deploy warned that the node's CPUs
+#                 can't be pinned (task/none). Needs a node with 3 or more
+#                 CPUs to tell pinning from the node's size.
 # tesp-api reports no reason for a rejection yet (mirelaminkova/tesp-api#66);
 # on the workspace, `sacct` and slurmctld's log show it.
 #
@@ -211,14 +212,16 @@ case_ram-overuse() {
 }
 
 case_cpu-pinned() {
-    run cpu-pinned "$(task 1 null alpine:3.20 "echo nproc=\$(nproc)")"
-    if [ "$STATE" != COMPLETE ]; then
-        fail "cpu-pinned (expected COMPLETE)"
-    elif [[ "$DETAIL" != *"nproc=1"* ]]; then
-        fail "cpu-pinned (not pinned to its CPU: TaskPlugin isn't task/affinity?)"
-    else
-        pass cpu-pinned
-    fi
+    local n bad=''
+    for n in 1 2; do
+        run "cpu-pinned($n)" "$(task "$n" null alpine:3.20 "echo nproc=\$(nproc).")"
+        if [ "$STATE" != COMPLETE ]; then
+            bad+=" cpu_cores $n: expected COMPLETE;"
+        elif [[ "$DETAIL" != *"nproc=$n."* ]]; then
+            bad+=" cpu_cores $n: not pinned to $n CPU(s) (TaskPlugin isn't task/affinity?);"
+        fi
+    done
+    if [ -n "$bad" ]; then fail "cpu-pinned ($bad )"; else pass cpu-pinned; fi
 }
 
 cases=("$@")

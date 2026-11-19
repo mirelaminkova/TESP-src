@@ -53,22 +53,34 @@ slurm_config:
 tesp_slurm_cpus: >-
   {{ [ansible_facts['processor_vcpus'] | int,
       ansible_facts['processor_nproc'] | int] | min }}
-# task/affinity binds a job to CPUs by number, 0..N-1, so they must be the
-# CPUs the node may run on (as on an SRC VM). Where they aren't (a container
-# pinned to other host CPUs, a cpuset), binding fails with EINVAL, every job
-# fails to start and SLURM drains the node: no pinning there.
-# tesp_slurm_cpus_allowed is PID 1's Cpus_allowed_list ("0-7", "1,7"), read
-# by playbook.yml before SLURM is configured; slurmd inherits it.
+# task/affinity binds a job to CPUs by number, 0..N-1, so each of those must
+# be a CPU the node may run on and online (as on an SRC VM). Where one isn't
+# (a container pinned to other host CPUs, a cpuset, an offline CPU), binding
+# fails with EINVAL, every job fails to start and SLURM drains the node: no
+# pinning there. Set tesp_slurm_task_plugin to task/none to turn it off.
+# Read by playbook.yml before SLURM is configured: PID 1's Cpus_allowed_list
+# (slurmd inherits it) and the online CPUs, kernel CPU lists ("0-7", "1,7").
 tesp_slurm_cpus_allowed: >-
   {{ ((tesp_pid1_status.content | default('') | b64decode)
       | regex_findall('(?m)^Cpus_allowed_list:\s*(\S+)')
       | first) | default('') }}
+tesp_slurm_cpus_online: >-
+  {{ tesp_cpus_online.content | default('') | b64decode | trim }}
 tesp_slurm_task_plugin: >-
-  {{ 'task/affinity'
-     if (tesp_slurm_cpus_allowed | default('')) ==
-        ('0' if (tesp_slurm_cpus | int) == 1
-         else '0-' ~ ((tesp_slurm_cpus | int) - 1))
-     else 'task/none' }}
+  {%- macro cpu_set(cpu_list) -%}
+  {%- for r in cpu_list.split(',') if r -%}
+  {%- set b = r.split('-') -%}
+  {%- for c in range(b[0] | int, (b[-1] | int) + 1) %},{{ c }}{% endfor -%}
+  {%- endfor -%},
+  {%- endmacro -%}
+  {%- set allowed = cpu_set(tesp_slurm_cpus_allowed) -%}
+  {%- set online = cpu_set(tesp_slurm_cpus_online) -%}
+  {%- set ns = namespace(ok=true) -%}
+  {%- for c in range(tesp_slurm_cpus | int) -%}
+  {%- set ns.ok = ns.ok and (',' ~ c ~ ',') in allowed
+                  and (',' ~ c ~ ',') in online -%}
+  {%- endfor -%}
+  {{ 'task/affinity' if ns.ok else 'task/none' }}
 # Memory (MiB) kept out of SLURM for the OS, Docker (tesp-api, MongoDB),
 # Pulsar and nginx. At most half of the node's memory is held back.
 tesp_slurm_reserved_memory_mb: 2048
