@@ -606,11 +606,14 @@
           - docker-compose.deploy.yml
         state: absent
       vars:
-        old: "{{ (tesp_stack_subnet_check.stdout | from_json).own_subnets }}"
+        # The last line: anything a pty mixes in comes before it.
+        old: "{{ (tesp_stack_subnet_check.stdout_lines | last | from_json).own_subnets }}"
         pinned: {default: "{{ tesp_stack_default_subnet }}", auth: "{{ tesp_stack_auth_subnet }}"}
+      # auth only with tokens on: with them off, Compose no longer manages a
+      # leftover auth network, and it does no harm.
       when: >-
         old.get('default') not in [none, pinned.default]
-        or old.get('auth') not in [none, pinned.auth]
+        or (tesp_oauth_enabled | bool and old.get('auth') not in [none, pinned.auth])
 
     - name: Build and start the TESP-API stack
       community.docker.docker_compose_v2:

@@ -102,8 +102,13 @@ jobs:
           test "$(echo "$out" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin), sort_keys=True))')" = "$want"
           # As another project, the stack's networks are a conflict; so is
           # Docker's default bridge.
-          ! python3 files/check_stack_subnet.py 172.16.97.0/24 other-project
-          ! python3 files/check_stack_subnet.py 172.17.0.0/24 tesp-api
+          # (bash -e ignores a failing "! cmd", hence the ifs.)
+          if python3 files/check_stack_subnet.py 172.16.97.0/24 other-project; then
+            echo "expected a conflict with the stack's networks" >&2; exit 1
+          fi
+          if python3 files/check_stack_subnet.py 172.17.0.0/24 tesp-api; then
+            echo "expected a conflict with docker0" >&2; exit 1
+          fi
 
       - name: wait for tesp-api behind the gateway
         run: tests/e2e/wait-for-tesp-api.sh http://127.0.0.1:8080 tes "$E2E_TES_PASSWORD"

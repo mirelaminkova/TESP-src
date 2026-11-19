@@ -186,8 +186,8 @@ tesp_api_repo: "https://github.com/mirelaminkova/tesp-api.git"
 tesp_api_version: "c3a9f2376df7a634ad6c33959800d169219b7560"
 tesp_install_dir: /srv/tesp-api
 # The stack's Compose project: what Compose would name it after that
-# directory, set explicitly so the playbook can find the stack's network
-# (tesp-api_default by default).
+# directory (tesp-api by default), set explicitly so the playbook can find
+# the stack's networks (<project>_default and <project>_auth).
 tesp_compose_project: >-
   {{ tesp_install_dir | basename | lower | regex_replace('[^a-z0-9_-]', '') }}
 # Host-localhost port of the gateway container (the /tes/ nginx proxy_pass
