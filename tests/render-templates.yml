@@ -577,6 +577,154 @@
           ansible.builtin.command: sh -n {{ out.path }}/pulsar-firewall.sh
           changed_when: false
 
+        # Issue #35: under --check, a host without a stored token (deployed
+        # before #19) gets no file from copy, so file and slurp must not run,
+        # and only a real --check (ansible_check_mode) may use the stand-in.
+        - name: Run the token tasks under ansible-playbook --check
+          ansible.builtin.command:
+            # The same ansible-core as this run, whatever is on PATH.
+            argv:
+              - "{{ ansible_playbook_python }}"
+              - -m
+              - ansible.cli.playbook
+              - --check
+              - -i
+              - localhost,
+              - -c
+              - local
+              - "{{ playbook_dir }}/check-mode/pulsar-token.yml"
+              - -e
+              - "tesp_pulsar_token_file={{ out.path }}/check_mode_pulsar_token"
+          register: check_mode_run
+          changed_when: false
+          failed_when: false
+
+        - name: Look for a token file written in check mode
+          ansible.builtin.stat:
+            path: "{{ out.path }}/check_mode_pulsar_token"
+          register: check_mode_token_file
+
+        - name: Check mode uses a stand-in token and writes nothing
+          ansible.builtin.assert:
+            that:
+              - check_mode_run.rc == 0
+              - not check_mode_token_file.stat.exists
+              # A normal run can't reach the stand-in (copy writes the file
+              # first), so pin the guard itself.
+              - >-
+                (token_tasks | selectattr('name', 'eq', 'Set the Pulsar token') | first)
+                ['ansible.builtin.set_fact'].pulsar_token
+                is search("'check-mode-stand-in-token-not-stored' if ansible_check_mode else ''")
+            fail_msg: >-
+              the token tasks fail or write a file under --check when no token
+              is stored yet (#35): rc={{ check_mode_run.rc }}
+              {{ check_mode_run.stdout_lines | select('search', 'fatal|msg') | list }}
+              {{ check_mode_run.stderr | default('') }}
+          vars:
+            token_tasks: "{{ lookup('file', playbook_dir ~ '/../tasks/pulsar-token.yml') | from_yaml }}"
+
+        # Issue #35: the script that decides whether Pulsar runs with an older
+        # config than the one on disk, run against a stub busctl.
+        - name: Render the stale-config check, and variants for a missing config dir and unit
+          ansible.builtin.template:
+            src: "{{ templates_dir }}/pulsar-config-stale.sh.j2"
+            dest: "{{ out.path }}/{{ item.name }}.sh"
+            mode: '0700'
+          vars:
+            pulsar_config_dir: "{{ out.path }}/{{ item.dir }}"
+            pulsar_systemd_service_name: "{{ item.unit }}"
+          loop:
+            - {name: pulsar-config-stale, dir: pulsar config, unit: pulsar}
+            - {name: missing-dir, dir: no such dir, unit: pulsar}
+            - {name: missing-unit, dir: pulsar config, unit: nosuch}
+            - {name: masked-unit, dir: pulsar config, unit: masked}
+          loop_control:
+            label: "{{ item.name }}"
+
+        - name: Run the stale-config check against stub busctl and systemctl
+          ansible.builtin.shell: |
+            set -eu
+            mkdir -p "{{ out.path }}/bin" "{{ out.path }}/pulsar config"
+            # busctl answers like systemd 249 on Ubuntu 22.04 (recorded on the
+            # test bed), for pulsar.service; any other unit is not-found, as
+            # LoadUnit reports it, and masked.service is masked. STARTED is in seconds, sent as microseconds
+            # with a fraction; like systemd it is kept after the unit stops,
+            # and 0 means never started.
+            cat > "{{ out.path }}/bin/busctl" <<'STUB'
+            #!/bin/sh
+            sd=org.freedesktop.systemd1
+            unit=/org/freedesktop/systemd1/unit
+            case "$*" in
+              "call $sd /org/freedesktop/systemd1 $sd.Manager LoadUnit s pulsar.service")
+                echo "o \"$unit/pulsar_2eservice\"" ;;
+              "call $sd /org/freedesktop/systemd1 $sd.Manager LoadUnit s masked.service")
+                echo "o \"$unit/masked_2eservice\"" ;;
+              "call $sd /org/freedesktop/systemd1 $sd.Manager LoadUnit s "*)
+                echo "o \"$unit/other\"" ;;
+              "get-property $sd $unit/pulsar_2eservice $sd.Unit LoadState") echo 's "loaded"' ;;
+              "get-property $sd $unit/pulsar_2eservice $sd.Unit ActiveState") echo "s \"$STATE\"" ;;
+              "get-property $sd $unit/pulsar_2eservice $sd.Unit ActiveEnterTimestamp")
+                if [ "$STARTED" = 0 ]; then echo "t 0"; else echo "t ${STARTED}943052"; fi ;;
+              "get-property $sd $unit/other $sd.Unit LoadState") echo 's "not-found"' ;;
+              "get-property $sd $unit/masked_2eservice $sd.Unit LoadState") echo 's "masked"' ;;
+              "get-property $sd $unit/masked_2eservice $sd.Unit ActiveState") echo 's "inactive"' ;;
+              "get-property $sd $unit/masked_2eservice $sd.Unit ActiveEnterTimestamp") echo 't 0' ;;
+              *) exit 3 ;;
+            esac
+            STUB
+            # The script must not parse `systemctl show` output (local time).
+            printf '#!/bin/sh\nexit 3\n' > "{{ out.path }}/bin/systemctl"
+            chmod +x "{{ out.path }}/bin/busctl" "{{ out.path }}/bin/systemctl"
+            # A fractional mtime, as real files have.
+            touch -d @1700000000.5 "{{ out.path }}/pulsar config/app.yml"
+            script="{{ out.path }}/pulsar-config-stale.sh"
+            # run STATE STARTED [script]: the Pulsar unit state and start time (s)
+            run() { STATE=$1 STARTED=$2 PATH="{{ out.path }}/bin:$PATH" bash "${3:-$script}"; }
+            echo "config-older:$(run active 1700000100) same-second:$(run active 1700000000)" \
+                 "config-newer:$(run active 1699999900) stopped:$(run inactive 1700000100)" \
+                 "failed:$(run failed 1700000100) never-started:$(run inactive 0)" \
+                 "no-dir:$(run active 1700000100 "{{ out.path }}/missing-dir.sh")" \
+                 "no-unit:$(run inactive 0 "{{ out.path }}/missing-unit.sh")" \
+                 "masked:$(run inactive 0 "{{ out.path }}/masked-unit.sh")"
+          args:
+            executable: /bin/bash
+          register: stale_runs
+          changed_when: false
+
+        - name: Pulsar is stale unless it is active and newer than its config
+          ansible.builtin.assert:
+            that:
+              - >-
+                stale_runs.stdout == 'config-older:current same-second:stale config-newer:stale
+                stopped:stale failed:stale never-started:stale no-dir:stale no-unit:missing masked:stale'
+            fail_msg: "stale-config check gave {{ stale_runs.stdout }} (#35)"
+
+        # Issue #35: under --check the shell would be skipped, and the
+        # restart task needs its result. It only reads, so it runs anyway.
+        - name: The stale-config check runs under --check
+          ansible.builtin.assert:
+            that:
+              - check_task | length == 1
+              - check_task[0].check_mode is defined and not check_task[0].check_mode
+              - check_task[0]['ansible.builtin.shell'] is search('pulsar-config-stale[.]sh[.]j2')
+              - restart_task | length == 1
+              - >-
+                restart_task[0].when | string
+                == "tesp_pulsar_config_state.stdout == 'stale' or (tesp_pulsar_config_state.stdout == 'missing' and not ansible_check_mode)"
+            fail_msg: >-
+              under --check the stale-config check must still run (it only
+              reads), and only --check may skip restarting a unit that systemd
+              doesn't know yet (#35)
+          vars:
+            check_task: >-
+              {{ plays | map(attribute='post_tasks', default=[]) | flatten(levels=1)
+                 | map('to_json') | select('search', 'register": "tesp_pulsar_config_state')
+                 | map('from_json') | list }}
+            restart_task: >-
+              {{ plays | map(attribute='post_tasks', default=[]) | flatten(levels=1)
+                 | selectattr('name', 'eq', "Restart Pulsar if it doesn't run with its current config")
+                 | list }}
+
         # Issue #9. Last: these replace the test pulsar_token fact set above.
         - name: Generate and store a Pulsar token
           ansible.builtin.include_tasks: ../tasks/pulsar-token.yml
@@ -712,8 +860,10 @@
               config directory with Pulsar's start time and restart it
           vars:
             pjson: "{{ plays | map(attribute='post_tasks', default=[]) | flatten(levels=1) | map('to_json') | list }}"
+            # The comparison itself (pulsar-config-stale.sh.j2) is run
+            # against a stub busctl in the #35 checks above.
             check_tasks: >-
-              {{ pjson | select('search', 'ActiveEnterTimestamp')
+              {{ pjson | select('search', 'pulsar-config-stale[.]sh[.]j2')
                  | select('search', 'register": "tesp_pulsar_config_state')
                  | map('from_json') | list }}
             restart_tasks: >-

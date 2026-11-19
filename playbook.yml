@@ -179,25 +179,27 @@
     # The role's restart (pulsar_restart_handler_name) is a handler: if a run
     # stops after the role wrote a new app.yml but before handlers ran, the
     # next run changes nothing and Pulsar would keep the old token. So also
-    # restart Pulsar whenever a file in its config directory is newer than
-    # the running process. Same second counts as newer: an extra restart is
-    # harmless, a missed one breaks every task.
+    # restart Pulsar whenever it doesn't run with the config on disk
+    # (templates/pulsar-config-stale.sh.j2).
     - name: Check whether Pulsar runs with its current config
-      ansible.builtin.shell: |
-        set -euo pipefail
-        started=$(date -d "$(systemctl show -P ActiveEnterTimestamp {{ pulsar_systemd_service_name | default('pulsar') }}.service)" +%s)
-        newest=$(find {{ pulsar_root }}/config -maxdepth 1 -type f -printf '%T@\n' | sort -n | tail -n 1 | cut -d. -f1)
-        if [ "${newest:-0}" -ge "$started" ]; then echo stale; else echo current; fi
+      ansible.builtin.shell: "{{ lookup('ansible.builtin.template', 'pulsar-config-stale.sh.j2') }}"
       args:
         executable: /bin/bash
       register: tesp_pulsar_config_state
       changed_when: false
+      # Only reads, so it runs under --check too, where the task below needs
+      # its result.
+      check_mode: false
 
-    - name: Restart Pulsar if its config is newer than the running process
+    - name: Restart Pulsar if it doesn't run with its current config
       ansible.builtin.systemd_service:
         name: "{{ pulsar_systemd_service_name | default('pulsar') }}.service"
         state: restarted
-      when: tesp_pulsar_config_state.stdout == 'stale'
+      # "missing": systemd has no Pulsar unit (not-found), which happens
+      # under --check on a fresh host; the role would have failed otherwise.
+      # A normal run tries the restart anyway, so the failure shows.
+      when: >-
+        tesp_pulsar_config_state.stdout == 'stale' or (tesp_pulsar_config_state.stdout == 'missing' and not ansible_check_mode)
 
     - name: Create directory /srv/static/
       ansible.builtin.file:
