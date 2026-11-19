@@ -243,10 +243,11 @@ tesp_cors_origins: >-
      | map('trim') | select | list }}
 # Where the gateway takes the client's address from X-Real-IP, which the host
 # nginx (SRC's reverse-proxy role) sets: Docker's bridge networks, from which
-# the host's connections to the gateway's published port arrive. Docker's
-# default pools are 172.17.0.0/16 to 172.31.0.0/16; add 192.168.0.0/16 only
-# if this Docker hands out addresses from there.
-tesp_gateway_trusted_proxies: [172.16.0.0/12]
+# the host's connections to the gateway's published port arrive: Docker's
+# default pools, 172.17.0.0/16 to 172.31.0.0/16, then 192.168.0.0/16 once
+# those are used up. Without a range, every client looks like the bridge
+# gateway: one rate-limit bucket for all and Basic sources that don't match.
+tesp_gateway_trusted_proxies: [172.16.0.0/12, 192.168.0.0/16]
 # Requests per second per client address on the TES API (not service info or
 # the docs), with a burst; more get 429. A Nextflow run polls each task.
 tesp_gateway_rate_per_second: 20

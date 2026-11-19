@@ -159,8 +159,9 @@ grep -qi '^Retry-After: 30' "$tmp/headers" || { echo "FAIL no Retry-After on 503
 
 # Rate limit per client address (20/s, burst 40): a burst of 100 requests
 # without credentials gets 429s, with the CORS headers.
-codes=$(for _ in $(seq 1 100); do
-    curl -s -o /dev/null -w '%{http_code}\n' -H "Origin: $portal" "$base/v1/tasks" &
+mkdir -p "$tmp/burst"
+codes=$(for i in $(seq 1 100); do
+    curl -s -o /dev/null -D "$tmp/burst/$i" -w '%{http_code}\n' -H "Origin: $portal" "$base/v1/tasks" &
 done; wait)
 n429=$(grep -c '^429$' <<< "$codes" || true)
 if [ "$n429" -gt 0 ]; then
@@ -169,7 +170,15 @@ else
     echo "FAIL rate limit: no 429 in a burst of 100" >&2
     fail=1
 fi
-curl -s -o /dev/null -D "$tmp/headers" -H "Origin: $portal" "$base/v1/tasks" >/dev/null
+# A 429 carries the CORS headers and Retry-After, so a portal can back off.
+h429=$(grep -l '^HTTP/1.1 429' "$tmp"/burst/* | head -1)
+if [ -n "$h429" ] && grep -qiF "Access-Control-Allow-Origin: $portal" "$h429" &&
+        grep -qi '^Retry-After: 1' "$h429"; then
+    echo "ok   429 carries Allow-Origin and Retry-After"
+else
+    echo "FAIL 429 without Allow-Origin or Retry-After" >&2
+    fail=1
+fi
 sleep 3
 
 # No token may end up in the logs.

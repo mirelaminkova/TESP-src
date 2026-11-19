@@ -463,6 +463,14 @@
           vars:
             src_tes_cors_origins: https://krini.rahtiapp.fi
 
+        - name: With tokens off, a request without Basic still gets the challenge
+          ansible.builtin.assert:
+            that:
+              # The location's own error_page (429) must not drop the 401.
+              - conf is search('error_page 429 = @rate_limited;\\s+error_page 401 = @unauthorized;')
+          vars:
+            conf: "{{ lookup('file', out.path ~ '/cors-basic-gateway.conf') }}"
+
         - name: With tokens off, CORS still covers the API and its errors
           ansible.builtin.assert:
             that:
@@ -586,7 +594,7 @@
             that:
               - compose.services.validator.pids_limit == 128
               - compose.services.validator.mem_limit == '256m'
-              - tesp_gateway_trusted_proxies == ['172.16.0.0/12']
+              - tesp_gateway_trusted_proxies == ['172.16.0.0/12', '192.168.0.0/16']
           vars:
             compose: >-
               {{ lookup('file', out.path ~ '/oauth-docker-compose.yml') | from_yaml }}

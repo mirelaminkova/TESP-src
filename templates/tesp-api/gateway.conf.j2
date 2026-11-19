@@ -18,7 +18,10 @@
 {% macro rate_limit() %}
         limit_req zone=tes_per_ip burst={{ tesp_gateway_rate_burst | int }} nodelay;
         limit_req_status 429;
+        # An error_page in a location replaces all of the server's, so 401
+        # is repeated here.
         error_page 429 = @rate_limited;
+        error_page 401 = @unauthorized;
 {%- endmacro %}
 {# A preflight of an allowed origin is answered here, before any auth. #}
 {% macro cors_preflight() %}
@@ -226,9 +229,9 @@ server {
         auth_request_set $tes_auth_exempt $upstream_http_x_tes_auth_exempt;
         auth_request_set $tes_auth_status $upstream_status;
         # nginx answers any other status of the validator with 500. An
-        # error_page here replaces the server's, so 401 is repeated.
+        # error_page here replaces the server's, so these are repeated
+        # (401 and 429 in rate_limit() above).
         error_page 500 = @auth_error;
-        error_page 401 = @unauthorized;
         error_page 403 = @forbidden;
         proxy_set_header Host $http_host;
         # Replaces every Authorization header the client sent.

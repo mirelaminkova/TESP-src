@@ -1045,3 +1045,47 @@ def test_waiting_for_a_failed_first_fetch_is_unavailable(idp):
         w.join(10)
     assert errors == [tv.Unavailable, tv.Unavailable]
     assert len(calls) == 1
+
+
+def test_a_hung_refresh_is_given_up_on(idp):
+    now = [time.time()]
+    v = tv.Validator(idp.config(http_timeout_seconds=1), clock=lambda: now[0])
+    state = v._state[idp.issuer]
+    state.refreshing = threading.Event()  # a fetch that never ends
+    state.attempted_at = now[0] - 10
+    assert check(v, idp.token(client_id=EXEMPT)).kind == "bearer"
+    assert state.refreshing is None and idp.hits["jwks"] == 1
+
+
+def test_waiting_in_vain_for_an_unknown_kid_is_unavailable(idp):
+    now = [time.time()]
+    v = tv.Validator(idp.config(http_timeout_seconds=0.1), clock=lambda: now[0])
+    check(v, idp.token(client_id=EXEMPT))
+    state = v._state[idp.issuer]
+    state.refreshing = threading.Event()  # someone else fetches, slowly
+    state.attempted_at = now[0]
+    with pytest.raises(tv.Unavailable, match="still running"):
+        check(v, idp.token(kid="rotated"))
+
+
+def test_discovery_with_a_bad_userinfo_url_sets_no_endpoint(idp):
+    config = dataclasses.replace(idp.config(), allow_http=False)
+    v = tv.Validator(config)
+    denied(v, "Bearer " + idp.token(), "https")
+    state = v._state[idp.issuer]
+    assert state.jwks_uri is None and state.userinfo_endpoint is None
+
+
+def test_server_closes_connections_beyond_the_thread_cap(idp, monkeypatch, caplog):
+    server = tv.make_server(tv.Validator(idp.config()), "127.0.0.1", 0)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setattr(tv, "MAX_THREADS", 0)
+    try:
+        with caplog.at_level("WARNING", logger="tes-validator"):
+            with pytest.raises((urllib.error.URLError, ConnectionError, http.client.HTTPException)):
+                urllib.request.urlopen(
+                    f"http://127.0.0.1:{server.server_address[1]}/healthz", timeout=5)
+    finally:
+        monkeypatch.setattr(tv, "MAX_THREADS", 100)
+        server.shutdown()
+    assert "too many connections" in caplog.text
