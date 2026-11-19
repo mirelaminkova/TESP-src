@@ -111,6 +111,12 @@
       - why: a negative burst
         expect: Invalid access settings
         vars: {tesp_gateway_rate_burst: -1}
+      - why: a burst of 1 (would render delay=0, which nginx refuses)
+        expect: Invalid access settings
+        vars: {tesp_gateway_rate_burst: 1}
+      - why: no connections per address
+        expect: Invalid access settings
+        vars: {tesp_gateway_conn_per_address: 0}
       - why: Basic sources with a space (as SRC would split them)
         expect: Invalid access settings
         vars: {src_tes_basic_auth_sources: '10.0.0.1 10.0.0.2'}

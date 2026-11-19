@@ -21,7 +21,7 @@
         # Half the burst passes at once, the rest waits (short queues, few
         # held connections); limit_conn caps what one address keeps open.
         limit_req zone=tes_per_ip burst={{ tesp_gateway_rate_burst | int }} delay={{ (tesp_gateway_rate_burst | int) // 2 }};
-        limit_conn tes_conn_per_ip {{ tesp_gateway_rate_burst | int }};
+        limit_conn tes_conn_per_ip {{ tesp_gateway_conn_per_address | int }};
         limit_conn_status 429;
         limit_req_status 429;
         # An error_page in a location replaces all of the server's, so 401

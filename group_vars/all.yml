@@ -252,7 +252,13 @@ tesp_gateway_trusted_proxies: [172.16.0.0/12, 192.168.0.0/16]
 # the docs). Up to the burst, faster requests are queued; beyond it they get
 # 429, which fails a Nextflow task or aborts its run (nf-ga4gh doesn't retry).
 tesp_gateway_rate_per_second: 20
+# At least 2 (half of it passes without waiting). Each queued request waits
+# up to about burst / 2 / rate seconds; keep that well under a client's
+# timeout (Nextflow's HTTP client: 10 s).
 tesp_gateway_rate_burst: 40
+# Connections one address may keep open: requests in progress, not a rate.
+# Room for the rate times a slow LS Login answer (20/s x 5 s).
+tesp_gateway_conn_per_address: 100
 # Addresses (IP or CIDR) that are never rate-limited, from
 # src_tes_rate_exempt_sources, e.g. proTES's, which submits for all its
 # users. The Basic sources are exempt too.

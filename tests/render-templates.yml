@@ -463,6 +463,16 @@
           vars:
             src_tes_cors_origins: https://krini.rahtiapp.fi
 
+        # Tokens off, no sources: Basic from everyone, but nobody exempt
+        # from the rate limit (the Basic geo defaults to 1 there).
+        - name: With tokens off and no sources, the rate geo exempts no one
+          ansible.builtin.assert:
+            that:
+              - conf is search('geo \\$tes_basic_source \\{\\s+default 1;')
+              - conf is search('geo \\$tes_rate_exempt \\{\\s+default 0;\\s+\\}')
+          vars:
+            conf: "{{ lookup('file', out.path ~ '/cors-basic-gateway.conf') }}"
+
         - name: With tokens off, a request without Basic still gets the challenge
           ansible.builtin.assert:
             that:
@@ -505,6 +515,7 @@
             src_tes_oauth_entitlements: urn:example:ECP_CLN:EOC-Compute#example.org
             # Basic only from the Nextflow workspace.
             src_tes_basic_auth_sources: 145.38.1.2
+            src_tes_rate_exempt_sources: 192.0.2.7
             src_tes_cors_origins: https://krini.rahtiapp.fi
 
         - name: Tokens are checked by the validator; tesp-api gets Basic
@@ -582,13 +593,16 @@
               # aborts a Nextflow run (nf-ga4gh doesn't retry it).
               - conf is search('limit_req_zone \\$tes_rate_key zone=tes_per_ip:10m rate=20r/s;')
               - conf.count('limit_req zone=tes_per_ip burst=40 delay=20;') == 2
-              - conf.count('limit_conn tes_conn_per_ip 40;') == 2
+              - conf.count('limit_conn tes_conn_per_ip 100;') == 2
               - conf is search('limit_conn_zone \\$tes_rate_key zone=tes_conn_per_ip:10m;')
               - "'nodelay' not in conf"
               # Allowlisted sources (Basic sources, src_tes_rate_exempt_sources)
               # aren't limited: an empty key is not counted.
               - "'geo $tes_rate_exempt {' in conf"
               - "'    145.38.1.2 1;' in conf"
+              # src_tes_rate_exempt_sources in the rate geo, not the Basic one.
+              - conf is search('geo \\$tes_rate_exempt \\{[^}]*192\\.0\\.2\\.7 1;')
+              - conf is not search('geo \\$tes_basic_source \\{[^}]*192\\.0\\.2\\.7')
               - "'map $tes_rate_exempt $tes_rate_key {' in conf"
               # Not the Basic map: its default can be 1 (everyone).
               - conf is search('geo \\$tes_rate_exempt \\{\\s+default 0;')

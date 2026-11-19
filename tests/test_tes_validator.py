@@ -1156,3 +1156,27 @@ def test_a_late_fetch_publishes_when_no_newer_one_started(idp):
     old = threading.Event()  # given up on: refreshing was cleared
     v._fetch_jwks(v.config.issuers[idp.issuer], state, time.time(), old)
     assert state.keys and state.fetched_at is not None
+
+
+def test_a_late_fetch_doesnt_bring_back_older_keys(idp):
+    """A fetch given up on, finishing after a newer refresh completed, must
+    not publish its (older) keys: a revoked kid would be accepted again."""
+    v = tv.Validator(idp.config())
+    state = v._state[idp.issuer]
+    issuer = v.config.issuers[idp.issuer]
+    started = time.time()
+    newer = {"new-kid": object()}
+    state.keys, state.fetched_at = newer, started + 5  # completed later
+    v._fetch_jwks(issuer, state, started, threading.Event())
+    assert state.keys is newer and state.fetched_at == started + 5
+
+
+def test_unknown_kid_right_after_a_failed_fetch_is_unavailable(idp):
+    now = [time.time()]
+    v = tv.Validator(idp.config(), clock=lambda: now[0])
+    check(v, idp.token(client_id=EXEMPT))
+    idp.jwks_status = 503
+    now[0] += 61
+    # The fetch for the rotated kid fails: 503 at once, not 401.
+    with pytest.raises(tv.Unavailable, match="JWKS fetch failed"):
+        check(v, idp.token(kid="rotated"))

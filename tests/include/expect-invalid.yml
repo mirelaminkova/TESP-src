@@ -33,6 +33,7 @@
         src_tes_rate_exempt_sources: "{{ case.vars.src_tes_rate_exempt_sources | default('') }}"
         tesp_gateway_rate_per_second: "{{ case.vars.tesp_gateway_rate_per_second | default(20) }}"
         tesp_gateway_rate_burst: "{{ case.vars.tesp_gateway_rate_burst | default(40) }}"
+        tesp_gateway_conn_per_address: "{{ case.vars.tesp_gateway_conn_per_address | default(100) }}"
         tesp_oauth_audit_tag_keys: "{{ case.vars.tesp_oauth_audit_tag_keys | default([]) }}"
         tesp_oauth_ca_bundle: "{{ case.vars.tesp_oauth_ca_bundle | default('') }}"
 

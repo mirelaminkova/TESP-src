@@ -569,7 +569,13 @@ class Validator:
                     self.config.jwks_max_stale_seconds):
                 state.keys = {}
                 raise Unavailable("JWKS too old and the issuer can't be reached")
-            return state.keys.get(kid)
+            key = state.keys.get(kid)
+            # An unknown kid right after a failed fetch (by this request or
+            # the one it waited for) is an outage, as in the back-off later.
+            if key is None and kid is not None and state.attempted_at is not None \
+                    and state.attempted_at > (state.fetched_at or 0):
+                raise Unavailable("JWKS fetch failed recently")
+            return key
 
     def _fetch_jwks(self, issuer: IssuerConfig, state: _IssuerState,
                     now: float, done: threading.Event) -> None:
@@ -585,10 +591,12 @@ class Validator:
             if not state.keys:
                 raise Unavailable(f"JWKS fetch failed: {e}") from None
         else:
-            # Only if no newer refresh started: one given up on must not
-            # overwrite a newer one's result, but may publish its own.
+            # Only if no newer refresh started or finished: one given up on
+            # must not overwrite newer keys (a revoked kid would come back),
+            # but may publish its own.
             with state.lock:
-                if state.refreshing in (done, None):
+                if state.refreshing in (done, None) and (
+                        state.fetched_at is None or now > state.fetched_at):
                     state.keys = keys
                     state.fetched_at = now
         finally:
