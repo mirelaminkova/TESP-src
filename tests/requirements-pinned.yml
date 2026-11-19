@@ -1,0 +1,37 @@
+---
+# Issue #31: every role and collection in requirements.yml is pinned, so a new
+# release upstream can't change what a new workspace installs. Runs offline.
+# tests/check-collections.sh (CI only, needs network) checks that the pinned
+# collections support SRC's ansible-core.
+#
+#   ansible-playbook -i localhost, -c local tests/requirements-pinned.yml
+- name: Check that requirements.yml pins everything
+  hosts: localhost
+  gather_facts: false
+  vars:
+    requirements: "{{ lookup('file', playbook_dir ~ '/../requirements.yml') | from_yaml }}"
+  tasks:
+    # Galaxy roles: an exact X.Y.Z (a role from git would need a commit hash
+    # here, as collections do below).
+    - name: Every role has an exact version
+      ansible.builtin.assert:
+        that: item.version | default('') | string is match('[0-9]+\.[0-9]+\.[0-9]+\Z')
+        fail_msg: "role {{ item.src }}: version {{ item.version | default('missing') }}"
+        quiet: true
+      loop: "{{ requirements.roles }}"
+      loop_control:
+        label: "{{ item.src }}"
+
+    # Galaxy collections: an exact version, not a range. Git collections: a
+    # full commit hash, not a branch or tag.
+    - name: Every collection has an exact version
+      ansible.builtin.assert:
+        that: >-
+          item.version | default('') | string
+          is match(('[0-9a-f]{40}' if item.type | default('') == 'git'
+                    else '[0-9]+\.[0-9]+\.[0-9]+') ~ '\Z')
+        fail_msg: "collection {{ item.name }}: version {{ item.version | default('missing') }}"
+        quiet: true
+      loop: "{{ requirements.collections }}"
+      loop_control:
+        label: "{{ item.name }}"

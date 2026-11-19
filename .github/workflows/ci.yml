@@ -1,8 +1,8 @@
 ---
 name: ci
 
-# Issue #24. Needs no repository secrets. Job names (lint, unit) are stable so
-# branch protection can require them.
+# Issue #24. Needs no repository secrets. Job names (lint, unit,
+# src-ansible-core) are stable so branch protection can require them.
 
 on:
   pull_request:
@@ -68,3 +68,28 @@ jobs:
 
       - name: run unit tests
         run: tests/run.sh
+
+  # Issue #31: SRC's ansible-core (2.16; see "Roles and collections" in the
+  # README; 2.16.20 is the last 2.16 release). The unit tests run there too,
+  # and the collections pinned in requirements.yml must support it.
+  src-ansible-core:
+    runs-on: ubuntu-latest
+    steps:
+      - name: check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: install ansible-core
+        run: pip install "ansible-core==2.16.20"
+
+      - name: run unit tests
+        run: tests/run.sh
+
+      - name: pinned collections support this ansible-core
+        run: tests/check-collections.sh

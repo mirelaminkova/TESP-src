@@ -209,10 +209,13 @@ squeue
 - **S3:** set from the `src_s3_*` component parameters (see [Using S3](#using-s3)). `settings.toml` (0640) holds the endpoint, region and addressing style. The key pair goes in `/etc/tesp-api/secrets.toml` (`tesp_secrets_file`, root, 0600), which is bind-mounted read-only as `/app/.secrets.toml` for tesp-api's Dynaconf to merge in. It is kept out of `/srv/tesp-api` because that directory is the image build context, and the image would otherwise contain it. The playbook validates the parameters before it installs anything. The presign lifetimes are `tesp_s3_presign_expiry_seconds` and `tesp_s3_output_presign_expiry_seconds` in `group_vars/all.yml`; the upload lifetime must cover a whole task run.
 - **Pulsar port:** Pulsar listens on `0.0.0.0:8913` because the `pulsar-proxy` container reaches it through `host.docker.internal` (the Docker bridge gateway). The `tesp-pulsar-firewall` systemd unit adds an iptables chain, `TESP-PULSAR`, that drops connections to 8913 unless they arrive on `lo`, `docker0` or a `br-*` Docker bridge. Pulsar requires that unit, so it won't start if the rule can't be applied. Check the rule with `iptables -S TESP-PULSAR`. If something rewrites the firewall later (`ufw reload`, `iptables-restore`), re-run `/usr/local/sbin/tesp-pulsar-firewall`.
 - **MTU:** SRC needs a lower MTU on Docker networks (`tesp_network_mtu: 1442`).
+- **Roles and collections:** `requirements.yml` pins every role and collection, including `community.docker`'s dependency, so a new upstream release can't change what a new workspace installs (`tests/requirements-pinned.yml` checks this). SRC's catalog item runs Ansible 9.1.0 (its `remote_ansible_version`; the external plugin's default is 11.1.0), which is ansible-core ~=2.16.1, so the Galaxy collections are the newest releases whose `requires_ansible` covers 2.16 (versions and the cut-off in `requirements.yml`). Before bumping one, check its `requires_ansible` on Galaxy or in its `meta/runtime.yml`, and raise past 2.16 only together with SRC's Ansible version.
+
+  CI's `src-ansible-core` job runs the unit tests under ansible-core 2.16, installs the pinned collections and fails if one of them excludes that version (`tests/check-collections.sh`; needs network access).
 
 ## Checks
 
-CI (`.github/workflows/ci.yml`) runs on every pull request and every push to `main`. Its `lint` job runs the [pre-commit](https://pre-commit.com/) hooks in `.pre-commit-config.yaml`: yamllint, shellcheck, ansible-lint, ast-grep with the rules in `.ast-grep/`, and semgrep. Its `unit` job runs `tests/run.sh`, which runs every test in `tests/`. Run the same checks locally before you push:
+CI (`.github/workflows/ci.yml`) runs on every pull request and every push to `main`. Its `lint` job runs the [pre-commit](https://pre-commit.com/) hooks in `.pre-commit-config.yaml`: yamllint, shellcheck, ansible-lint, ast-grep with the rules in `.ast-grep/`, and semgrep. Its `unit` job runs `tests/run.sh`, which runs every playbook test in `tests/`; the `src-ansible-core` job runs them again under SRC's ansible-core 2.16 and checks the pinned collections against it. Run the same checks locally before you push:
 
 ```bash
 pip install pre-commit==4.7.0 ansible-core==2.21.5
@@ -222,7 +225,7 @@ pip install pre-commit==4.7.0 ansible-core==2.21.5
 pre-commit install
 ```
 
-`pre-commit install` sets up both stages. The linters run on `git commit`, and so do the unit tests when the commit touches `playbook.yml`, `group_vars/`, `templates/`, `tests/` or the workflows. ast-grep and semgrep run on `git push`. To run everything on demand:
+`pre-commit install` sets up both stages. The linters run on `git commit`, and so do the unit tests when the commit touches `playbook.yml`, `requirements.yml`, `group_vars/`, `templates/`, `tests/` or the workflows. ast-grep and semgrep run on `git push`. To run everything on demand:
 
 ```bash
 pre-commit run --all-files && pre-commit run --all-files --hook-stage pre-push
