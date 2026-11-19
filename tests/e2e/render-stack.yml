@@ -57,8 +57,8 @@
       loop:
         - {src: settings.toml.j2, dest: "{{ tesp_install_dir }}/settings.toml"}
         - {src: secrets.toml.j2, dest: "{{ tesp_secrets_file }}"}
-        - src: pulsar-token-proxy.conf.j2
-          dest: "{{ tesp_install_dir }}/pulsar-token-proxy.conf"
+        # Outside the build context, like playbook.yml (#20).
+        - {src: pulsar-token-proxy.conf.j2, dest: "{{ tesp_pulsar_proxy_conf }}"}
         - src: docker-compose.yml.j2
           dest: "{{ tesp_install_dir }}/docker-compose.deploy.yml"
         - {src: gateway.conf.j2, dest: "{{ tesp_gateway_dir }}/gateway.conf"}
