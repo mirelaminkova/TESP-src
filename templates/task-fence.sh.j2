@@ -12,7 +12,7 @@
 # {{ pulsar_user.name }}, Pulsar itself included, and nobody else (root, sshd,
 # Docker, other users). For {{ pulsar_user.name }}, in iptables and ip6tables:
 #   - connections it opens to this host's own addresses (loopback included),
-#     to containers on Docker bridges (docker0, br-*) and to link-local
+#     to containers on bridges ({{ tesp_task_fence_interfaces | join(', ') }}) and to link-local
 #     addresses (cloud metadata) are refused, except DNS (53) and slurmctld
 #     on this host, which Pulsar needs (traffic to any of the host's own
 #     addresses goes over lo). Everything else (image pulls, S3 and http(s)
@@ -51,7 +51,7 @@ TASK_USER={{ pulsar_user.name | quote }}
 # Pulsar may answer on its port; nothing else may answer; nothing conntrack
 # can't place; DNS and the allowed ports on this host; the rest of this host
 # (the addrtype rules; the "-o lo" one is a backstop); broadcast and
-# multicast; Docker bridges; link-local. TCP gets a reset rather than an ICMP
+# multicast; bridges (Docker's, and any other found on the host); link-local. TCP gets a reset rather than an ICMP
 # error, so a task fails at once.
 rules() {
     # Pulsar answers over IPv4 only; IPv6 has no broadcast.
@@ -80,10 +80,10 @@ $pulsar_answers
 -A $CHAIN -o lo -j REJECT --reject-with $reject
 $broadcast
 -A $CHAIN -m addrtype --dst-type MULTICAST -j REJECT --reject-with $reject
--A $CHAIN -p tcp -o docker0 -j REJECT --reject-with tcp-reset
--A $CHAIN -o docker0 -j REJECT --reject-with $reject
--A $CHAIN -p tcp -o br-+ -j REJECT --reject-with tcp-reset
--A $CHAIN -o br-+ -j REJECT --reject-with $reject
+{% for o in tesp_task_fence_interfaces %}
+-A $CHAIN -p tcp -o {{ o }} -j REJECT --reject-with tcp-reset
+-A $CHAIN -o {{ o }} -j REJECT --reject-with $reject
+{% endfor %}
 -A $CHAIN -p tcp -d $link_local -j REJECT --reject-with tcp-reset
 -A $CHAIN -d $link_local -j REJECT --reject-with $reject
 COMMIT

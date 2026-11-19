@@ -69,6 +69,24 @@
       tesp_task_fence_enabled must be true or false. See "Task network
       fence" in the README.
 
+# Issue #49: the names go into the fence script's iptables rules.
+- name: Validate tesp_task_fence_bridge_interfaces
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - tesp_task_fence_bridge_interfaces is sequence
+      - tesp_task_fence_bridge_interfaces is not string
+      - tesp_task_fence_bridge_interfaces | length > 0
+      - >-
+        tesp_task_fence_bridge_interfaces | map('string')
+        | select('match', tesp_task_fence_interface_re) | list | length
+        == tesp_task_fence_bridge_interfaces | length
+    fail_msg: >-
+      Invalid task fence interfaces. tesp_task_fence_bridge_interfaces must
+      be a list of interface names of up to 15 letters, digits, ., _ or -,
+      optionally ending in + (any name starting with the rest). See "Task
+      network fence" in the README.
+
 # Issue #25: what the gateway serves at /v1/service-info. The ELIXIR Cloud
 # Registry accepts only https URLs; register only test or prod there.
 - name: Validate the service info (src_tes_*, tesp_service_info_*)

@@ -1248,6 +1248,71 @@
               - "'Take the Pulsar user out of the docker group' in (main.post_tasks | map(attribute='name'))"
               - "'--remove) remove=1' in files['task-fence.sh']"
 
+        # Issue #49: the bridges the fence refuses. The configured patterns,
+        # plus every bridge found on the host that no pattern covers (custom
+        # Docker bridge names, lxdbr0, virbr0).
+        - name: The fence covers the default Docker bridges
+          ansible.builtin.assert:
+            that:
+              - tesp_task_fence_bridge_interfaces == ['docker0', 'br-+']
+              - tesp_task_fence_interfaces == ['docker0', 'br-+']
+              - "'-A $CHAIN -p tcp -o docker0 -j REJECT --reject-with tcp-reset' in files['task-fence.sh']"
+              - "'-A $CHAIN -o br-+ -j REJECT --reject-with $reject' in files['task-fence.sh']"
+
+        - name: Bridges found on the host that no pattern covers are added
+          ansible.builtin.assert:
+            that:
+              - tesp_task_fence_interfaces == ['docker0', 'br-+', 'lxdbr0', 'tesp-custom', 'br0']
+          vars:
+            tesp_task_fence_found_bridges: [docker0, br-1a2b3c4d5e6f, lxdbr0, tesp-custom, br0]
+
+        - name: Found bridges against patterns without a wildcard
+          ansible.builtin.assert:
+            that:
+              - tesp_task_fence_interfaces == ['docker0', 'br-1a2b3c4d5e6f']
+          vars:
+            tesp_task_fence_bridge_interfaces: [docker0]
+            tesp_task_fence_found_bridges: [docker0, br-1a2b3c4d5e6f]
+
+        # A pattern's dot is literal: "a.b+" covers "a.b1", not "axb1".
+        - name: Patterns match literally, by prefix with a trailing +
+          ansible.builtin.assert:
+            that:
+              - tesp_task_fence_interfaces == ['a.b+', 'axb1', 'xa.b2']
+          vars:
+            tesp_task_fence_bridge_interfaces: ['a.b+']
+            tesp_task_fence_found_bridges: [a.b1, axb1, xa.b2]
+
+        - name: Render the fence with a found custom bridge
+          ansible.builtin.template:
+            src: "{{ templates_dir }}/task-fence.sh.j2"
+            dest: "{{ out.path }}/custom-task-fence.sh"
+            mode: '0600'
+          vars:
+            tesp_task_fence_found_bridges: [tesp-custom]
+
+        - name: The custom bridge is refused like the Docker ones
+          ansible.builtin.assert:
+            that:
+              - "'-A $CHAIN -p tcp -o tesp-custom -j REJECT --reject-with tcp-reset' in fence"
+              - "'-A $CHAIN -o tesp-custom -j REJECT --reject-with $reject' in fence"
+              # Pulsar answers pulsar-proxy on the stack's own bridges only.
+              - "'for o in lo docker0 br-+; do' in fence"
+          vars:
+            fence: "{{ lookup('file', out.path ~ '/custom-task-fence.sh') }}"
+
+        # Before the script is rendered, so it covers what's there now.
+        - name: The playbook finds the host's bridges before rendering the fence
+          vars:
+            main: "{{ plays | selectattr('name', 'eq', 'Install TESP (GA4GH TES API backed by Pulsar)') | first }}"
+            names: "{{ main.post_tasks | map(attribute='name') | list }}"
+          ansible.builtin.assert:
+            that:
+              - "'Find the host network bridges' in names"
+              - "'Check the names of the bridges to fence' in names"
+              - names.index('Find the host network bridges') < names.index('Check the names of the bridges to fence')
+              - names.index('Check the names of the bridges to fence') < names.index('Install the task network fence script')
+
         # Without a socket, uwsgi's HTTP router reaches its worker over TCP on
         # loopback, which the fence blocks for the Pulsar user: Pulsar answers
         # 502 to every request (found on the test bed).

@@ -264,6 +264,37 @@
     # the Pulsar role, which creates that user (the rules match it by name),
     # and before the tesp-api stack starts, so no task runs unfenced. A
     # systemd unit that Pulsar and slurmd require applies it at boot.
+    # Issue #49: every bridge on the host now (a Docker network with a
+    # custom bridge name, lxdbr0, virbr0), for the fence to refuse besides
+    # tesp_task_fence_bridge_interfaces. Bridges created later need another
+    # run, or an entry there.
+    - name: Find the host network bridges
+      ansible.builtin.shell: |
+        for b in /sys/class/net/*/bridge; do
+          [ -d "$b" ] || continue
+          b=${b%/bridge}; printf '%s\n' "${b##*/}"
+        done
+      register: tesp_host_bridges
+      changed_when: false
+      check_mode: false
+
+    - name: Check the names of the bridges to fence
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            tesp_task_fence_found_bridges | select('match', tesp_task_fence_interface_re)
+            | list | length == tesp_task_fence_found_bridges | length
+        fail_msg: >-
+          A bridge on this host has a name the task network fence can't use:
+          {{ tesp_task_fence_found_bridges | reject('match', tesp_task_fence_interface_re) | list }}.
+      vars:
+        tesp_task_fence_found_bridges: "{{ tesp_host_bridges.stdout_lines }}"
+
+    - name: Remember the host network bridges
+      ansible.builtin.set_fact:
+        tesp_task_fence_found_bridges: "{{ tesp_host_bridges.stdout_lines }}"
+
     - name: Install the task network fence script
       ansible.builtin.template:
         src: templates/task-fence.sh.j2
