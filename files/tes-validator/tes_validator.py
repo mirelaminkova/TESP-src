@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import functools
 import hashlib
 import json
 import logging
@@ -264,10 +265,12 @@ class Config:
         audit = _string_list(d.get("audit_tag_keys"), "audit_tag_keys")
         config = cls(issuers=issuers, basic_auth_enabled=basic,
                      audit_tag_keys=audit, allow_http=allow_http, **numbers)
-        if config.jwks_max_stale_seconds < config.jwks_cache_seconds:
-            # Keys would be dropped before they are due for a refresh.
-            raise ValueError("jwks_max_stale_seconds must be at least "
-                             "jwks_cache_seconds")
+        if config.jwks_max_stale_seconds < config.jwks_cache_seconds or \
+                config.jwks_max_stale_seconds <= 0:
+            # Keys would be dropped before they are due for a refresh, or
+            # right after every fetch.
+            raise ValueError("jwks_max_stale_seconds must be above 0 and at "
+                             "least jwks_cache_seconds")
         return config
 
 
@@ -311,8 +314,9 @@ def fetch_json(url: str, timeout: float, token: str | None = None) -> Any:
 
 def _only_key(keys: dict[str | None, Any], kid: Any) -> Any:
     """For a token without a kid: the issuer's key, if it has exactly one.
-    (If that issuer rotates it, tokens with the new key fail until the keys
-    are refreshed, within jwks_cache_seconds; LS Login sets kids.)"""
+    If the issuer rotates that key, tokens signed with the new one fail
+    until the keys are refreshed (within jwks_cache_seconds). LS Login sets
+    kids."""
     if kid is None and len(keys) == 1:
         return next(iter(keys.values()))
     return None
@@ -380,17 +384,23 @@ class Decision:
     exempt: bool = False
 
 
+# Monotonic, and on Linux counting suspended time too: after a VM resumes,
+# its JWKS is as old as it really is.
+UPTIME = (functools.partial(time.clock_gettime, time.CLOCK_BOOTTIME)
+          if hasattr(time, "CLOCK_BOOTTIME") else time.monotonic)
+
+
 class Validator:
     """Checks Authorization headers against the configuration."""
 
     def __init__(self, config: Config,
                  fetch: Callable[..., Any] = fetch_json,
                  clock: Callable[[], float] = time.time,
-                 timer: Callable[[], float] = time.monotonic):
+                 timer: Callable[[], float] = UPTIME):
         self.config = config
         self._fetch = fetch
-        self._clock = clock  # wall clock: token times, cache expiry
-        self._timer = timer  # JWKS ages and back-off
+        self._clock = clock  # wall clock: cache expiry (capped at token exp)
+        self._timer = timer  # monotonic: JWKS ages and back-off
         self._state = {iss: _IssuerState() for iss in config.issuers}
         self._userinfo = TTLCache(config.cache_max_entries, clock)
         self._warned = TTLCache(1000, clock)
@@ -547,8 +557,8 @@ class Validator:
         abandoned_after = 2 * self.config.http_timeout_seconds + 1
 
         def known() -> bool:
-            return state.keys.get(kid) is not None or \
-                _only_key(state.keys, kid) is not None
+            return (state.keys.get(kid) is not None or
+                    _only_key(state.keys, kid) is not None)
 
         with state.lock:
             waiting_for = state.refreshing
@@ -576,8 +586,8 @@ class Validator:
                 state.generation += 1
                 generation = state.generation
         if waiting_for is not None:
-            # Another request fetches. Wait for it only without the key (a
-            # kid-less token with the issuer's only key doesn't wait).
+            # Another request is fetching. Wait for it only if we don't have
+            # the key yet; a kid-less token can use the issuer's only key.
             if not known():
                 finished = waiting_for.wait(abandoned_after)
                 if not finished and not known():

@@ -468,6 +468,14 @@ def test_unknown_kid_is_refused(idp):
     denied(v, "Bearer " + idp.token(kid="nope"), "unknown signing key")
 
 
+def test_a_kidless_token_needs_a_single_key(idp):
+    v = tv.Validator(idp.config())
+    assert check(v, idp.token(kid=None)).kind == "bearer"
+    state = v._state[idp.issuer]
+    state.keys = {**state.keys, "key-2": object()}  # the issuer has two
+    denied(v, "Bearer " + idp.token(kid=None), "unknown signing key")
+
+
 def test_bad_jwks_entries_are_skipped(idp):
     idp.extra_keys = ["x", {"kty": "RSA", "kid": "broken"},
                       {"kty": "oct", "k": "c2VjcmV0", "kid": "enc", "use": "enc"}]
@@ -486,7 +494,7 @@ def test_jwks_that_is_not_a_key_set_is_a_failed_fetch(idp, jwks):
 
 def test_empty_jwks_does_not_replace_known_keys(idp):
     now = [time.time()]
-    v = tv.Validator(idp.config(jwks_cache_seconds=100), clock=lambda: now[0], timer=lambda: now[0])
+    v = tv.Validator(idp.config(jwks_cache_seconds=100), timer=lambda: now[0])
     check(v, idp.token(client_id=EXEMPT))
     idp.jwks_body = {"keys": []}
     now[0] += 101
@@ -495,7 +503,7 @@ def test_empty_jwks_does_not_replace_known_keys(idp):
 
 def test_stale_key_used_while_another_request_refreshes(idp):
     now = [time.time()]
-    v = tv.Validator(idp.config(jwks_cache_seconds=100), clock=lambda: now[0], timer=lambda: now[0])
+    v = tv.Validator(idp.config(jwks_cache_seconds=100), timer=lambda: now[0])
     check(v, idp.token(client_id=EXEMPT))
     now[0] += 101
     issuer_state = next(iter(v._state.values()))
@@ -508,7 +516,7 @@ def test_keys_dropped_after_max_stale_age(idp):
     now = [time.time()]
     v = tv.Validator(idp.config(jwks_cache_seconds=100,
                                 jwks_max_stale_seconds=1000),
-                     clock=lambda: now[0], timer=lambda: now[0])
+                     timer=lambda: now[0])
     check(v, idp.token(client_id=EXEMPT))
     idp.jwks_status = 503
     now[0] += 500
@@ -519,7 +527,7 @@ def test_keys_dropped_after_max_stale_age(idp):
 
 def test_known_keys_survive_a_failed_refresh(idp):
     now = [time.time()]
-    v = tv.Validator(idp.config(jwks_cache_seconds=100), clock=lambda: now[0], timer=lambda: now[0])
+    v = tv.Validator(idp.config(jwks_cache_seconds=100), timer=lambda: now[0])
     check(v, idp.token(client_id=EXEMPT))
     idp.jwks_status = 503
     now[0] += 101
@@ -532,7 +540,7 @@ def test_failed_jwks_fetches_are_not_retried_on_every_request(idp):
     now = [time.time()]
     idp.jwks_status = 503
     v = tv.Validator(idp.config(jwks_min_refresh_seconds=60),
-                     clock=lambda: now[0], timer=lambda: now[0])
+                     timer=lambda: now[0])
     for _ in range(5):
         denied(v, "Bearer " + idp.token(), "JWKS fetch failed")
     assert "retrying after 60s" in str(pytest.raises(
@@ -562,7 +570,7 @@ def test_userinfo_answer_is_cached(idp):
 
 def test_userinfo_cache_expires_with_the_token(idp):
     now = [time.time()]
-    v = tv.Validator(idp.config(), clock=lambda: now[0], timer=lambda: now[0])
+    v = tv.Validator(idp.config(), clock=lambda: now[0])
     token = idp.token(exp=int(now[0]) + 30)
     check(v, token)
     # The cache's clock passes exp; PyJWT, on the real clock, still accepts
@@ -597,7 +605,7 @@ def test_cache_is_bounded():
 def test_random_kids_do_not_hammer_jwks(idp):
     now = [time.time()]
     v = tv.Validator(idp.config(jwks_min_refresh_seconds=60),
-                     clock=lambda: now[0], timer=lambda: now[0])
+                     timer=lambda: now[0])
     check(v, idp.token())
     for i in range(20):
         denied(v, "Bearer " + idp.token(kid=f"random-{i}"), "unknown signing key")
@@ -609,7 +617,7 @@ def test_random_kids_do_not_hammer_jwks(idp):
 
 def test_rotated_key_is_picked_up(idp):
     now = [time.time()]
-    v = tv.Validator(idp.config(), clock=lambda: now[0], timer=lambda: now[0])
+    v = tv.Validator(idp.config(), timer=lambda: now[0])
     check(v, idp.token())
     idp.key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     idp.kid = "key-2"
@@ -619,7 +627,7 @@ def test_rotated_key_is_picked_up(idp):
 
 def test_jwks_refetched_after_cache_time(idp):
     now = [time.time()]
-    v = tv.Validator(idp.config(jwks_cache_seconds=100), clock=lambda: now[0], timer=lambda: now[0])
+    v = tv.Validator(idp.config(jwks_cache_seconds=100), timer=lambda: now[0])
     check(v, idp.token(client_id=EXEMPT))
     now[0] += 101
     check(v, idp.token(client_id=EXEMPT))
@@ -694,6 +702,8 @@ def test_invalid_issuer_config(issuer, message):
     ({"http_timeout_seconds": True}, "http_timeout_seconds"),
     ({"basic_auth_enabled": True, "jwks_cache_seconds": 100,
       "jwks_max_stale_seconds": 99}, "at least jwks_cache_seconds"),
+    ({"basic_auth_enabled": True, "jwks_cache_seconds": 0,
+      "jwks_max_stale_seconds": 0}, "above 0"),
 ])
 def test_invalid_config(config, message):
     with pytest.raises(ValueError, match=message):
@@ -983,7 +993,7 @@ def test_jwks_fetch_doesnt_block_known_keys(idp):
     jwks_calls = sum(u.endswith("/jwks") for u in calls)
     results = []
     # min refresh interval passed: an unknown kid triggers a (slow) refresh
-    v._state[idp.issuer].attempted_at = 0
+    v._state[idp.issuer].attempted_at = v._timer() - 3600
     slow = threading.Thread(target=lambda: results.append(
         pytest.raises(tv.Denied, check, v, idp.token(kid="rotated"))))
     slow.start()
@@ -1001,7 +1011,7 @@ def test_jwks_fetch_doesnt_block_known_keys(idp):
 def test_userinfo_refusal_is_cached_briefly(idp):
     idp.userinfo_status = 401
     now = [time.time()]
-    v = tv.Validator(idp.config(), clock=lambda: now[0], timer=lambda: now[0])
+    v = tv.Validator(idp.config(), clock=lambda: now[0])
     token = idp.token()
     for _ in range(3):
         denied(v, "Bearer " + token, "userinfo failed")
@@ -1064,7 +1074,7 @@ def test_waiting_for_a_failed_first_fetch_is_unavailable(idp):
 
 def test_a_hung_refresh_is_given_up_on_after_the_backoff(idp):
     now = [time.time()]
-    v = tv.Validator(idp.config(http_timeout_seconds=1), clock=lambda: now[0], timer=lambda: now[0])
+    v = tv.Validator(idp.config(http_timeout_seconds=1), timer=lambda: now[0])
     state = v._state[idp.issuer]
     state.refreshing = threading.Event()  # a fetch that never ends
     # Abandoned (older than 2 x timeout + 1) but within the back-off: no new
@@ -1088,7 +1098,7 @@ def test_an_abandoned_fetch_publishes_while_a_newer_one_runs(idp):
     newer = threading.Event()
     state.refreshing, state.generation = newer, 2
     old = threading.Event()
-    v._fetch_jwks(v.config.issuers[idp.issuer], state, time.time(), old, 1)
+    v._fetch_jwks(v.config.issuers[idp.issuer], state, v._timer(), old, 1)
     assert old.is_set() and state.refreshing is newer
     assert state.keys and state.published == 1
 
@@ -1102,7 +1112,7 @@ def test_fetch_json_has_a_total_deadline(idp):
 
 def test_waiting_in_vain_for_an_unknown_kid_is_unavailable(idp):
     now = [time.time()]
-    v = tv.Validator(idp.config(http_timeout_seconds=0.1), clock=lambda: now[0], timer=lambda: now[0])
+    v = tv.Validator(idp.config(http_timeout_seconds=0.1), timer=lambda: now[0])
     check(v, idp.token(client_id=EXEMPT))
     state = v._state[idp.issuer]
     state.refreshing = threading.Event()  # someone else fetches, slowly
@@ -1139,7 +1149,7 @@ def test_server_closes_connections_beyond_the_thread_cap(idp, monkeypatch, caplo
 
 def test_unknown_kid_during_backoff_after_a_failed_fetch_is_unavailable(idp):
     now = [time.time()]
-    v = tv.Validator(idp.config(), clock=lambda: now[0], timer=lambda: now[0])
+    v = tv.Validator(idp.config(), timer=lambda: now[0])
     check(v, idp.token(client_id=EXEMPT))  # keys known
     idp.jwks_status = 503
     now[0] += 61
@@ -1155,11 +1165,11 @@ def test_unknown_kid_during_backoff_after_a_failed_fetch_is_unavailable(idp):
     assert check(v, idp.token(kid=None)).kind == "bearer"
 
 
-def test_a_late_fetch_publishes_when_none_newer_published(idp):
+def test_a_late_fetch_publishes_if_nothing_newer_was_published(idp):
     v = tv.Validator(idp.config())
     state = v._state[idp.issuer]
     old = threading.Event()  # given up on: refreshing was cleared
-    v._fetch_jwks(v.config.issuers[idp.issuer], state, time.time(), old, 1)
+    v._fetch_jwks(v.config.issuers[idp.issuer], state, v._timer(), old, 1)
     assert state.keys and state.fetched_at is not None and state.published == 1
 
 
@@ -1169,7 +1179,7 @@ def test_a_late_fetch_doesnt_bring_back_older_keys(idp):
     v = tv.Validator(idp.config())
     state = v._state[idp.issuer]
     issuer = v.config.issuers[idp.issuer]
-    started = time.time()
+    started = v._timer()
     newer = {"new-kid": object()}
     # Fetch 2 started later and completed first.
     state.keys, state.fetched_at, state.published = newer, started + 5, 2
@@ -1187,7 +1197,7 @@ def test_jwks_timing_ignores_wall_clock_steps(idp):
     check(v, idp.token(client_id=EXEMPT))
     state = v._state[idp.issuer]
     wall[0] -= 3600
-    # A rotated key, once the back-off is over.
+    # The issuer rotated its key; the back-off has passed.
     state.keys = {"revoked": object()}
     mono[0] += 61
     check(v, idp.token(client_id=EXEMPT))  # its kid is unknown now
@@ -1202,7 +1212,7 @@ def test_a_kidless_token_doesnt_wait_for_a_refresh(idp):
     """Like a known kid, a kid-less token with the one key known is checked
     at once while another request refreshes, not after abandoned_after."""
     now = [time.time()]
-    v = tv.Validator(idp.config(http_timeout_seconds=5), clock=lambda: now[0], timer=lambda: now[0])
+    v = tv.Validator(idp.config(http_timeout_seconds=5), timer=lambda: now[0])
     check(v, idp.token(client_id=EXEMPT))
     state = v._state[idp.issuer]
     state.refreshing = threading.Event()  # someone else fetches, slowly
@@ -1214,7 +1224,7 @@ def test_a_kidless_token_doesnt_wait_for_a_refresh(idp):
 
 def test_unknown_kid_right_after_a_failed_fetch_is_unavailable(idp):
     now = [time.time()]
-    v = tv.Validator(idp.config(), clock=lambda: now[0], timer=lambda: now[0])
+    v = tv.Validator(idp.config(), timer=lambda: now[0])
     check(v, idp.token(client_id=EXEMPT))
     idp.jwks_status = 503
     now[0] += 61
