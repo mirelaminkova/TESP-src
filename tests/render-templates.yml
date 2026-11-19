@@ -15,6 +15,10 @@
     fact_co_groups: {src_co_admin: test-co-admins}
     src_pulsar_storage_path: ""
     templates_dir: "{{ playbook_dir }}/../templates"
+    # Set by playbook.yml from the rendered proxy config.
+    tesp_pulsar_proxy_conf_checksum: test-proxy-conf-sha256-4f1c
+    # playbook.yml itself, for the checks of its tasks.
+    plays: "{{ lookup('file', playbook_dir ~ '/../playbook.yml') | from_yaml }}"
   tasks:
     # Test values only. Set as host facts, like playbook.yml does, so they
     # show up in hostvars the way the real secrets do.
@@ -419,6 +423,193 @@
         - name: Firewall script is valid sh
           ansible.builtin.command: sh -n {{ out.path }}/pulsar-firewall.sh
           changed_when: false
+
+        # Issue #9. Last: these replace the test pulsar_token fact set above.
+        - name: Generate and store a Pulsar token
+          ansible.builtin.include_tasks: ../tasks/pulsar-token.yml
+          vars:
+            tesp_pulsar_token_file: "{{ out.path }}/pulsar_token"
+
+        - name: Remember the first token
+          ansible.builtin.set_fact:
+            first_pulsar_token: "{{ pulsar_token }}"
+
+        - name: Run the token tasks again, as a re-run of the playbook does
+          ansible.builtin.include_tasks: ../tasks/pulsar-token.yml
+          vars:
+            tesp_pulsar_token_file: "{{ out.path }}/pulsar_token"
+
+        - name: Check the stored token file
+          ansible.builtin.stat:
+            path: "{{ out.path }}/pulsar_token"
+          register: token_file
+
+        - name: A re-run keeps the Pulsar token; the file is private
+          ansible.builtin.assert:
+            that:
+              - first_pulsar_token is match('^[A-Za-z0-9]{32}$')
+              - pulsar_token == first_pulsar_token
+              - token_file.stat.mode == '0600'
+            fail_msg: >-
+              the Pulsar token isn't 32 letters and digits, changed on a
+              re-run, or its file is readable by others
+
+        # A token put in the file by hand may be base64, with + / =, in a
+        # file with looser permissions. It is reused as is (the proxy
+        # template URL-encodes it, #29), and the file is made private.
+        - name: Store a base64 Pulsar token by hand
+          ansible.builtin.copy:
+            content: "Ab+cD/eF=gH+iJ/kL=mN+oP/q=="
+            dest: "{{ out.path }}/legacy_pulsar_token"
+            mode: '0644'
+
+        - name: Run the token tasks on the stored base64 token
+          ansible.builtin.include_tasks: ../tasks/pulsar-token.yml
+          vars:
+            tesp_pulsar_token_file: "{{ out.path }}/legacy_pulsar_token"
+
+        - name: Render the Pulsar proxy with the stored base64 token
+          ansible.builtin.template:
+            src: "{{ templates_dir }}/tesp-api/pulsar-token-proxy.conf.j2"
+            dest: "{{ out.path }}/legacy-pulsar-token-proxy.conf"
+            mode: '0600'
+
+        - name: Check the stored base64 token file
+          ansible.builtin.stat:
+            path: "{{ out.path }}/legacy_pulsar_token"
+          register: legacy_token_file
+
+        - name: A stored base64 token is kept, private, and reaches Pulsar intact
+          ansible.builtin.assert:
+            that:
+              - pulsar_token == 'Ab+cD/eF=gH+iJ/kL=mN+oP/q=='
+              - legacy_token_file.stat.mode == '0600'
+              - query_values | length == 2
+              - query_values | map('urldecode') | unique == [pulsar_token]
+            fail_msg: >-
+              a stored base64 token was replaced, its file stayed readable by
+              others, or the proxy doesn't URL-encode it: {{ query_values }}
+          vars:
+            conf: "{{ lookup('file', out.path ~ '/legacy-pulsar-token-proxy.conf') }}"
+            query_values: >-
+              {{ conf | regex_findall('private_token=([^";]*)') }}
+
+        - name: Store an empty Pulsar token file
+          ansible.builtin.copy:
+            content: ""
+            dest: "{{ out.path }}/empty_pulsar_token"
+            mode: '0600'
+
+        - name: The token tasks refuse an empty token file
+          block:
+            - name: Run the token tasks on the empty file
+              ansible.builtin.include_tasks: ../tasks/pulsar-token.yml
+              vars:
+                tesp_pulsar_token_file: "{{ out.path }}/empty_pulsar_token"
+
+            - name: An empty token file must fail the run
+              ansible.builtin.fail:
+                msg: the token tasks accepted an empty token file
+          rescue:
+            - name: The failure is the token check, not the fail task above
+              ansible.builtin.assert:
+                that:
+                  - ansible_failed_result.msg is search('holds no usable Pulsar token')
+                fail_msg: >-
+                  expected the token check to refuse the empty file, got:
+                  {{ ansible_failed_result.msg }}
+
+        # The role notifies pulsar_restart_handler_name when app.yml (the
+        # token) changes; its default handler never runs here.
+        - name: A changed Pulsar config restarts Pulsar
+          ansible.builtin.assert:
+            that:
+              - pulsar_restart_handler_name | default('') != ''
+              - restart_handlers | length == 1
+              - (restart_handlers[0]['ansible.builtin.systemd_service'] | default({})).state | default('') == 'restarted'
+              - >-
+                (restart_handlers[0]['ansible.builtin.systemd_service'] | default({})).name | default('')
+                is search('pulsar')
+            fail_msg: >-
+              Pulsar would keep its old token after app.yml changes (#9):
+              pulsar_restart_handler_name must name a playbook handler that
+              restarts the pulsar service
+          vars:
+            restart_handlers: >-
+              {{ plays | map(attribute='handlers', default=[]) | flatten(levels=1)
+                 | selectattr('name', 'eq', pulsar_restart_handler_name | default(''))
+                 | list }}
+
+        # pulsar-proxy reads its config only when it starts, and the template
+        # replaces the bind-mounted file, so a changed config must recreate
+        # the container. The config's checksum, taken after the template and
+        # before the compose file, is a label on the service.
+        # A handler alone isn't enough: a run that stops before handlers run
+        # leaves the next run with nothing to notify.
+        - name: Pulsar is restarted when its config is newer than the process
+          ansible.builtin.assert:
+            that:
+              - check_tasks | length == 1
+              - restart_tasks | length == 1
+              - pjson.index(check_tasks[0] | to_json) < pjson.index(restart_tasks[0] | to_json)
+              - restart_tasks[0]['ansible.builtin.systemd_service'].state | default('') == 'restarted'
+            fail_msg: >-
+              a run that stops between the Pulsar role and its handlers would
+              leave Pulsar on an old token (#9): post_tasks must compare the
+              config directory with Pulsar's start time and restart it
+          vars:
+            pjson: "{{ plays | map(attribute='post_tasks', default=[]) | flatten(levels=1) | map('to_json') | list }}"
+            check_tasks: >-
+              {{ pjson | select('search', 'ActiveEnterTimestamp')
+                 | select('search', 'register": "tesp_pulsar_config_state')
+                 | map('from_json') | list }}
+            restart_tasks: >-
+              {{ pjson | select('search', 'tesp_pulsar_config_state.stdout')
+                 | map('from_json') | list }}
+
+        # pulsar-proxy reads its config only when it starts, and the template
+        # replaces the bind-mounted file, so a changed config must recreate
+        # the container: after the template, the playbook takes the checksum
+        # of that same file and the compose file labels pulsar-proxy with it.
+        - name: A changed proxy config recreates pulsar-proxy
+          ansible.builtin.assert:
+            that:
+              - tpl_tasks | length == 1
+              - stat_tasks | length == 1
+              - fact_tasks | length == 1
+              - compose_tasks | length == 1
+              - >-
+                fact_tasks[0]['ansible.builtin.set_fact'].tesp_pulsar_proxy_conf_checksum
+                is search(stat_tasks[0].register ~ '[.]stat[.]checksum')
+              - >-
+                pjson.index(tpl_tasks[0] | to_json) < pjson.index(stat_tasks[0] | to_json)
+                < pjson.index(fact_tasks[0] | to_json) < pjson.index(compose_tasks[0] | to_json)
+              - >-
+                ((files['docker-compose.yml'] | from_yaml).services['pulsar-proxy'].labels
+                 | default({}))['tesp.pulsar-proxy-conf-sha256'] | default('')
+                == tesp_pulsar_proxy_conf_checksum
+            fail_msg: >-
+              pulsar-proxy would keep serving an old config (and token) after
+              pulsar-token-proxy.conf changes (#9): playbook.yml must template
+              it, stat that file, set tesp_pulsar_proxy_conf_checksum from the
+              stat, then template the compose file, which labels pulsar-proxy
+          vars:
+            pjson: "{{ plays | map(attribute='post_tasks', default=[]) | flatten(levels=1) | map('to_json') | list }}"
+            tpl_tasks: >-
+              {{ pjson | select('search', 'pulsar-token-proxy[.]conf[.]j2')
+                 | map('from_json') | list }}
+            tpl_dest: "{{ (tpl_tasks[0]['ansible.builtin.template'] | default({})).dest | default('-') }}"
+            # The stat of the very file the template writes.
+            stat_tasks: >-
+              {{ pjson | select('search', '"ansible[.]builtin[.]stat": [{]')
+                 | select('search', '"path": "' ~ (tpl_dest | regex_escape) ~ '"')
+                 | map('from_json') | list }}
+            fact_tasks: >-
+              {{ pjson | select('search', 'set_fact": [{]"tesp_pulsar_proxy_conf_checksum"')
+                 | map('from_json') | list }}
+            compose_tasks: >-
+              {{ pjson | select('search', 'docker-compose[.]yml[.]j2')
+                 | map('from_json') | list }}
 
       always:
         - name: Remove output directory

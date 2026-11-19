@@ -50,6 +50,11 @@ pulsar_pip_install: true
 pulsar_pycurl_ssl_library: openssl
 pulsar_systemd: true
 pulsar_systemd_runner: uwsgi
+# The role's own restart handler never runs: it defines two handlers with
+# the same name (debug for non-systemd, systemd), and Ansible runs only the
+# first, which is skipped. So a changed app.yml (a new Pulsar token) would
+# leave Pulsar on the old one. playbook.yml has this handler instead.
+pulsar_restart_handler_name: Restart Pulsar
 
 pulsar_systemd_environment:
   - DRMAA_LIBRARY_PATH=/usr/lib/slurm-drmaa/lib/libdrmaa.so.1
@@ -182,3 +187,6 @@ tesp_s3_output_presign_expiry_seconds: 86400
 # be baked into an image layer. Bind-mounted read-only as /app/.secrets.toml.
 tesp_secrets_dir: /etc/tesp-api
 tesp_secrets_file: "{{ tesp_secrets_dir }}/secrets.toml"
+# Pulsar's private_token, generated on the first run and reused on later ones
+# (tasks/pulsar-token.yml). Delete it and re-run to rotate the token.
+tesp_pulsar_token_file: "{{ tesp_secrets_dir }}/pulsar_token"

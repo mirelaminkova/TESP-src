@@ -52,6 +52,11 @@ services:
     image: nginx:1.27-alpine
     container_name: tesp-pulsar-proxy
     restart: unless-stopped
+    labels:
+      # sha256 of pulsar-token-proxy.conf (playbook.yml): a changed config
+      # changes the service, so Compose recreates the container, which then
+      # reads the new file. nginx reads it only at start.
+      tesp.pulsar-proxy-conf-sha256: "{{ tesp_pulsar_proxy_conf_checksum }}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
