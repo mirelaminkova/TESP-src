@@ -8,13 +8,24 @@
 # Included by playbook.yml after the SLURM handlers have run. Variables
 # (defaults in group_vars/all.yml):
 #   tesp_slurm_health_job_user  also run a one-second batch job as this user
-#                               ('' = no job); only when every node is idle,
-#                               so a re-run doesn't wait behind running tasks
+#                               ('' = no job); only when the node is idle and
+#                               nothing is queued, so a re-run doesn't wait
+#                               behind TES tasks
 #   tesp_slurm_health_retries, tesp_slurm_health_delay
 #                               how long to wait after a restart
+#   tesp_slurm_health_settle    seconds to wait before checking again
 #   tesp_slurmd_log_file, tesp_slurmctld_log_file
 #                               shown when the check fails
 - name: Check that SLURM works
+  vars:
+    # Nodes whose state (sinfo %T) can't take a task. A trailing * is a node
+    # that doesn't respond (yet, just after a restart); drained, draining,
+    # down and the rest never take a task. Every node must be usable: this is
+    # a one-node cluster.
+    tesp_slurm_unusable_nodes: >-
+      {{ tesp_slurm_nodes.stdout_lines | default([])
+         | map('split') | map('last')
+         | reject('in', tesp_slurm_usable_states) | list }}
   block:
     - name: Wait for slurmd and slurmctld to run
       # is-active only reads; the systemd module would start them.
@@ -25,25 +36,74 @@
       delay: "{{ tesp_slurm_health_delay }}"
       changed_when: false
 
-    # %T: the long state. A trailing * is a node that doesn't respond (yet,
-    # just after a restart); drained, draining, down and the rest never take
-    # a task. Every node must be usable: this is a one-node cluster.
     - name: Wait for the SLURM node to be usable
       ansible.builtin.command: sinfo -h -N -o '%N %T'
       register: tesp_slurm_nodes
       until: >-
         tesp_slurm_nodes.rc == 0
         and tesp_slurm_nodes.stdout_lines | length > 0
-        and tesp_slurm_nodes.stdout_lines
-            | map('split') | map('last')
-            | reject('in', tesp_slurm_usable_states) | list | length == 0
+        and tesp_slurm_unusable_nodes | length == 0
       retries: "{{ tesp_slurm_health_retries }}"
       delay: "{{ tesp_slurm_health_delay }}"
       changed_when: false
 
+    # Right after a restart, is-active is true as soon as the daemon is
+    # forked, and slurmctld shows the node as saved before slurmd registers
+    # (with a drain for a bad CPU or memory count only after that). So look
+    # again a little later.
+    - name: Let SLURM settle
+      ansible.builtin.wait_for:
+        timeout: "{{ tesp_slurm_health_settle }}"
+
+    - name: Check that slurmd and slurmctld still run
+      ansible.builtin.command: systemctl is-active slurmd slurmctld  # noqa: command-instead-of-module
+      changed_when: false
+
+    - name: Check that the SLURM node is still usable
+      ansible.builtin.command: sinfo -h -N -o '%N %T'
+      register: tesp_slurm_nodes
+      changed_when: false
+      failed_when: >-
+        tesp_slurm_nodes.rc != 0
+        or tesp_slurm_nodes.stdout_lines | length == 0
+        or tesp_slurm_unusable_nodes | length > 0
+
+    - name: Check that the SLURM partitions are up
+      ansible.builtin.command: sinfo -h -o '%P %a'
+      register: tesp_slurm_partitions
+      changed_when: false
+      failed_when: >-
+        tesp_slurm_partitions.rc != 0
+        or tesp_slurm_partitions.stdout_lines | length == 0
+        or tesp_slurm_partitions.stdout_lines | map('split') | map('last') | unique != ['up']
+
+    - name: Look at the SLURM queue
+      ansible.builtin.command: squeue -h -o '%i'
+      register: tesp_slurm_queue
+      changed_when: false
+      when: tesp_slurm_health_job_user | length > 0
+
+    - name: Decide whether to run a test job
+      ansible.builtin.set_fact:
+        tesp_slurm_run_test_job: >-
+          {{ tesp_slurm_health_job_user | length > 0
+             and tesp_slurm_nodes.stdout_lines | map('split') | map('last') | unique == ['idle']
+             and tesp_slurm_queue.stdout | default('') | trim | length == 0 }}
+
+    - name: Say why there is no test job
+      ansible.builtin.debug:
+        msg: >-
+          No test job: SLURM is busy (nodes:
+          {{ tesp_slurm_nodes.stdout_lines | join(', ') }}; jobs queued or
+          running: {{ tesp_slurm_queue.stdout_lines | default([]) | length }}).
+          Only the daemons, node and partition states were checked.
+      when:
+        - tesp_slurm_health_job_user | length > 0
+        - not tesp_slurm_run_test_job | bool
+
     # sbatch, as Pulsar submits through DRMAA, and as Pulsar's user, so it
     # also goes through the task network fence. --wait returns the job's exit
-    # code. Bounded by timeout; the rescue cancels a job left queued.
+    # code; timeout's 124 is handled below.
     - name: Run a test job through SLURM
       ansible.builtin.command:
         argv:
@@ -65,23 +125,65 @@
           - --wrap=true
       register: tesp_slurm_test_job
       changed_when: false
+      failed_when: tesp_slurm_test_job.rc not in [0, 124]
+      when: tesp_slurm_run_test_job | bool
+
+    # A TES task submitted after the queue was read can take the node; the
+    # test job then waits for it. That is not a fault.
+    - name: Look at a test job that didn't finish in time
+      ansible.builtin.command: >-
+        squeue -h --name={{ tesp_slurm_health_job_name | quote }}
+        --user={{ tesp_slurm_health_job_user | quote }} -o '%T %r'
+      register: tesp_slurm_test_job_state
+      changed_when: false
       when:
-        - tesp_slurm_health_job_user | length > 0
-        - tesp_slurm_nodes.stdout_lines | map('split') | map('last') | unique == ['idle']
+        - tesp_slurm_run_test_job | bool
+        - tesp_slurm_test_job.rc == 124
+
+    - name: Cancel the test job
+      ansible.builtin.command: >-
+        scancel --quiet --name={{ tesp_slurm_health_job_name | quote }}
+        --user={{ tesp_slurm_health_job_user | quote }}
+      changed_when: false
+      when:
+        - tesp_slurm_run_test_job | bool
+        - tesp_slurm_test_job.rc == 124
+
+    - name: Stop if the test job didn't finish for another reason than other jobs
+      ansible.builtin.fail:
+        msg: >-
+          the test job did not finish within {{ tesp_slurm_health_job_timeout }} s
+          (squeue: {{ tesp_slurm_test_job_state.stdout | default('') | trim | default('job gone', true) }})
+      when:
+        - tesp_slurm_run_test_job | bool
+        - tesp_slurm_test_job.rc == 124
+        - tesp_slurm_test_job_state.stdout | trim is not match('PENDING (Resources|Priority)$')
+
+    - name: Say that the test job waited for other jobs
+      ansible.builtin.debug:
+        msg: >-
+          The test job waited {{ tesp_slurm_health_job_timeout }} s behind other
+          jobs ({{ tesp_slurm_test_job_state.stdout | trim }}) and was cancelled;
+          SLURM itself is up.
+      when:
+        - tesp_slurm_run_test_job | bool
+        - tesp_slurm_test_job.rc == 124
 
   rescue:
     - name: Collect what SLURM says
       ansible.builtin.shell: |
-        if [ -n {{ tesp_slurm_health_job_user | quote }} ]; then
-          scancel --quiet --name={{ tesp_slurm_health_job_name | quote }} \
-            --user={{ tesp_slurm_health_job_user | quote }} 2>&1
-        fi
         echo "== systemctl is-active slurmd slurmctld"
         systemctl is-active slurmd slurmctld 2>&1
         echo "== sinfo -N -o '%N %T %E'"
         sinfo -N -o '%N %T %E' 2>&1
         echo "== sinfo -R"
         sinfo -R 2>&1
+        echo "== squeue -o '%i %u %j %T %r'"
+        squeue -o '%i %u %j %T %r' 2>&1
+        if [ -n {{ tesp_slurm_health_job_user | quote }} ]; then
+          scancel --quiet --name={{ tesp_slurm_health_job_name | quote }} \
+            --user={{ tesp_slurm_health_job_user | quote }} 2>&1
+        fi
         for log in {{ tesp_slurmd_log_file | quote }} {{ tesp_slurmctld_log_file | quote }}; do
           echo "== tail -n 20 $log"
           tail -n 20 "$log" 2>&1
@@ -99,6 +201,6 @@
                   + (ansible_failed_result.stderr_lines | default([]))
                   + [ansible_failed_result.msg | default('')])
                  | map('trim') | select | join('; '))
-              ~ '). A drained node stays drained once the cause is fixed: '
+              ~ '). A drained or down node stays so once the cause is fixed: '
               ~ 'scontrol update nodename=<node> state=resume.']
              + tesp_slurm_diagnostics.stdout_lines }}

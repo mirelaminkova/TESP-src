@@ -41,7 +41,13 @@
         expect: ['Wait for slurmd and slurmctld to run', 'slurmctld.log']
       - why: a drained node
         states: [drained]
-        expect: ['Wait for the SLURM node to be usable', 'localhost drained', 'Low socket*core*thread count', 'state=resume']
+        expect:
+          - Wait for the SLURM node to be usable
+          - localhost drained
+          - Low socket*core*thread count
+          - drained or down node
+          - state=resume
+          - stand-in squeue listing
       - why: a node that stays down
         states: ['down*']
         expect: ['Wait for the SLURM node to be usable', 'down*']
@@ -51,6 +57,38 @@
       - why: sinfo lists no node
         states: ['']
         expect: ['Wait for the SLURM node to be usable']
+      - why: a completing node is usable
+        states: [completing]
+        expect_ok: true
+      - why: no test job behind queued or running jobs on an idle node
+        states: [idle]
+        queue: ['41', '42']
+        expect_ok: true
+      - why: a test job that waits behind a task submitted meanwhile is cancelled, not a failure
+        states: [idle]
+        job_rc: 124
+        job_state: PENDING Resources
+        expect_ok: true
+        expect_job: pulsar
+        expect_cancel: true
+      - why: a test job pending for another reason
+        states: [idle]
+        job_rc: 124
+        job_state: PENDING ReqNodeNotAvail
+        expect: ["Stop if the test job didn't finish", 'within 120 s', 'PENDING ReqNodeNotAvail']
+      - why: a test job that timed out and is gone
+        states: [idle]
+        job_rc: 124
+        expect: ['within 120 s', 'job gone']
+      - why: slurmd that dies right after starting
+        daemons_later: [inactive, active]
+        expect: ['Check that slurmd and slurmctld still run', 'inactive']
+      - why: a drain that shows only once slurmd registers
+        states: [idle, drained]
+        expect: ['Check that the SLURM node is still usable', 'localhost drained']
+      - why: a partition that is down
+        partition: down
+        expect: ['Check that the SLURM partitions are up', 'debug* down']
       - why: a test job that fails
         states: [idle]
         job_rc: 1

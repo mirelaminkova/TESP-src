@@ -65,6 +65,9 @@ tesp_slurm_real_memory_mb: >-
 # restart, wait up to retries x delay seconds for the daemons and the node.
 tesp_slurm_health_retries: 15
 tesp_slurm_health_delay: 2
+# Then look again after this many seconds (a daemon that dies right after
+# starting, a drain that appears once slurmd registers).
+tesp_slurm_health_settle: 5
 # Node states (sinfo %T) that can take a task.
 tesp_slurm_usable_states: [idle, mixed, allocated, completing]
 # The test job (as the Pulsar user, at the end of the TESP play).

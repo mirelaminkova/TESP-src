@@ -1,8 +1,10 @@
 ---
 # One case of tests/slurm-health.yml: writes stand-ins that answer as
-# case.daemons (systemctl is-active slurmd slurmctld, one line each),
-# case.states (sinfo's node state, one per call; the last one repeats) and
-# case.job_rc (sbatch), runs tasks/slurm-health.yml with them first on PATH,
+# case.daemons (systemctl is-active slurmd slurmctld, one line each; from
+# the second call on case.daemons_later if set), case.states (sinfo's node
+# state, one per call; the last one repeats), case.partition (sinfo %a),
+# case.queue (squeue's job ids), case.job_rc (sbatch; 124 = timeout's) and
+# case.job_state (squeue for the test job), runs tasks/slurm-health.yml with them first on PATH,
 # and checks that it passed (case.expect_ok, and the test job ran as
 # case.expect_job or not at all) or failed with every text in case.expect.
 - name: "SLURM check: {{ case.why }}"
@@ -10,6 +12,7 @@
     stubs: "{{ stub_dir.path }}/case"
     stub_states: "{{ case.states | default(['idle']) }}"
     stub_daemons: "{{ case.daemons | default(['active', 'active']) }}"
+    stub_daemons_later: "{{ case.daemons_later | default(stub_daemons) }}"
   # The stand-ins first (an include can't take environment).
   environment:
     PATH: "{{ stubs }}:{{ lookup('ansible.builtin.env', 'PATH') }}"
@@ -30,13 +33,20 @@
         - name: systemctl
           content: |
             #!/bin/sh
+            if [ -e "{{ stubs }}/systemctl.called" ]; then
+              printf '%s\n' {{ stub_daemons_later | map('quote') | join(' ') }}
+              {{ 'exit 0' if stub_daemons_later | unique == ['active'] else 'exit 3' }}
+            fi
+            touch "{{ stubs }}/systemctl.called"
             printf '%s\n' {{ stub_daemons | map('quote') | join(' ') }}
             {{ 'exit 0' if stub_daemons | unique == ['active'] else 'exit 3' }}
         - name: sinfo
           content: |
             #!/bin/sh
             # The -h -N -o '%N %T' calls take the states in turn.
-            if [ "$1" = -h ]; then
+            if [ "$1 $2" = "-h -o" ]; then
+              echo "debug* {{ case.partition | default('up') }}"
+            elif [ "$1" = -h ]; then
               n=$(cat "{{ stubs }}/sinfo.calls" 2>/dev/null || echo 0)
               echo $((n + 1)) > "{{ stubs }}/sinfo.calls"
               set -- {{ stub_states | map('quote') | join(' ') }}
@@ -66,7 +76,15 @@
         - name: scancel
           content: |
             #!/bin/sh
-            echo "scancel $*"
+            echo "scancel $*" | tee -a "{{ stubs }}/scancel.calls"
+        - name: squeue
+          content: |
+            #!/bin/sh
+            case "$*" in
+              "-h -o %i") {{ 'printf "%s\\n" ' ~ (case.queue | map('quote') | join(' ')) if case.queue | default([]) else ':' }} ;;
+              -h\ --name=*) echo {{ case.job_state | default('') | quote }} ;;
+              *) echo "stand-in squeue listing" ;;
+            esac
         - name: slurmd.log
           content: "stand-in slurmd log line\n"
         - name: slurmctld.log
@@ -77,6 +95,7 @@
       vars:
         tesp_slurm_health_retries: 3
         tesp_slurm_health_delay: 0
+        tesp_slurm_health_settle: 0
         tesp_slurm_health_job_user: "{{ case.job_user | default('pulsar') }}"
         tesp_slurmd_log_file: "{{ stubs }}/slurmd.log"
         tesp_slurmctld_log_file: "{{ stubs }}/slurmctld.log"
@@ -109,6 +128,17 @@
       vars:
         job_args: "{{ lookup('ansible.builtin.file', stubs ~ '/job.args') }}"
       when: case.expect_job is defined
+
+    - name: Look for a cancelled test job
+      ansible.builtin.stat:
+        path: "{{ stubs }}/scancel.calls"
+      register: scancel_file
+
+    - name: The test job was cancelled only if it timed out
+      ansible.builtin.assert:
+        that: scancel_file.stat.exists == (case.expect_cancel | default(false))
+        fail_msg: "scancel: expected {{ case.expect_cancel | default(false) }}: {{ case.why }}"
+        quiet: true
   rescue:
     - name: "Failed as expected: {{ case.why }}"
       ansible.builtin.assert:
