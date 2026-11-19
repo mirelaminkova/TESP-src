@@ -32,7 +32,6 @@ import functools
 import hashlib
 import json
 import logging
-import math
 import re
 import sys
 import threading
@@ -218,6 +217,10 @@ class IssuerConfig:
         )
 
 
+# The largest number a config setting may have (about 30 years in seconds).
+MAX_CONFIG_NUMBER = 10 ** 9
+
+
 @dataclass(frozen=True)
 class Config:
     """The validator's configuration file (rendered by Ansible)."""
@@ -259,10 +262,12 @@ class Config:
                      "userinfo_cache_seconds", "cache_max_entries"):
             if name in d:
                 value = d[name]
-                # json accepts NaN and Infinity; neither is a usable time.
+                # json.load accepts NaN, Infinity and huge numbers (a 1e300 s
+                # timeout overflows the socket). None of them is usable here.
                 if isinstance(value, bool) or not isinstance(value, (int, float)) \
-                        or not math.isfinite(value) or value < 0:
-                    raise ValueError(f"{name} must be a number >= 0")
+                        or not 0 <= value <= MAX_CONFIG_NUMBER:
+                    raise ValueError(f"{name} must be a number from 0 to "
+                                     f"{MAX_CONFIG_NUMBER}")
                 numbers[name] = value
         audit = _string_list(d.get("audit_tag_keys"), "audit_tag_keys")
         config = cls(issuers=issuers, basic_auth_enabled=basic,
@@ -389,7 +394,7 @@ class Decision:
 # Monotonic, and on Linux it also counts time suspended: after a VM
 # resumes, cached keys show their real age.
 _uptime = (functools.partial(time.clock_gettime, time.CLOCK_BOOTTIME)
-          if hasattr(time, "CLOCK_BOOTTIME") else time.monotonic)
+           if hasattr(time, "CLOCK_BOOTTIME") else time.monotonic)
 
 
 class Validator:
