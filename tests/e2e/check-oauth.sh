@@ -147,6 +147,8 @@ expect "CORS preflight of another origin" 401 -X OPTIONS -H 'Origin: https://evi
 grep -qi '^Access-Control-Allow-Origin' "$tmp/headers" && { echo "FAIL another origin got CORS headers" >&2; fail=1; }
 expect "token call from the portal" 200 -H "Origin: $portal" -H "$(bearer "$(mint)")" "$base/v1/tasks"
 grep -qiF "Access-Control-Allow-Origin: $portal" "$tmp/headers" || { echo "FAIL no CORS header on 200" >&2; fail=1; }
+grep -qiF 'Access-Control-Expose-Headers: WWW-Authenticate, Retry-After' "$tmp/headers" ||
+    { echo "FAIL no Access-Control-Expose-Headers" >&2; fail=1; }
 expect "401 for the portal" 401 -H "Origin: $portal" "$base/v1/tasks"
 grep -qiF "Access-Control-Allow-Origin: $portal" "$tmp/headers" || { echo "FAIL no CORS header on 401" >&2; fail=1; }
 
@@ -154,6 +156,21 @@ grep -qiF "Access-Control-Allow-Origin: $portal" "$tmp/headers" || { echo "FAIL 
 docker stop -t 2 "$(docker ps -qf name=idp)" >/dev/null
 expect "issuer down: 503, not 401" 503 -H "$(bearer "$(mint --sub entitled-new-user)")" "$base/v1/tasks"
 grep -qi '^Retry-After: 30' "$tmp/headers" || { echo "FAIL no Retry-After on 503" >&2; fail=1; }
+
+# Rate limit per client address (20/s, burst 40): a burst of 100 requests
+# without credentials gets 429s, with the CORS headers.
+codes=$(for _ in $(seq 1 100); do
+    curl -s -o /dev/null -w '%{http_code}\n' -H "Origin: $portal" "$base/v1/tasks" &
+done; wait)
+n429=$(grep -c '^429$' <<< "$codes" || true)
+if [ "$n429" -gt 0 ]; then
+    echo "ok   rate limit: $n429 of 100 got 429"
+else
+    echo "FAIL rate limit: no 429 in a burst of 100" >&2
+    fail=1
+fi
+curl -s -o /dev/null -D "$tmp/headers" -H "Origin: $portal" "$base/v1/tasks" >/dev/null
+sleep 3
 
 # No token may end up in the logs.
 docker logs tesp-validator > "$tmp/validator.log" 2>&1

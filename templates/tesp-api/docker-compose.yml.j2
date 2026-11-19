@@ -73,6 +73,9 @@ services:
     container_name: tesp-validator
     restart: unless-stopped
     read_only: true
+    # Bounded, so a flood can't take the host down with it.
+    pids_limit: 128
+    mem_limit: 256m
     # The playbook waits for it (wait: true), so a validator that doesn't start
     # fails the deploy instead of every request.
     healthcheck:

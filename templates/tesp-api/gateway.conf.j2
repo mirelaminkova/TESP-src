@@ -10,7 +10,15 @@
         add_header Access-Control-Allow-Methods $tes_cors_methods always;
         add_header Access-Control-Allow-Headers $tes_cors_headers always;
         add_header Access-Control-Max-Age $tes_cors_max_age always;
+        add_header Access-Control-Expose-Headers $tes_cors_expose always;
 {% endif %}
+{%- endmacro %}
+{# Per client address (after realip), on the protected locations: a client
+   can't flood the validator, LS Login or tesp-api. 429 with CORS headers. #}
+{% macro rate_limit() %}
+        limit_req zone=tes_per_ip burst={{ tesp_gateway_rate_burst | int }} nodelay;
+        limit_req_status 429;
+        error_page 429 = @rate_limited;
 {%- endmacro %}
 {# A preflight of an allowed origin is answered here, before any auth. #}
 {% macro cors_preflight() %}
@@ -118,6 +126,12 @@ map "$request_method:$tes_cors_origin" $tes_cors_preflight {
     default               0;
 }
 
+# Answers to an allowed origin: what the browser lets the portal read.
+map $tes_cors_origin $tes_cors_expose {
+    ""       "";
+    default  "WWW-Authenticate, Retry-After";
+}
+
 # Only on preflight answers.
 map $tes_cors_preflight $tes_cors_methods {
     1        "GET, POST, OPTIONS";
@@ -133,6 +147,8 @@ map $tes_cors_preflight $tes_cors_max_age {
 }
 
 {% endif %}
+limit_req_zone $binary_remote_addr zone=tes_per_ip:10m rate={{ tesp_gateway_rate_per_second | int }}r/s;
+
 server {
     listen 8080;
     server_name _;
@@ -200,6 +216,7 @@ server {
 {% macro protected() %}
 {{ cors_preflight() }}
 {{ cors_headers() }}
+{{ rate_limit() }}
         if ($tes_basic_refused) {
             return 401;
         }
@@ -219,6 +236,7 @@ server {
         # The gateway's own headers never come from a client.
         proxy_set_header X-Tes-Auth-Client "";
         proxy_set_header X-Tes-Auth-Exempt "";
+        proxy_set_header X-Tes-Auth-Kind "";
         proxy_pass $tesp_api_upstream;
 {%- endmacro %}
     location / {
@@ -261,6 +279,7 @@ server {
     location / {
 {{ cors_preflight() }}
 {{ cors_headers() }}
+{{ rate_limit() }}
         if ($tes_has_basic = 0) {
             return 401;
         }
@@ -299,6 +318,13 @@ server {
     }
 
 {% endif %}
+    location @rate_limited {
+{{ cors_headers() }}
+        add_header Retry-After 1 always;
+        default_type application/json;
+        return 429 '{"detail": "Too many requests"}';
+    }
+
     error_page 401 = @unauthorized;
     location @unauthorized {
 {{ cors_headers() }}

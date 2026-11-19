@@ -486,8 +486,8 @@ def test_stale_key_used_while_another_request_refreshes(idp):
     check(v, idp.token(client_id=EXEMPT))
     now[0] += 101
     issuer_state = next(iter(v._state.values()))
-    with issuer_state.lock:  # a refresh in progress
-        assert check(v, idp.token(client_id=EXEMPT)).kind == "bearer"
+    issuer_state.refreshing = threading.Event()  # a refresh in progress
+    assert check(v, idp.token(client_id=EXEMPT)).kind == "bearer"
     assert idp.hits["jwks"] == 1
 
 
@@ -939,3 +939,109 @@ def test_main_loads_config(tmp_path, monkeypatch):
                         lambda validator, host, port: FakeServer())
     assert tv.main(["--config", str(cfg), "--port", "0"]) == 0
     assert started == {"yes": True}
+
+
+# -- hardening (issue #36) ---------------------------------------------------
+
+def test_server_has_a_listen_backlog():
+    server = tv.make_server(tv.Validator(tv.Config.from_dict({})), "127.0.0.1", 0)
+    try:
+        assert server.request_queue_size >= 128
+    finally:
+        server.server_close()
+
+
+def test_jwks_fetch_doesnt_block_known_keys(idp):
+    """A slow refresh (e.g. for an unknown kid) holds no lock that a token
+    with a known, fresh key needs; concurrent callers share one fetch."""
+    gate = threading.Event()
+    calls = []
+
+    def slow_fetch(url, timeout, token=None):
+        if url.endswith("/jwks") and calls:
+            gate.wait(5)
+        calls.append(url)
+        return tv.fetch_json(url, timeout, token)
+
+    v = tv.Validator(idp.config(), fetch=slow_fetch)
+    check(v, idp.token())  # keys and endpoints fetched, fresh
+    jwks_calls = sum(u.endswith("/jwks") for u in calls)
+    results = []
+    # min refresh interval passed: an unknown kid triggers a (slow) refresh
+    v._state[idp.issuer].attempted_at = 0
+    slow = threading.Thread(target=lambda: results.append(
+        pytest.raises(tv.Denied, check, v, idp.token(kid="rotated"))))
+    slow.start()
+    time.sleep(0.2)
+    start = time.time()
+    # A user token with a known key; its userinfo lookup needs no lock either.
+    assert check(v, idp.token(sub="user-1", iat=2)).kind == "bearer"
+    assert time.time() - start < 1, "a known key waited for the refresh"
+    gate.set()
+    slow.join(5)
+    assert results
+    assert sum(u.endswith("/jwks") for u in calls) == jwks_calls + 1
+
+
+def test_userinfo_refusal_is_cached_briefly(idp):
+    idp.userinfo_status = 401
+    now = [time.time()]
+    v = tv.Validator(idp.config(), clock=lambda: now[0])
+    token = idp.token()
+    for _ in range(3):
+        denied(v, "Bearer " + token, "userinfo failed")
+    assert idp.hits["userinfo"] == 1
+    now[0] += 61
+    denied(v, "Bearer " + token, "userinfo failed")
+    assert idp.hits["userinfo"] == 2
+
+
+def _slow_jwks(gate):
+    calls = []
+
+    def fetch(url, timeout, token=None):
+        if url.endswith("/jwks"):
+            calls.append(url)
+            gate.wait(5)
+        return tv.fetch_json(url, timeout, token)
+    return fetch, calls
+
+
+def test_concurrent_requests_share_one_jwks_fetch(idp):
+    gate = threading.Event()
+    fetch, calls = _slow_jwks(gate)
+    v = tv.Validator(idp.config(), fetch=fetch)
+    results = []
+    workers = [threading.Thread(target=lambda: results.append(
+        check(v, idp.token(client_id=EXEMPT)).kind)) for _ in range(3)]
+    for w in workers:
+        w.start()
+    time.sleep(0.3)
+    gate.set()
+    for w in workers:
+        w.join(10)
+    assert results == ["bearer"] * 3
+    assert len(calls) == 1
+
+
+def test_waiting_for_a_failed_first_fetch_is_unavailable(idp):
+    gate = threading.Event()
+    fetch, calls = _slow_jwks(gate)
+    idp.jwks_status = 503
+    v = tv.Validator(idp.config(), fetch=fetch)
+    errors = []
+
+    def run():
+        try:
+            check(v, idp.token(client_id=EXEMPT))
+        except tv.Denied as e:
+            errors.append(type(e))
+    workers = [threading.Thread(target=run) for _ in range(2)]
+    for w in workers:
+        w.start()
+    time.sleep(0.3)
+    gate.set()
+    for w in workers:
+        w.join(10)
+    assert errors == [tv.Unavailable, tv.Unavailable]
+    assert len(calls) == 1
