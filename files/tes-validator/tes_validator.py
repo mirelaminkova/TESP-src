@@ -262,8 +262,13 @@ class Config:
                     raise ValueError(f"{name} must be a number >= 0")
                 numbers[name] = value
         audit = _string_list(d.get("audit_tag_keys"), "audit_tag_keys")
-        return cls(issuers=issuers, basic_auth_enabled=basic,
-                   audit_tag_keys=audit, allow_http=allow_http, **numbers)
+        config = cls(issuers=issuers, basic_auth_enabled=basic,
+                     audit_tag_keys=audit, allow_http=allow_http, **numbers)
+        if config.jwks_max_stale_seconds < config.jwks_cache_seconds:
+            # Keys would be dropped before they are due for a refresh.
+            raise ValueError("jwks_max_stale_seconds must be at least "
+                             "jwks_cache_seconds")
+        return config
 
 
 def fetch_json(url: str, timeout: float, token: str | None = None) -> Any:
@@ -304,6 +309,15 @@ def fetch_json(url: str, timeout: float, token: str | None = None) -> Any:
         raise FetchError(f"{url}: not JSON") from None
 
 
+def _only_key(keys: dict[str | None, Any], kid: Any) -> Any:
+    """For a token without a kid: the issuer's key, if it has exactly one.
+    (If that issuer rotates it, tokens with the new key fail until the keys
+    are refreshed, within jwks_cache_seconds; LS Login sets kids.)"""
+    if kid is None and len(keys) == 1:
+        return next(iter(keys.values()))
+    return None
+
+
 class TTLCache:
     """A small thread-safe LRU cache whose entries expire."""
 
@@ -341,6 +355,8 @@ class _IssuerState:
     jwks_uri: str | None = None
     userinfo_endpoint: str | None = None
     keys: dict[str | None, Any] = field(default_factory=dict)
+    # Times from the validator's timer (monotonic): a wall-clock step can't
+    # make keys look fresh, or hold the back-off, for the length of the step.
     fetched_at: float | None = None    # last successful JWKS fetch
     attempted_at: float | None = None  # last attempt, successful or not
     # Set while one request fetches the JWKS; others wait on it, without
@@ -348,8 +364,8 @@ class _IssuerState:
     refreshing: threading.Event | None = None
     # Fetches are numbered as they start; `published` is the number of the
     # one whose keys are in use. A fetch publishes only if its number is
-    # higher: ordered by number, not by clock, so a clock step can't roll
-    # back a refresh (see _after_clock_step for the back-off).
+    # higher than `published`: a fetch given up on can't bring back older
+    # keys.
     generation: int = 0
     published: int = 0
 
@@ -369,10 +385,12 @@ class Validator:
 
     def __init__(self, config: Config,
                  fetch: Callable[..., Any] = fetch_json,
-                 clock: Callable[[], float] = time.time):
+                 clock: Callable[[], float] = time.time,
+                 timer: Callable[[], float] = time.monotonic):
         self.config = config
         self._fetch = fetch
-        self._clock = clock
+        self._clock = clock  # wall clock: token times, cache expiry
+        self._timer = timer  # JWKS ages and back-off
         self._state = {iss: _IssuerState() for iss in config.issuers}
         self._userinfo = TTLCache(config.cache_max_entries, clock)
         self._warned = TTLCache(1000, clock)
@@ -495,13 +513,12 @@ class Validator:
     def _signing_key(self, issuer: IssuerConfig, kid: Any, alg: str) -> Any:
         """The issuer's public key for this kid, from its (cached) JWKS."""
         state = self._state[issuer.issuer]
-        now = self._clock()
-        self._after_clock_step(state, now)
+        now = self._timer()
         key = self._cached_key(state, kid, now)
         if key is None:
             key = self._refreshed_key(issuer, state, kid, now)
-        if key is None and kid is None and len(state.keys) == 1:
-            key = next(iter(state.keys.values()))
+        if key is None:
+            key = _only_key(state.keys, kid)
         if key is None:
             raise Denied("unknown signing key")
         try:
@@ -509,17 +526,6 @@ class Validator:
         except jwt.PyJWTError:
             raise Denied("key type does not match the algorithm") from None
         return key
-
-    def _after_clock_step(self, state: _IssuerState, now: float) -> None:
-        """If the clock stepped back past the last fetch or attempt (NTP on a
-        VM that booted in the future), the keys count as stale and the
-        back-off as over: otherwise a rotated key couldn't be fetched, and
-        old keys kept, for as long as the step."""
-        with state.lock:
-            if state.fetched_at is not None and state.fetched_at > now:
-                state.fetched_at = now - self.config.jwks_cache_seconds
-            if state.attempted_at is not None and state.attempted_at > now:
-                state.attempted_at = now - self.config.jwks_min_refresh_seconds
 
     def _cached_key(self, state: _IssuerState, kid: Any, now: float) -> Any:
         """A known key without waiting: fresh, or old while another request
@@ -540,9 +546,9 @@ class Validator:
         that is fetching it. No lock is held during a fetch."""
         abandoned_after = 2 * self.config.http_timeout_seconds + 1
 
-        def known() -> bool:  # a kid-less token uses the only key, if one
-            return state.keys.get(kid) is not None or (
-                kid is None and len(state.keys) == 1)
+        def known() -> bool:
+            return state.keys.get(kid) is not None or \
+                _only_key(state.keys, kid) is not None
 
         with state.lock:
             waiting_for = state.refreshing
@@ -570,11 +576,12 @@ class Validator:
                 state.generation += 1
                 generation = state.generation
         if waiting_for is not None:
-            # Another request fetches: its result, or what we have. A known
-            # key doesn't wait (kid-less ones get here: _cached_key skips them).
-            if not known() and not waiting_for.wait(abandoned_after) \
-                    and not known():
-                raise Unavailable("JWKS refresh still running")
+            # Another request fetches. Wait for it only without the key (a
+            # kid-less token with the issuer's only key doesn't wait).
+            if not known():
+                finished = waiting_for.wait(abandoned_after)
+                if not finished and not known():
+                    raise Unavailable("JWKS refresh still running")
         elif fetching:
             self._fetch_jwks(issuer, state, now, done, generation)
         elif state.fetched_at is None or (
@@ -850,7 +857,8 @@ def _challenge(authorization: str | None) -> str:
     return 'Bearer realm="tes"'
 
 
-# group_vars' tesp_gateway_conn_per_address must stay below this.
+# tasks/check-parameters.yml keeps tesp_gateway_conn_per_address below this:
+# change both together.
 MAX_CONCURRENT_CHECKS = 64
 
 
