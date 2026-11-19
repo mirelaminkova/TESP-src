@@ -578,8 +578,20 @@
               - "'proxy_set_header X-Tes-Auth-Kind \"\";' in conf"
               # Per real client address, on the protected locations, with a
               # JSON 429 that carries the CORS headers.
-              - conf is search('limit_req_zone \\$binary_remote_addr zone=tes_per_ip:10m rate=20r/s;')
-              - conf.count('limit_req zone=tes_per_ip burst=40 nodelay;') == 2
+              # Excess requests are queued, not refused (no nodelay): a 429
+              # aborts a Nextflow run (nf-ga4gh doesn't retry it).
+              - conf is search('limit_req_zone \\$tes_rate_key zone=tes_per_ip:10m rate=20r/s;')
+              - conf.count('limit_req zone=tes_per_ip burst=40;') == 2
+              - "'nodelay' not in conf"
+              # Allowlisted sources (Basic sources, src_tes_rate_exempt_sources)
+              # aren't limited: an empty key is not counted.
+              - "'geo $tes_rate_exempt {' in conf"
+              - "'    145.38.1.2 1;' in conf"
+              - "'map $tes_rate_exempt $tes_rate_key {' in conf"
+              # Not the Basic map: its default can be 1 (everyone).
+              - conf is search('geo \\$tes_rate_exempt \\{\\s+default 0;')
+              - >-
+                conf is search('location @rate_limited \\{[^}]*add_header Retry-After 1 always;')
               - "'limit_req_status 429;' in conf"
               - "'error_page 429 = @rate_limited;' in conf"
               - "'location @rate_limited {' in conf"

@@ -102,6 +102,15 @@
       - why: a Basic source that is only colons
         expect: Invalid access settings
         vars: {src_tes_basic_auth_sources: ':::'}
+      - why: a rate-limit exempt source that is a host name
+        expect: Invalid access settings
+        vars: {src_tes_rate_exempt_sources: 'protes.example.org'}
+      - why: a rate of 0
+        expect: Invalid access settings
+        vars: {tesp_gateway_rate_per_second: 0}
+      - why: a negative burst
+        expect: Invalid access settings
+        vars: {tesp_gateway_rate_burst: -1}
       - why: Basic sources with a space (as SRC would split them)
         expect: Invalid access settings
         vars: {src_tes_basic_auth_sources: '10.0.0.1 10.0.0.2'}

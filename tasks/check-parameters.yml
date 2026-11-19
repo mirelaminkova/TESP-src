@@ -112,14 +112,20 @@
       # IPv4 or IPv6 addresses, optionally with a prefix length (not /0).
       - tesp_basic_auth_sources is sequence and tesp_basic_auth_sources is not string
       - tesp_basic_auth_sources | reject('match', ipv4_re ~ '|' ~ ipv6_re) | list | length == 0
+      - tesp_rate_exempt_sources is sequence and tesp_rate_exempt_sources is not string
+      - tesp_rate_exempt_sources | reject('match', ipv4_re ~ '|' ~ ipv6_re) | list | length == 0
+      - tesp_gateway_rate_per_second | string is match('[1-9][0-9]*\\Z')
+      - tesp_gateway_rate_burst | string is match('[1-9][0-9]*\\Z')
       # For values set directly instead of through the parameters.
       - tesp_basic_auth_enabled | string | lower in ['true', 'false']
       - tesp_oauth_enabled | string | lower in ['true', 'false']
       - tesp_basic_auth_enabled | bool or tesp_oauth_enabled | bool
     fail_msg: >-
       Invalid access settings. src_tes_oauth_enabled must be true or false;
-      src_tes_basic_auth_sources must be IP addresses or CIDRs (e.g.
-      145.38.1.2 or 145.38.0.0/16), comma-separated without spaces. See
+      src_tes_basic_auth_sources and src_tes_rate_exempt_sources must be IP
+      addresses or CIDRs (e.g. 145.38.1.2 or 145.38.0.0/16, at least /8 or
+      /16 for IPv6), comma-separated without spaces; tesp_gateway_rate_per_second
+      and tesp_gateway_rate_burst must be whole numbers above 0. See
       "Access with LS Login" in the README.
 
 - name: Validate the CORS origins (src_tes_cors_origins)

@@ -267,14 +267,28 @@ class Config:
 
 
 def fetch_json(url: str, timeout: float, token: str | None = None) -> Any:
-    """GET a JSON document, with a timeout and a size limit."""
+    """GET a JSON document, with a size limit and a total deadline.
+
+    urllib's timeout applies to each socket operation; reading in chunks
+    against a deadline also stops an endpoint that trickles bytes.
+    """
     headers = {"Accept": "application/json"}
     if token is not None:
         headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(url, headers=headers)
+    deadline = time.monotonic() + timeout
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            body = response.read(MAX_RESPONSE_BYTES + 1)
+            chunks, size = [], 0
+            while size <= MAX_RESPONSE_BYTES:
+                if time.monotonic() > deadline:
+                    raise FetchError(f"{url}: too slow")
+                chunk = response.read1(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                size += len(chunk)
+            body = b"".join(chunks)
     except (urllib.error.URLError, OSError, ValueError) as e:
         # HTTPError is a URLError; its message has the status, not the token.
         status = getattr(e, "code", None)
@@ -511,8 +525,9 @@ class Validator:
             # so it can't stop every later refresh.
             if waiting_for is not None and state.attempted_at is not None \
                     and now - state.attempted_at > abandoned_after:
+                # It counts as an attempt: the back-off still holds, so
+                # hung fetches can't pile up.
                 waiting_for = state.refreshing = None
-                state.attempted_at = None  # not an attempt that counts
             stale = (state.fetched_at is None or
                      now - state.fetched_at >= self.config.jwks_cache_seconds)
             # Refetch when the keys are old, or for an unknown kid (a rotated
@@ -564,12 +579,16 @@ class Validator:
             if not state.keys:
                 raise Unavailable(f"JWKS fetch failed: {e}") from None
         else:
+            # Only if this is still the current refresh: one given up on
+            # must not overwrite a newer one's result.
             with state.lock:
-                state.keys = keys
-                state.fetched_at = now
+                if state.refreshing is done:
+                    state.keys = keys
+                    state.fetched_at = now
         finally:
             with state.lock:
-                state.refreshing = None
+                if state.refreshing is done:
+                    state.refreshing = None
             done.set()
 
     def _parse_jwks(self, jwks: Any) -> dict[str | None, Any]:

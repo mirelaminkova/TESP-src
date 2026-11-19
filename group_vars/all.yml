@@ -249,9 +249,16 @@ tesp_cors_origins: >-
 # gateway: one rate-limit bucket for all and Basic sources that don't match.
 tesp_gateway_trusted_proxies: [172.16.0.0/12, 192.168.0.0/16]
 # Requests per second per client address on the TES API (not service info or
-# the docs), with a burst; more get 429. A Nextflow run polls each task.
+# the docs). Up to the burst, faster requests are queued; beyond it they get
+# 429, which fails a Nextflow task or aborts its run (nf-ga4gh doesn't retry).
 tesp_gateway_rate_per_second: 20
 tesp_gateway_rate_burst: 40
+# Addresses (IP or CIDR) that are never rate-limited, from
+# src_tes_rate_exempt_sources, e.g. proTES's, which submits for all its
+# users. The Basic sources are exempt too.
+tesp_rate_exempt_sources: >-
+  {{ (src_tes_rate_exempt_sources | default('') | string).split(',')
+     | map('trim') | select | list }}
 # Issuers whose access tokens are accepted. Each entry:
 #   issuer               exact "iss" (https); also where discovery is read,
 #                        unless discovery_url is set. Never taken from a token.

@@ -79,6 +79,19 @@ class IdP:
                     return self._json(idp.userinfo_status, idp.userinfo)
                 if self.path == "/notjson":
                     return self._raw(200, b"<html>")
+                if self.path == "/trickle":
+                    # A byte every 0.3 s: each read is quick, the whole slow.
+                    self.send_response(200)
+                    self.send_header("Content-Length", "20")
+                    self.end_headers()
+                    for _ in range(20):
+                        try:
+                            self.wfile.write(b" ")
+                            self.wfile.flush()
+                        except OSError:
+                            return
+                        time.sleep(0.3)
+                    return
                 if self.path == "/huge":
                     return self._raw(200, b" " * (tv.MAX_RESPONSE_BYTES + 10))
                 return self._json(404, {})
@@ -1047,14 +1060,41 @@ def test_waiting_for_a_failed_first_fetch_is_unavailable(idp):
     assert len(calls) == 1
 
 
-def test_a_hung_refresh_is_given_up_on(idp):
+def test_a_hung_refresh_is_given_up_on_after_the_backoff(idp):
     now = [time.time()]
     v = tv.Validator(idp.config(http_timeout_seconds=1), clock=lambda: now[0])
     state = v._state[idp.issuer]
     state.refreshing = threading.Event()  # a fetch that never ends
+    # Abandoned (older than 2 x timeout + 1) but within the back-off: no new
+    # fetch yet, so hung fetches can't pile up.
     state.attempted_at = now[0] - 10
+    with pytest.raises(tv.Unavailable):
+        check(v, idp.token(client_id=EXEMPT))
+    assert idp.hits["jwks"] == 0
+    # Past the back-off: a new fetch.
+    now[0] += 60
     assert check(v, idp.token(client_id=EXEMPT)).kind == "bearer"
     assert state.refreshing is None and idp.hits["jwks"] == 1
+
+
+def test_an_abandoned_fetch_doesnt_clobber_a_newer_one(idp):
+    v = tv.Validator(idp.config())
+    state = v._state[idp.issuer]
+    newer = threading.Event()
+    state.refreshing = newer
+    old = threading.Event()
+    v._fetch_jwks(v.config.issuers[idp.issuer], state, time.time(), old)
+    assert old.is_set()
+    # The newer refresh still owns the state; the late result isn't published.
+    assert state.refreshing is newer
+    assert state.keys == {} and state.fetched_at is None
+
+
+def test_fetch_json_has_a_total_deadline(idp):
+    start = time.monotonic()
+    with pytest.raises(tv.FetchError, match="too slow"):
+        tv.fetch_json(idp.base + "/trickle", 1)
+    assert time.monotonic() - start < 3
 
 
 def test_waiting_in_vain_for_an_unknown_kid_is_unavailable(idp):
@@ -1069,9 +1109,12 @@ def test_waiting_in_vain_for_an_unknown_kid_is_unavailable(idp):
 
 
 def test_discovery_with_a_bad_userinfo_url_sets_no_endpoint(idp):
-    config = dataclasses.replace(idp.config(), allow_http=False)
+    # jwks_uri from the configuration (https) passes; the discovered
+    # userinfo endpoint (plain http here) doesn't: then neither is set.
+    config = dataclasses.replace(idp.config(issuer_overrides={
+        "jwks_uri": "https://jwks.example.org/jwks"}), allow_http=False)
     v = tv.Validator(config)
-    denied(v, "Bearer " + idp.token(), "https")
+    denied(v, "Bearer " + idp.token(), "userinfo_endpoint must be an https")
     state = v._state[idp.issuer]
     assert state.jwks_uri is None and state.userinfo_endpoint is None
 

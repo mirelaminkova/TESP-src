@@ -14,9 +14,11 @@
 {% endif %}
 {%- endmacro %}
 {# Per client address (after realip), on the protected locations: a client
-   can't flood the validator, LS Login or tesp-api. 429 with CORS headers. #}
+   can't flood the validator, LS Login or tesp-api. Requests above the rate
+   wait (no nodelay); only past the burst do they get 429, with CORS headers.
+   A 429 fails a Nextflow task, or aborts its run (nf-ga4gh doesn't retry). #}
 {% macro rate_limit() %}
-        limit_req zone=tes_per_ip burst={{ tesp_gateway_rate_burst | int }} nodelay;
+        limit_req zone=tes_per_ip burst={{ tesp_gateway_rate_burst | int }};
         limit_req_status 429;
         # An error_page in a location replaces all of the server's, so 401
         # is repeated here.
@@ -150,7 +152,23 @@ map $tes_cors_preflight $tes_cors_max_age {
 }
 
 {% endif %}
-limit_req_zone $binary_remote_addr zone=tes_per_ip:10m rate={{ tesp_gateway_rate_per_second | int }}r/s;
+# Sources that are never rate-limited: the Basic sources (the co-located
+# Nextflow workspace) and src_tes_rate_exempt_sources (e.g. proTES). Its own
+# map: $tes_basic_source defaults to 1 (everyone) while tokens are off.
+geo $tes_rate_exempt {
+    default 0;
+{% for source in (tesp_basic_auth_sources + tesp_rate_exempt_sources) | unique %}
+    {{ source }} 1;
+{% endfor %}
+}
+
+# An empty key is not counted.
+map $tes_rate_exempt $tes_rate_key {
+    1        "";
+    default  $binary_remote_addr;
+}
+
+limit_req_zone $tes_rate_key zone=tes_per_ip:10m rate={{ tesp_gateway_rate_per_second | int }}r/s;
 
 server {
     listen 8080;
