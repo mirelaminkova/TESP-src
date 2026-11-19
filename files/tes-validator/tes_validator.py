@@ -228,7 +228,7 @@ class Config:
     issuers: dict[str, IssuerConfig]
     basic_auth_enabled: bool = True
     leeway_seconds: int = 60
-    http_timeout_seconds: float = 5.0
+    http_timeout_seconds: float = 10.0
     jwks_cache_seconds: int = 3600
     jwks_min_refresh_seconds: int = 60
     # Known keys stay in use while the issuer can't be reached, this long.
@@ -283,7 +283,8 @@ class Config:
         return config
 
 
-def fetch_json(url: str, timeout: float, token: str | None = None) -> Any:
+def fetch_json(url: str, timeout: float, token: str | None = None,
+               accept: str = "application/json") -> Any:
     """GET a JSON document, with a timeout and a size limit.
 
     urllib's timeout applies to each socket operation (connecting, the status
@@ -291,7 +292,7 @@ def fetch_json(url: str, timeout: float, token: str | None = None) -> Any:
     deadline also stops one that trickles bytes, after about twice the
     timeout; headers trickled line by line are bounded only per line.
     """
-    headers = {"Accept": "application/json"}
+    headers = {"Accept": accept}
     if token is not None:
         headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(url, headers=headers)
@@ -691,8 +692,11 @@ class Validator:
         if not endpoint:
             raise Denied("issuer has no userinfo endpoint")
         try:
+            # Not "application/json": LS Login's userinfo answered that about
+            # 6 s late, and */* in 0.3 s (the same JSON). Not "application/jwt"
+            # either, which would get a signed answer.
             info = self._fetch(endpoint, self.config.http_timeout_seconds,
-                               token=token)
+                               token=token, accept="*/*")
         except FetchError as e:
             if e.unavailable:
                 raise Unavailable(f"userinfo failed: {e}") from None
