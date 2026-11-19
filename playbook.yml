@@ -211,7 +211,8 @@
     # enabled: true above changes nothing where the unit is already enabled,
     # so links added to [Install] later (RequiredBy=slurmd.service) would
     # never appear. Checked from the links themselves, so that a run that
-    # fails later doesn't lose the fix.
+    # fails later doesn't lose the fix. slurmd's unit name is fixed
+    # (galaxyproject.slurm); Pulsar's comes from tesp_pulsar_unit.
     - name: Check that Pulsar and slurmd require the task network fence
       ansible.builtin.shell: |
         for unit in {{ tesp_pulsar_unit | quote }} slurmd.service; do
@@ -273,8 +274,9 @@
     # (scontrol reconfigure and a slurmd restart don't); it keeps its saved
     # state, so queued and running jobs carry on, and running jobs keep their
     # groups until they end. Also when Pulsar still has the group: then an
-    # earlier run stopped before getting this far. Not under --check, where
-    # gpasswd doesn't run.
+    # earlier run stopped before getting this far. (If Pulsar was restarted in
+    # between, nothing shows it; the cache then clears itself within about 10
+    # minutes.) Not under --check, where gpasswd doesn't run.
     - name: Decide whether SLURM must forget the Pulsar user's old groups
       ansible.builtin.set_fact:
         tesp_refresh_slurm_groups: >-

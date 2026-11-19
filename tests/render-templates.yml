@@ -1064,28 +1064,32 @@
         - name: SLURM forgets the docker group after gpasswd
           ansible.builtin.assert:
             that:
-              - names.index('Take the Pulsar user out of the docker group')
-                < names.index('Check whether Pulsar still runs with the docker group')
-                < names.index('Decide whether SLURM must forget the Pulsar user' ~ "'" ~ 's old groups')
-                < names.index('Make SLURM forget the Pulsar user' ~ "'" ~ 's old groups')
-                < names.index('Wait for slurmctld after the restart')
-                < names.index('Restart Pulsar without the docker group')
-              - "'tesp_pulsar_docker_group is changed' in decide.tesp_refresh_slurm_groups"
-              - "'not ansible_check_mode' in decide.tesp_refresh_slurm_groups"
-              - "'tesp_pulsar_groups.stdout' in decide.tesp_refresh_slurm_groups"
+              - steps is subset(names)
+              - names.index(steps[0]) < names.index(steps[1]) < names.index(steps[2])
+                < names.index(steps[3]) < names.index(steps[4]) < names.index(steps[5])
+              - "\"tesp_container_type != 'docker'\" in decide"
+              - "'not ansible_check_mode' in decide"
+              - "'(tesp_pulsar_docker_group is changed' in decide"
+              - "'or tesp_pulsar_groups.stdout' in decide"
               - restart['ansible.builtin.systemd_service'].state == 'restarted'
               - restart['ansible.builtin.systemd_service'].name is search('slurmctld')
               - restart.when == 'tesp_refresh_slurm_groups | bool'
               - wait.when == 'tesp_refresh_slurm_groups | bool'
           vars:
+            steps:
+              - Take the Pulsar user out of the docker group
+              - Check whether Pulsar still runs with the docker group
+              - Decide whether SLURM must forget the Pulsar user's old groups
+              - Make SLURM forget the Pulsar user's old groups
+              - Wait for slurmctld after the restart
+              - Restart Pulsar without the docker group
             tesp_play: >-
               {{ plays | selectattr('name', 'match', 'Install TESP') | first }}
             names: "{{ tesp_play.post_tasks | map(attribute='name') | list }}"
             by_name: "{{ dict(names | zip(tesp_play.post_tasks)) }}"
-            decide: >-
-              {{ by_name['Decide whether SLURM must forget the Pulsar user' ~ "'" ~ 's old groups']['ansible.builtin.set_fact'] }}
-            restart: "{{ by_name['Make SLURM forget the Pulsar user' ~ \"'\" ~ 's old groups'] }}"
-            wait: "{{ by_name['Wait for slurmctld after the restart'] }}"
+            decide: "{{ by_name[steps[2]]['ansible.builtin.set_fact'].tesp_refresh_slurm_groups }}"
+            restart: "{{ by_name[steps[3]] }}"
+            wait: "{{ by_name[steps[4]] }}"
 
         - name: Task fence renders a slurmctld port range as iptables needs it
           ansible.builtin.assert:
