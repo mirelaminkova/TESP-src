@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 import subprocess
 import time
 from pathlib import Path
@@ -51,6 +52,25 @@ def orphans(argv: list[str], env: dict[str, str], sibling: bool = False,
 
 def orphan(argv: list[str], env: dict[str, str]) -> int:
     return orphans(argv, env)[0]
+
+
+def fake_helper(tmp_path: Path) -> Path:
+    """A stand-in for Apptainer's squashfuse_ll: sleeps for argv[1] seconds.
+    A script, so that its comm is its name (a copy of sleep may be a
+    multi-call binary that refuses an unknown name)."""
+    helper = tmp_path / "squashfuse_ll"
+    helper.write_text(f"#!{sys.executable}\nimport sys, time\ntime.sleep(int(sys.argv[1]))\n")
+    helper.chmod(0o755)
+    return helper
+
+
+def assert_helper(pid: int) -> None:
+    """The fake helper runs and looks like squashfuse_ll to the Epilog."""
+    for _ in range(100):
+        if alive(pid) and Path(f"/proc/{pid}/comm").read_text().strip() == "squashfuse_ll":
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"fake squashfuse_ll {pid} isn't running")
 
 
 def run_epilog(job: str, uid: str | None = None) -> subprocess.CompletedProcess:
@@ -96,14 +116,14 @@ def test_kills_only_this_jobs_processes(procs):
 
 
 def test_kills_orphaned_squashfuse_ll(procs, tmp_path):
-    helper = tmp_path / "squashfuse_ll"
-    shutil.copy(shutil.which("sleep"), helper)
+    helper = fake_helper(tmp_path)
     pid = orphan([str(helper), "300"], env_with())
     procs.append(pid)
     ppid = Path(f"/proc/{pid}/status").read_text().split("PPid:")[1].split()[0]
     if ppid != "1":
         pytest.skip(f"orphans go to a subreaper here (PPid {ppid}), not init")
 
+    assert_helper(pid)
     assert run_epilog("7").returncode == 0
     for _ in range(50):
         if not alive(pid):
@@ -114,14 +134,14 @@ def test_kills_orphaned_squashfuse_ll(procs, tmp_path):
 
 def test_spares_orphaned_squashfuse_ll_with_a_live_session(procs, tmp_path):
     # Its session still has a process: that job (or container) isn't over.
-    helper = tmp_path / "squashfuse_ll"
-    shutil.copy(shutil.which("sleep"), helper)
+    helper = fake_helper(tmp_path)
     pid, sibling = orphans([str(helper), "300"], env_with(), sibling=True)
     procs += [pid, sibling]
     ppid = Path(f"/proc/{pid}/status").read_text().split("PPid:")[1].split()[0]
     if ppid != "1":
         pytest.skip(f"orphans go to a subreaper here (PPid {ppid}), not init")
 
+    assert_helper(pid)
     assert run_epilog("7").returncode == 0
     time.sleep(0.2)
     assert alive(pid)
@@ -130,8 +150,7 @@ def test_spares_orphaned_squashfuse_ll_with_a_live_session(procs, tmp_path):
 def test_kills_helper_once_the_jobs_own_processes_are_gone(procs, tmp_path):
     # The helper's session still holds a process of this job: the Epilog
     # kills that first, then the helper is alone.
-    helper = tmp_path / "squashfuse_ll"
-    shutil.copy(shutil.which("sleep"), helper)
+    helper = fake_helper(tmp_path)
     pid, sibling = orphans([str(helper), "300"], env_with(), sibling=True,
                            sibling_job="4245")
     procs += [pid, sibling]
@@ -142,6 +161,8 @@ def test_kills_helper_once_the_jobs_own_processes_are_gone(procs, tmp_path):
     assert b"SLURM_JOB_ID" not in Path(f"/proc/{pid}/environ").read_bytes()
     assert b"SLURM_JOB_ID=4245" in Path(f"/proc/{sibling}/environ").read_bytes()
 
+    assert_helper(pid)
+    assert alive(sibling)
     assert run_epilog("4245").returncode == 0
     for _ in range(100):
         if not alive(pid) and not alive(sibling):
@@ -168,11 +189,11 @@ def test_works_without_path(procs):
 
 def test_spares_squashfuse_ll_of_a_running_container(procs, tmp_path):
     # A running container's helper is the child of Apptainer, not of init.
-    helper = tmp_path / "squashfuse_ll"
-    shutil.copy(shutil.which("sleep"), helper)
+    helper = fake_helper(tmp_path)
     child = subprocess.Popen([str(helper), "300"], env=env_with())
     procs.append(child.pid)
 
+    assert_helper(child.pid)
     assert run_epilog("7").returncode == 0
     time.sleep(0.2)
     assert child.poll() is None
