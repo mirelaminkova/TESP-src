@@ -1,0 +1,37 @@
+#!/bin/sh
+# SLURM Epilog (issue #40): runs as root on the node after each job and
+# kills what the job left behind. ProctrackType=proctrack/linuxproc follows a
+# job's processes by parent PID, so a process that was orphaned (double fork,
+# or its parent exited first) is no longer the job's, and SLURM neither kills
+# it nor counts its memory. This kills, for the job's user only:
+#  - processes whose environment still says SLURM_JOB_ID=<this job>, which
+#    covers processes started inside the Apptainer container;
+#  - Apptainer's FUSE helper (squashfuse_ll) once orphaned to init: it has no
+#    SLURM_JOB_ID, and it outlives a container that was killed.
+# A process that clears its environment and daemonises still escapes.
+# Always exits 0: a failing Epilog drains the node.
+job=${SLURM_JOB_ID:-}
+uid=${SLURM_JOB_UID:-}
+case "$job" in '' | *[!0-9]*) exit 0 ;; esac
+case "$uid" in '' | 0 | *[!0-9]*) exit 0 ;; esac
+
+killed=''
+for d in /proc/[0-9]*; do
+    pid=${d#/proc/}
+    [ "$pid" != "$$" ] || continue
+    owner=$(stat -c %u "$d" 2>/dev/null) || continue
+    [ "$owner" = "$uid" ] || continue
+    if tr '\0' '\n' <"$d/environ" 2>/dev/null | grep -qx "SLURM_JOB_ID=$job"; then
+        kill -KILL "$pid" 2>/dev/null && killed="$killed $pid"
+        continue
+    fi
+    comm=$(cat "$d/comm" 2>/dev/null) || continue
+    ppid=$(sed -n 's/^PPid:[[:space:]]*//p' "$d/status" 2>/dev/null)
+    if [ "$comm" = squashfuse_ll ] && [ "$ppid" = 1 ]; then
+        kill -KILL "$pid" 2>/dev/null && killed="$killed $pid"
+    fi
+done
+if [ -n "$killed" ]; then
+    logger -t tesp-slurm-epilog "job $job: killed left-over processes:$killed" 2>/dev/null
+fi
+exit 0
