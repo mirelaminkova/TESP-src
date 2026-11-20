@@ -337,28 +337,9 @@
     # Lets TES clients submit jobs that are translated into Pulsar jobs and run
     # on this node's SLURM/DRMAA. Deployed as a Docker Compose stack
     # (tesp-api + MongoDB + a token-injecting Pulsar proxy).
-    # Issue #41: force: true resets the checkout's own settings.toml, which
-    # the template below overwrites, so the clone and the template changed on
-    # every run. Skipped when the checkout is already at the pinned commit
-    # with the pinned remote; tesp_api_version is a commit, so then nothing
-    # would change but that reset.
-    # The git module has no read-only way to ask this.
-    - name: Find the TESP-API checkout's commit and remote  # noqa: command-instead-of-module
-      ansible.builtin.shell: |
-        git -C {{ tesp_install_dir | quote }} rev-parse --verify --quiet 'HEAD^{commit}' &&
-        git -C {{ tesp_install_dir | quote }} remote get-url origin
-      register: tesp_api_checkout
-      changed_when: false
-      failed_when: false
-      check_mode: false
-
-    - name: Clone TESP-API repository
-      ansible.builtin.git:
-        repo: "{{ tesp_api_repo }}"
-        dest: "{{ tesp_install_dir }}"
-        version: "{{ tesp_api_version }}"
-        force: true
-      when: tesp_api_checkout.stdout_lines != [tesp_api_version, tesp_api_repo]
+    # Issue #41: without a forced reset on every run (see the task file).
+    - name: Check out TESP-API
+      ansible.builtin.include_tasks: tasks/tesp-api-checkout.yml
 
     - name: Ensure TESP-API MongoDB data directory exists
       ansible.builtin.file:

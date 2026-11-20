@@ -23,7 +23,10 @@
       - {why: a location file deleted, runs: 5, before: delete}
       - {why: a new collection pin, runs: 6, before: pin}
       - {why: no stamp (deployed before this check), runs: 7, before: unstamp}
-      - {why: re-run at the end, runs: 7}
+      - {why: re-run, runs: 7}
+      - {why: a role that fails after a change, runs: 8, before: fail, locations: [{name: tes, location: /tes3/}]}
+      - {why: the next run after the failure, runs: 9, before: unfail, locations: [{name: tes, location: /tes3/}]}
+      - {why: re-run at the end, runs: 9, locations: [{name: tes, location: /tes3/}]}
   tasks:
     - name: Create a scratch directory
       ansible.builtin.tempfile:

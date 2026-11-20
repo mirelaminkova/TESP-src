@@ -1,0 +1,36 @@
+---
+# Checks out tesp-api at tesp_api_version (issue #41). git with force: true
+# resets every tracked file, so it reported "changed" on every run: the
+# playbook writes settings.toml into the checkout, and the next run's reset
+# undid it (and the template then wrote it again). The checkout is left
+# alone when it is already at the pinned commit, from the pinned remote,
+# with no local change to a tracked file other than the ones the playbook
+# itself writes there (tesp_api_checkout_generated_files). Anything else
+# (a fresh host, a new pin, a hand-edited file) gets the forced checkout.
+#
+# Included by playbook.yml and tests/tesp-api-checkout.yml.
+
+# The git module has no read-only way to ask this. Any error (no checkout,
+# no git) prints less than three lines, and the checkout runs.
+- name: Find the TESP-API checkout's commit, remote and local changes  # noqa: command-instead-of-module
+  ansible.builtin.shell: |
+    set -eu
+    cd {{ tesp_install_dir | quote }}
+    git rev-parse --verify --quiet 'HEAD^{commit}'
+    git remote get-url origin
+    changes=$(git status --porcelain --untracked-files=no -- . \
+      {% for f in tesp_api_checkout_generated_files %}{{ (':(exclude)' ~ f) | quote }} {% endfor %})
+    if [ -z "$changes" ]; then echo clean; else echo changed; fi
+  register: tesp_api_checkout
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Clone TESP-API repository
+  ansible.builtin.git:
+    repo: "{{ tesp_api_repo }}"
+    dest: "{{ tesp_install_dir }}"
+    version: "{{ tesp_api_version }}"
+    force: true
+  register: tesp_api_checkout_clone
+  when: tesp_api_checkout.stdout_lines != [tesp_api_version, tesp_api_repo, 'clean']

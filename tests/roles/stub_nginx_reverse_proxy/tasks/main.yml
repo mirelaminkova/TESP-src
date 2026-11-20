@@ -14,3 +14,9 @@
 - name: Count the restarts
   ansible.builtin.shell: echo restart >> {{ nginx_apps_location | quote }}/../restarts
   changed_when: true
+
+# A role that fails after writing its files (tests/nginx-locations.yml).
+- name: Fail when asked to
+  ansible.builtin.fail:
+    msg: stand-in role failure
+  when: (nginx_apps_location ~ '/../fail') is exists

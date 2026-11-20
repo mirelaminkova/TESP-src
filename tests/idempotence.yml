@@ -71,6 +71,42 @@
               - ansible_failed_result.msg is search('holds no usable TES password')
             quiet: true
 
+    # As tests/render-templates.yml does for the Pulsar token: the same
+    # ansible-core as this run.
+    - name: Run the password tasks under ansible-playbook --check
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - -m
+          - ansible.cli.playbook
+          - --check
+          - -i
+          - localhost,
+          - -c
+          - local
+          - "{{ playbook_dir }}/check-mode/basic-auth-password.yml"
+          - -e
+          - "tesp_basic_auth_password_file={{ scratch.path }}/check_mode_password"
+      register: check_mode_run
+      changed_when: false
+      failed_when: false
+
+    - name: Look for a password file written in check mode
+      ansible.builtin.stat:
+        path: "{{ scratch.path }}/check_mode_password"
+      register: check_mode_password_file
+
+    - name: Check mode uses a stand-in password and writes nothing
+      ansible.builtin.assert:
+        that:
+          - check_mode_run.rc == 0
+          - not check_mode_password_file.stat.exists
+        fail_msg: >-
+          the password tasks fail or write a file under --check:
+          rc={{ check_mode_run.rc }}
+          {{ check_mode_run.stdout_lines | select('search', 'fatal|msg') | list }}
+        quiet: true
+
     - name: Remove the scratch directory
       ansible.builtin.file:
         path: "{{ scratch.path }}"
@@ -87,10 +123,14 @@
       {{ plays | map(attribute='pre_tasks', default=[]) | flatten
          + plays | map(attribute='tasks', default=[]) | flatten
          + plays | map(attribute='post_tasks', default=[]) | flatten }}
+    # The task files the playbook includes, too.
+    file_tasks: >-
+      {{ query('ansible.builtin.file', *query('ansible.builtin.fileglob', playbook_dir ~ '/../tasks/*.yml'))
+         | map('from_yaml') | flatten }}
     all_tasks: >-
-      {{ play_tasks
-         + play_tasks | map(attribute='block', default=[]) | flatten
-         + play_tasks | map(attribute='rescue', default=[]) | flatten }}
+      {{ (play_tasks + file_tasks)
+         + (play_tasks + file_tasks) | map(attribute='block', default=[]) | flatten
+         + (play_tasks + file_tasks) | map(attribute='rescue', default=[]) | flatten }}
     restart_modules:
       - ansible.builtin.service
       - ansible.builtin.systemd
@@ -129,16 +169,15 @@
             == 'tasks/basic-auth-password.yml'
         quiet: true
 
-    - name: The tesp-api checkout is reset only when it isn't at the pinned commit
+    # tests/tesp-api-checkout.yml checks when it is reset.
+    - name: The tesp-api checkout goes through tasks/tesp-api-checkout.yml
       ansible.builtin.assert:
         that:
-          - clone.when is search('tesp_api_checkout')
           - >-
-            all_tasks | map(attribute='name') | list
-            is contains("Find the TESP-API checkout's commit and remote")
+            (all_tasks | selectattr('name', 'eq', 'Check out TESP-API') | first)['ansible.builtin.include_tasks']
+            == 'tasks/tesp-api-checkout.yml'
+          - playbook_text is not search('ansible.builtin.git:')
         quiet: true
-      vars:
-        clone: "{{ all_tasks | selectattr('name', 'eq', 'Clone TESP-API repository') | first }}"
 
     - name: The nginx reverse proxy role runs only through tasks/nginx-locations.yml
       ansible.builtin.assert:

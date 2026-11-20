@@ -28,13 +28,34 @@
     state: absent
   when: step.before | default('') == 'unstamp'
 
+- name: "Make the role fail or not: {{ step.why }}"
+  ansible.builtin.file:
+    path: "{{ nginx_apps_location }}/../fail"
+    state: "{{ 'touch' if step.before == 'fail' else 'absent' }}"
+    mode: '0644'
+  when: step.before | default('') in ['fail', 'unfail']
+
 - name: "Write the nginx locations: {{ step.why }}"
-  ansible.builtin.include_tasks: ../../tasks/nginx-locations.yml
   vars:
     nginx_reverse_proxy_locations: "{{ step.locations | default(default_locations) }}"
     default_locations:
       - {name: about, location: '=/'}
       - {name: tes, location: /tes/}
+  block:
+    - name: "Run the nginx location tasks: {{ step.why }}"
+      ansible.builtin.include_tasks: ../../tasks/nginx-locations.yml
+
+    - name: "The role should have failed: {{ step.why }}"
+      ansible.builtin.assert:
+        that: step.before | default('') != 'fail'
+        quiet: true
+  rescue:
+    - name: "The role failed as expected: {{ step.why }}"
+      ansible.builtin.assert:
+        that:
+          - step.before | default('') == 'fail'
+          - ansible_failed_result.msg | default('') == 'stand-in role failure'
+        quiet: true
 
 - name: "The role ran as often as expected: {{ step.why }}"
   ansible.builtin.assert:

@@ -5,11 +5,12 @@
 # unconditionally (its own tests skip that task for idempotence), so running
 # it on every deploy restarted nginx on every re-run.
 #
-# It runs when its inputs (the locations, and the collection pinned in
-# tesp_requirements_file) or the files it wrote differ from what
-# tesp_nginx_locations_stamp recorded after its last run, so a location file
-# that was changed or deleted since is written again. The stamp is written
-# only after the role succeeded.
+# It runs when its inputs (the locations, the role's other variables, and
+# the collection pinned in tesp_requirements_file) or the files it wrote
+# differ from what tesp_nginx_locations_stamp recorded after its last run,
+# so a location file that was changed or deleted since is written again. The stamp is written
+# only after the role succeeded. It is compared as text, so a damaged stamp
+# only makes the role run again.
 #
 # Included by playbook.yml and tests/nginx-locations.yml (with a stand-in
 # role).
@@ -33,17 +34,23 @@
   ansible.builtin.set_fact:
     tesp_nginx_locations_inputs: "{{ tesp_nginx_inputs }}"
     tesp_nginx_locations_stale: >-
-      {{ {'inputs': tesp_nginx_inputs, 'files': tesp_nginx_files}
-         != (tesp_nginx_stamp_file.content | default('') | b64decode
-             | default('{}', true) | from_json) }}
+      {{ ({'inputs': tesp_nginx_inputs, 'files': tesp_nginx_files} | to_json(sort_keys=true))
+         != (tesp_nginx_stamp_file.content | default('') | b64decode | trim) }}
   vars:
+    # Hashed: nginx_reverse_proxy_auth_info holds passwords (unused today).
     tesp_nginx_inputs: >-
-      {{ (nginx_reverse_proxy_locations | to_json
+      {{ ([nginx_reverse_proxy_locations,
+           nginx_reverse_proxy_auth_info | default([]),
+           nginx_reverse_proxy_default_username | default(''),
+           nginx_reverse_proxy_default_password | default(''),
+           htpasswd_location | default('')] | to_json(sort_keys=true)
           ~ lookup('ansible.builtin.file', tesp_requirements_file)) | hash('sha256') }}
     tesp_nginx_files: >-
       {{ dict(tesp_nginx_location_files.results | map(attribute='item.name')
               | zip(tesp_nginx_location_files.results
                     | map(attribute='stat.checksum', default='missing'))) }}
+  # The inputs include the role's default password (empty here).
+  no_log: true
 
 - name: Write the nginx locations and restart nginx
   ansible.builtin.include_role:
@@ -60,7 +67,7 @@
   register: tesp_nginx_location_files_after
   when: tesp_nginx_locations_stale | bool
 
-# No secret in it; in tesp_secrets_dir because that is root's.
+# Only hashes and checksums; in tesp_secrets_dir because that is root's.
 - name: Record the nginx locations stamp
   ansible.builtin.copy:
     content: >-
@@ -68,7 +75,7 @@
           'files': dict(tesp_nginx_location_files_after.results | map(attribute='item.name')
                         | zip(tesp_nginx_location_files_after.results
                               | map(attribute='stat.checksum', default='missing')))}
-         | to_json }}
+         | to_json(sort_keys=true) }}
     dest: "{{ tesp_nginx_locations_stamp }}"
     mode: '0644'
   when: tesp_nginx_locations_stale | bool
