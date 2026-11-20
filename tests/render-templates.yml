@@ -1320,6 +1320,11 @@
               - "'Check the names of the bridges to fence' in names"
               - names.index('Find the host network bridges') < names.index('Check the names of the bridges to fence')
               - names.index('Check the names of the bridges to fence') < names.index('Install the task network fence script')
+              # With the fence off (#48) no found bridge name can stop the run.
+              - >-
+                main.post_tasks | selectattr('name', 'in', ['Find the host network bridges',
+                'Check the names of the bridges to fence', 'Remember the host network bridges'])
+                | map(attribute='when') | unique | list == ['tesp_task_fence_enabled | bool']
 
         # Without a socket, uwsgi's HTTP router reaches its worker over TCP on
         # loopback, which the fence blocks for the Pulsar user: Pulsar answers
