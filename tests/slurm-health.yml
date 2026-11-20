@@ -136,9 +136,14 @@
           - pulsar_check['ansible.builtin.include_tasks'] == 'tasks/slurm-health.yml'
           # Rendered or not, depending on ansible-core.
           - pulsar_check.vars.tesp_slurm_health_job_user is search('pulsar')
+          # After the fence is put in force or taken off (#48), so the test
+          # job runs under the fence it will have.
           - >-
             tesp_post_tasks.index('Check that the Pulsar user can run SLURM jobs')
-            > tesp_post_tasks.index('Apply the task network fence')
+            > tesp_post_tasks.index('Put the task network fence in force')
+          - >-
+            tesp_post_tasks.index('Check that the Pulsar user can run SLURM jobs')
+            > tesp_post_tasks.index('Take the task network fence off')
           - >-
             tesp_post_tasks.index('Check that the Pulsar user can run SLURM jobs')
             > tesp_post_tasks.index('Restart Pulsar without the docker group')

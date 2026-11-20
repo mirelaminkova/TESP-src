@@ -33,7 +33,16 @@
 # enable/reload, a full iptables-restore) can drop or move the jump; running
 # this script again puts it back first. Idempotent: safe to run again
 # (Ansible deploys, reboots). Prints "changed" if it had to change anything.
+#
+# With --remove (tesp_task_fence_enabled: false, issue #48) it takes the fence
+# off instead: every jump to the chain from OUTPUT, then the chain, in both
+# families. Nothing else in OUTPUT changes.
 set -eu
+case ${1:-} in
+    '') remove=0 ;;
+    --remove) remove=1 ;;
+    *) echo "usage: $0 [--remove]" >&2; exit 2 ;;
+esac
 
 CHAIN=TESP-TASKS
 TASK_USER={{ pulsar_user.name | quote }}
@@ -81,9 +90,6 @@ COMMIT
 EOF
 }
 
-# The jump, as iptables -S prints it (by uid: a re-created user gets a new one).
-JUMP="-A OUTPUT -m owner --uid-owner $(id -u "$TASK_USER") -j $CHAIN"
-
 # "<number> <rule>" for each rule of OUTPUT that jumps to $CHAIN ($1 =
 # iptables or ip6tables). Line 1 of -S is the policy.
 jumps() { "$1" -w -S OUTPUT | tail -n +2 | grep -n -- "-j $CHAIN\$" | sed 's/:/ /'; }
@@ -97,6 +103,22 @@ state() {
 }
 
 before=$(state)
+if [ "$remove" = 1 ]; then
+    for ipt in iptables ip6tables; do
+        for n in $(jumps "$ipt" | cut -d' ' -f1 | sort -rn); do
+            "$ipt" -w -D OUTPUT "$n"
+        done
+        if "$ipt" -w -S "$CHAIN" >/dev/null 2>&1; then
+            "$ipt" -w -F "$CHAIN"
+            "$ipt" -w -X "$CHAIN"
+        fi
+    done
+    [ "$before" = "$(state)" ] || echo changed
+    exit 0
+fi
+
+# The jump, as iptables -S prints it (by uid: a re-created user gets a new one).
+JUMP="-A OUTPUT -m owner --uid-owner $(id -u "$TASK_USER") -j $CHAIN"
 for ipt in iptables ip6tables; do
     # The user must exist: the owner match resolves the name when loaded.
     rules "$ipt" | "$ipt-restore" -w --noflush

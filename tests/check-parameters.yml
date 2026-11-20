@@ -297,6 +297,13 @@
       - why: a negative task runtime cap
         expect: tesp_max_wait_seconds must be
         vars: {tesp_max_wait_seconds: -1}
+      # Issue #48: a typo must not switch the fence off (or fail later).
+      - why: a task fence switch that is not true or false
+        expect: tesp_task_fence_enabled must be
+        vars: {tesp_task_fence_enabled: 'no'}
+      - why: an empty task fence switch
+        expect: tesp_task_fence_enabled must be
+        vars: {tesp_task_fence_enabled: ''}
   tasks:
     - name: Keep the default issuer list for a case
       ansible.builtin.set_fact:
@@ -304,6 +311,15 @@
 
     - name: The defaults pass
       ansible.builtin.include_tasks: ../tasks/check-parameters.yml
+
+    - name: The task fence is on by default
+      ansible.builtin.assert:
+        that: tesp_task_fence_enabled is sameas true
+
+    - name: The task fence switched off passes (also as the string -e gives)
+      ansible.builtin.include_tasks: ../tasks/check-parameters.yml
+      vars:
+        tesp_task_fence_enabled: 'false'
 
     - name: The default issuer timeout is 10 s (headroom over LS Login's 6 s answers to application/json)
       ansible.builtin.assert:

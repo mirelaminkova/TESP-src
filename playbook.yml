@@ -14,6 +14,26 @@
     - name: Check component parameters and settings
       ansible.builtin.include_tasks: tasks/check-parameters.yml
 
+    # tesp_task_fence_enabled: false (issue #48), first step. Pulsar and
+    # slurmd require the fence's unit while it is enabled, so on a host where
+    # the fence can't start (no IPv6, a broken iptables) every later restart
+    # of them (the roles' handlers, a stale Pulsar config) would fail before
+    # the rest of the off block below runs. Disabling removes those links.
+    - name: Unlink the task network fence from Pulsar and slurmd
+      when: not (tesp_task_fence_enabled | bool)
+      block:
+        - name: Look for the task network fence unit (to unlink it)
+          ansible.builtin.stat:
+            path: /etc/systemd/system/tesp-task-fence.service
+          register: tesp_task_fence_unit_early
+
+        - name: Disable the task network fence unit
+          ansible.builtin.systemd_service:
+            name: tesp-task-fence
+            enabled: false
+            daemon_reload: true
+          when: tesp_task_fence_unit_early.stat.exists
+
 - name: Install pre-requisites (SLURM, DRMAA, time sync)
   hosts: "{{ lookup('env', 'variable_host') | default('localhost', true) }}" # workaround because SRC needs localhost, but molecule needs specifc hostvars
   # slurm.conf names it as TaskProlog (group_vars/all.yml). Installed first:
@@ -252,54 +272,113 @@
         group: root
         mode: '0755'
 
-    - name: Install the task network fence systemd unit
-      ansible.builtin.template:
-        src: templates/task-fence.service.j2
-        dest: /etc/systemd/system/tesp-task-fence.service
-        owner: root
-        group: root
-        mode: '0644'
-      register: tesp_task_fence_unit
+    - name: Put the task network fence in force
+      when: tesp_task_fence_enabled | bool
+      block:
+        - name: Install the task network fence systemd unit
+          ansible.builtin.template:
+            src: templates/task-fence.service.j2
+            dest: /etc/systemd/system/tesp-task-fence.service
+            owner: root
+            group: root
+            mode: '0644'
+          register: tesp_task_fence_unit
 
-    # Under --check on a host deployed before the fence, the unit isn't
-    # there to enable.
-    - name: Enable and start the task network fence
-      ansible.builtin.systemd_service:
-        name: tesp-task-fence
-        enabled: true
-        state: started
-        daemon_reload: true
-      when: not (ansible_check_mode and tesp_task_fence_unit is changed)
+        # Under --check on a host deployed before the fence, the unit isn't
+        # there to enable.
+        - name: Enable and start the task network fence
+          ansible.builtin.systemd_service:
+            name: tesp-task-fence
+            enabled: true
+            state: started
+            daemon_reload: true
+          when: not (ansible_check_mode and tesp_task_fence_unit is changed)
 
-    # enabled: true above changes nothing where the unit is already enabled,
-    # so links added to [Install] later (RequiredBy=slurmd.service) would
-    # never appear. Checked from the links themselves, so that a run that
-    # fails later doesn't lose the fix. slurmd's unit name is fixed
-    # (galaxyproject.slurm); Pulsar's comes from tesp_pulsar_unit.
-    - name: Check that Pulsar and slurmd require the task network fence
-      ansible.builtin.shell: |
-        for unit in {{ tesp_pulsar_unit | quote }} slurmd.service; do
-          [ -L "/etc/systemd/system/$unit.requires/tesp-task-fence.service" ] || echo "$unit"
-        done
-      register: tesp_task_fence_links
-      changed_when: false
-      check_mode: false
+        # enabled: true above changes nothing where the unit is already enabled,
+        # so links added to [Install] later (RequiredBy=slurmd.service) would
+        # never appear. Checked from the links themselves, so that a run that
+        # fails later doesn't lose the fix. slurmd's unit name is fixed
+        # (galaxyproject.slurm); Pulsar's comes from tesp_pulsar_unit.
+        - name: Check that Pulsar and slurmd require the task network fence
+          ansible.builtin.shell: |
+            for unit in {{ tesp_pulsar_unit | quote }} slurmd.service; do
+              [ -L "/etc/systemd/system/$unit.requires/tesp-task-fence.service" ] || echo "$unit"
+            done
+          register: tesp_task_fence_links
+          changed_when: false
+          check_mode: false
 
-    # One call: disable-then-enable as two tasks could leave the unit disabled
-    # if the run stopped in between. Only the links change; the rules stay.
-    - name: Recreate the task network fence's [Install] links
-      ansible.builtin.command: systemctl reenable tesp-task-fence.service  # noqa: command-instead-of-module
-      changed_when: true
-      when: tesp_task_fence_links.stdout | length > 0
+        # One call: disable-then-enable as two tasks could leave the unit disabled
+        # if the run stopped in between. Only the links change; the rules stay.
+        - name: Recreate the task network fence's [Install] links
+          ansible.builtin.command: systemctl reenable tesp-task-fence.service  # noqa: command-instead-of-module
+          changed_when: true
+          when: tesp_task_fence_links.stdout | length > 0
 
-    # Also on every run, not only when the unit starts: something may have
-    # dropped the rules since (ufw, a full iptables-restore), and a changed
-    # script must be in force before tesp-api can submit tasks. The script is
-    # idempotent and says "changed" when it had to change the rules.
-    - name: Apply the task network fence
-      ansible.builtin.command: /usr/local/sbin/tesp-task-fence
-      register: tesp_task_fence_run
-      changed_when: "'changed' in tesp_task_fence_run.stdout_lines"
+        # Also on every run, not only when the unit starts: something may have
+        # dropped the rules since (ufw, a full iptables-restore), and a changed
+        # script must be in force before tesp-api can submit tasks. The script is
+        # idempotent and says "changed" when it had to change the rules.
+        - name: Apply the task network fence
+          ansible.builtin.command: /usr/local/sbin/tesp-task-fence
+          register: tesp_task_fence_run
+          changed_when: "'changed' in tesp_task_fence_run.stdout_lines"
+
+    # tesp_task_fence_enabled: false (issue #48). Pulsar's unix socket and
+    # the docker group change stay: they don't depend on the fence.
+    - name: Take the task network fence off
+      when: not (tesp_task_fence_enabled | bool)
+      block:
+        - name: Look for the task network fence unit
+          ansible.builtin.stat:
+            path: /etc/systemd/system/tesp-task-fence.service
+          register: tesp_task_fence_unit_file
+
+        # Disabled in the first play, which removed the RequiredBy links. A
+        # dependency added another way (a drop-in with Requires=, BindsTo=)
+        # would make the stop below stop Pulsar or slurmd too.
+        - name: Check that nothing still requires the task network fence
+          # The systemd module can't read reverse dependencies.
+          ansible.builtin.command: systemctl show -p RequiredBy,BoundBy,PartOf,ConsistsOf --value tesp-task-fence  # noqa: command-instead-of-module
+          register: tesp_task_fence_dependents
+          changed_when: false
+          check_mode: false
+          failed_when: >-
+            tesp_task_fence_dependents.rc != 0
+            or tesp_task_fence_dependents.stdout_lines | select | list | length > 0
+          when: tesp_task_fence_unit_file.stat.exists
+
+        - name: Stop the task network fence unit
+          ansible.builtin.systemd_service:
+            name: tesp-task-fence
+            state: stopped
+          when: tesp_task_fence_unit_file.stat.exists
+
+        - name: Remove the task network fence unit
+          ansible.builtin.file:
+            path: /etc/systemd/system/tesp-task-fence.service
+            state: absent
+
+        # A unit that failed (the rescue case) stays listed as failed after
+        # its file is gone until this.
+        - name: Forget a failed task network fence unit
+          ansible.builtin.command: systemctl reset-failed tesp-task-fence.service  # noqa: command-instead-of-module
+          changed_when: false
+          failed_when: false
+          when: tesp_task_fence_unit_file.stat.exists
+
+        - name: Reload systemd without the task network fence unit
+          ansible.builtin.systemd_service:
+            daemon_reload: true
+          when: tesp_task_fence_unit_file.stat.exists
+
+        # Last, so a run that stops part-way leaves the rules in force. The
+        # script stays installed (above), for --remove and to turn it on by
+        # hand.
+        - name: Remove the task network fence rules
+          ansible.builtin.command: /usr/local/sbin/tesp-task-fence --remove
+          register: tesp_task_fence_removed
+          changed_when: "'changed' in tesp_task_fence_removed.stdout_lines"
 
     # docker_users (group_vars/all.yml) no longer adds the Pulsar user to the
     # docker group, but it stays in on hosts deployed before. New SLURM jobs
