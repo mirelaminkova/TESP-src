@@ -580,9 +580,45 @@
         group: root
         mode: '0644'
 
+    # Issue #44: the stack's network has a fixed subnet (tesp_stack_subnet).
+    # It must not collide with another Docker network or a route of the
+    # workspace; the stack's own network, from an earlier deploy, doesn't
+    # count. Read-only, so in check mode too.
+    - name: Check that the stack's subnet is free
+      ansible.builtin.script:
+        cmd: >-
+          files/check_stack_subnet.py {{ tesp_stack_subnet | quote }}
+          {{ tesp_compose_project | quote }}
+        executable: python3
+      register: tesp_stack_subnet_check
+      changed_when: false
+      check_mode: false
+
+    # An earlier version let Docker pick the subnets, and Compose doesn't
+    # always recreate a network whose addresses changed. Taking the stack
+    # down removes its containers and networks; MongoDB's data is a bind
+    # mount and stays, and the next task starts everything again.
+    - name: Take the stack down to recreate its networks on the pinned subnets
+      community.docker.docker_compose_v2:
+        project_src: "{{ tesp_install_dir }}"
+        project_name: "{{ tesp_compose_project }}"
+        files:
+          - docker-compose.deploy.yml
+        state: absent
+      vars:
+        # The last line: anything a pty mixes in comes before it.
+        old: "{{ (tesp_stack_subnet_check.stdout_lines | last | from_json).own_subnets }}"
+        pinned: {default: "{{ tesp_stack_default_subnet }}", auth: "{{ tesp_stack_auth_subnet }}"}
+      # auth only with tokens on: with them off, Compose no longer manages a
+      # leftover auth network, and it does no harm.
+      when: >-
+        old.get('default') not in [none, pinned.default]
+        or (tesp_oauth_enabled | bool and old.get('auth') not in [none, pinned.auth])
+
     - name: Build and start the TESP-API stack
       community.docker.docker_compose_v2:
         project_src: "{{ tesp_install_dir }}"
+        project_name: "{{ tesp_compose_project }}"
         files:
           - docker-compose.deploy.yml
         build: always
@@ -592,6 +628,39 @@
         wait_timeout: 300
         # Drops the validator when tokens are switched off.
         remove_orphans: true
+
+    # The gateway trusts X-Real-IP only from the networks' bridge addresses;
+    # on any other address every client would look like one (one rate-limit
+    # bucket, no Basic source matching).
+    - name: Read the stack networks' addresses
+      ansible.builtin.command:
+        argv: [docker, network, inspect, "{{ tesp_compose_project }}_{{ item }}"]
+      register: tesp_stack_networks
+      changed_when: false
+      loop: "{{ ['default', 'auth'] if tesp_oauth_enabled | bool else ['default'] }}"
+      when: not ansible_check_mode
+
+    - name: The stack's networks have the pinned subnets and gateways
+      ansible.builtin.assert:
+        that:
+          - ipam | length == 1
+          - ipam[0].Subnet | default('') == pinned[item.item].subnet
+          - ipam[0].Gateway | default('') == pinned[item.item].gateway
+        fail_msg: >-
+          The network {{ tesp_compose_project }}_{{ item.item }} has
+          {{ ipam }}, not {{ pinned[item.item] }}. Run `docker compose -f
+          docker-compose.deploy.yml down` in {{ tesp_install_dir }} and
+          deploy again.
+        quiet: true
+      vars:
+        ipam: "{{ (item.stdout | from_json)[0].IPAM.Config }}"
+        pinned:
+          default: {subnet: "{{ tesp_stack_default_subnet }}", gateway: "{{ tesp_stack_gateway }}"}
+          auth: {subnet: "{{ tesp_stack_auth_subnet }}", gateway: "{{ tesp_stack_auth_gateway }}"}
+      loop: "{{ tesp_stack_networks.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: not ansible_check_mode
 
   handlers:
     # Notified by the galaxyproject.pulsar role when its config changes

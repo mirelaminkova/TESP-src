@@ -185,6 +185,11 @@ tesp_api_repo: "https://github.com/mirelaminkova/tesp-api.git"
 # https://github.com/mirelaminkova/tesp-api/actions/runs/40359853249
 tesp_api_version: "c3a9f2376df7a634ad6c33959800d169219b7560"
 tesp_install_dir: /srv/tesp-api
+# The stack's Compose project: what Compose would name it after that
+# directory (tesp-api by default), set explicitly so the playbook can find
+# the stack's networks (<project>_default and <project>_auth).
+tesp_compose_project: >-
+  {{ tesp_install_dir | basename | lower | regex_replace('[^a-z0-9_-]', '') }}
 # Host-localhost port of the gateway container (the /tes/ nginx proxy_pass
 # above). Named after tesp-api, which had this port before the gateway.
 tesp_api_port: 8080
@@ -272,13 +277,44 @@ tesp_basic_auth_enabled: >-
 tesp_cors_origins: >-
   {{ (src_tes_cors_origins | default('') | string).split(',')
      | map('trim') | select | list }}
-# Where the gateway takes the client's address from X-Real-IP, which the host
-# nginx (SRC's reverse-proxy role) sets: Docker's bridge networks, from which
-# the host's connections to the gateway's published port arrive: Docker's
-# default pools, 172.17.0.0/16 to 172.31.0.0/16, then 192.168.0.0/16 once
-# those are used up. Without a range, every client looks like the bridge
-# gateway: one rate-limit bucket for all and Basic sources that don't match.
-tesp_gateway_trusted_proxies: [172.16.0.0/12, 192.168.0.0/16]
+# The compose stack's networks, pinned to halves of this private IPv4 range,
+# from src_tes_stack_subnet: /16 to /27, a network address, used by nothing
+# else on the workspace (the playbook checks Docker's networks and the host's
+# routes before it starts the stack). The first half is the default network
+# (tesp-api, the gateway, MongoDB, pulsar-proxy), the second "auth" (the
+# gateway and the validator, with tokens on). Outside Docker's default pools
+# (172.17.0.0/16 to 172.31.0.0/16, 192.168.0.0/16), so Docker doesn't hand it
+# to another network first.
+tesp_stack_subnet: >-
+  {{ src_tes_stack_subnet | default('') | string | trim
+     | default('172.16.97.0/24', true) }}
+tesp_stack_half_prefix: "{{ tesp_stack_subnet.split('/')[1] | int + 1 }}"
+tesp_stack_default_subnet: "{{ tesp_stack_subnet.split('/')[0] }}/{{ tesp_stack_half_prefix }}"
+# Each network's first address is its bridge's, which Docker gives the host.
+tesp_stack_gateway: >-
+  {{ (tesp_stack_subnet.split('/')[0].split('.')[:3]
+      + [(tesp_stack_subnet.split('/')[0].split('.')[3] | int + 1) | string])
+     | join('.') }}
+# The second half, as an integer, then dotted.
+tesp_stack_auth_base: >-
+  {%- set o = tesp_stack_subnet.split('/')[0].split('.') | map('int') | list -%}
+  {{ o[0] * 16777216 + o[1] * 65536 + o[2] * 256 + o[3]
+     + 2 ** (32 - tesp_stack_half_prefix | int) }}
+tesp_stack_auth_subnet: >-
+  {%- set n = tesp_stack_auth_base | int -%}
+  {{ [n // 16777216, n // 65536 % 256, n // 256 % 256, n % 256] | join('.') }}/{{ tesp_stack_half_prefix }}
+tesp_stack_auth_gateway: >-
+  {%- set n = tesp_stack_auth_base | int + 1 -%}
+  {{ [n // 16777216, n // 65536 % 256, n // 256 % 256, n % 256] | join('.') }}
+# Who may set the client's address with X-Real-IP, as the host nginx (SRC's
+# reverse-proxy role) does: only the stack's bridge addresses (issue #44),
+# both, as Docker forwards the gateway's published port to its address on
+# either network. Not other containers, on these networks or another, which
+# connect from their own addresses. Processes on the host itself do connect
+# from them.
+tesp_gateway_trusted_proxies:
+  - "{{ tesp_stack_gateway }}/32"
+  - "{{ tesp_stack_auth_gateway }}/32"
 # Requests per second per client address on the TES API (not service info or
 # the docs). Up to the burst, faster requests are queued; beyond it they get
 # 429, which fails a Nextflow task or aborts its run (nf-ga4gh doesn't retry).

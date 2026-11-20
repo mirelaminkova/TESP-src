@@ -9,7 +9,7 @@ echo "== tests/test_*.py"
 # No __pycache__ or .pytest_cache next to the validator: its directory is the
 # image build context.
 PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider \
-    --cov=tes_validator --cov-branch --cov-report=term-missing \
+    --cov=tes_validator --cov=check_stack_subnet --cov-branch --cov-report=term-missing \
     --cov-fail-under=100 tests/
 for t in tests/*.yml; do
     echo "== $t"

@@ -213,6 +213,46 @@ else
 fi
 sleep 3
 
+# Issue #44: only the stack networks' bridge addresses, where the host's
+# connections to the published port arrive from, may set X-Real-IP. From
+# inside the stack's network (here tesp-api's container), a claimed address
+# must not get Basic from a Basic source, escape the rate limit by changing
+# the address, or claim an exempt source.
+stack_gw=$(docker network inspect -f '{{range .IPAM.Config}}{{.Gateway}}{{end}}' tesp-api_default)
+probe() {  # probe <count> <claimed X-Real-IP|each> [user:password]: JSON status counts
+    docker exec -i tesp-api python - http://gateway:8080/v1/tasks "$@" < "$here/real-ip-probe.py"
+}
+# count <json> <status>
+count() { python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get(sys.argv[2], 0))' "$1" "$2"; }
+got=$(probe 1 "$stack_gw" "$user:$password")
+if [ "$(count "$got" 401)" = 1 ]; then
+    echo "ok   stack network: Basic claiming the Basic source $stack_gw is refused"
+else
+    echo "FAIL stack network: Basic claiming the Basic source $stack_gw: $got" >&2
+    fail=1
+fi
+for claim in "$stack_gw" 198.51.100.7 each; do
+    got=$(probe 100 "$claim")
+    if [ "$(count "$got" 429)" -gt 0 ]; then
+        echo "ok   stack network: a burst claiming $claim is limited ($got)"
+    else
+        echo "FAIL stack network: a burst claiming $claim is not limited: $got" >&2
+        fail=1
+    fi
+    sleep 3
+done
+# The host's connections (the host nginx; here the runner) still set it: the
+# exempt address isn't limited, though the claim drops the runner's own
+# exemption as a Basic source.
+n429=$(burst -H 'X-Real-IP: 198.51.100.7')
+if [ "$n429" = 0 ]; then
+    echo "ok   from the host, a claimed exempt address is not limited"
+else
+    echo "FAIL from the host, the exempt address 198.51.100.7 got $n429 x 429" >&2
+    fail=1
+fi
+sleep 3
+
 # No token may end up in the logs.
 docker logs tesp-validator > "$tmp/validator.log" 2>&1
 docker logs tesp-gateway > "$tmp/gateway.log" 2>&1
