@@ -58,6 +58,21 @@
       tesp_max_wait_seconds must be a whole number of seconds, 0 for no
       limit. See "Long tasks" in the README.
 
+# Written to apptainer.conf, which Apptainer parses itself (issue #42).
+- name: Validate tesp_apptainer_mksquashfs_mem
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      # mksquashfs refuses less than 16 MiB ("-mem should be 16 Mbytes or
+      # larger"), which would fail every conversion.
+      - >-
+        tesp_apptainer_mksquashfs_mem | string is match('([1-9][0-9]*G|[1-9][0-9]*M)?\Z')
+        and not (tesp_apptainer_mksquashfs_mem | string is match('([1-9]|1[0-5])M\Z'))
+    fail_msg: >-
+      tesp_apptainer_mksquashfs_mem must be at least 16M: a whole number with
+      M or G (128M, 1G), or "" to leave apptainer.conf alone. See "Resource
+      limits" in the README.
+
 # Issue #25: what the gateway serves at /v1/service-info. The ELIXIR Cloud
 # Registry accepts only https URLs; register only test or prod there.
 - name: Validate the service info (src_tes_*, tesp_service_info_*)

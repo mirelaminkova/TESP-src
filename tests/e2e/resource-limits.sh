@@ -35,6 +35,15 @@
 #                 SLURM (EXECUTOR_ERROR/SYSTEM_ERROR, "exceeded memory
 #                 limit" in its logs) before it finishes (issue #13). Runs
 #                 ram-within first: the control for the same image.
+# Not run by default (name it):
+#   cold-image    ram_gb 0.25 with a large image (COLD_IMAGE, default
+#                 rocker/tidyverse:4.4.1, about 2 GB) that isn't cached on
+#                 the node: must reach COMPLETE, the conversion fitting the
+#                 task's memory (issue #42). Inconclusive (fails) unless the
+#                 task's logs show the conversion ("Converting OCI blobs to
+#                 SIF"), for example because the image was cached: clear it with `apptainer cache clean` as the
+#                 Pulsar user, or pick another COLD_IMAGE. TIMEOUT must cover
+#                 the download (default 240 s; use 900).
 # tesp-api reports no reason for a rejection yet (mirelaminkova/tesp-api#66);
 # on the workspace, `sacct` and slurmctld's log show it.
 #
@@ -52,6 +61,8 @@ REJECT_SECONDS=${REJECT_SECONDS:-60}
 read -r -a curl_opts <<<"${CURL_OPTS:-}"
 
 ALL_CASES=(fits cpu-too-big ram-too-big ram-within ram-overuse)
+OPT_CASES=(cold-image)
+COLD_IMAGE=${COLD_IMAGE:-rocker/tidyverse:4.4.1}
 # hog <MiB> <seconds>: a shell command that holds that much memory, every
 # page written (bytes * n), then prints "held <MiB> MiB"
 HOG_IMAGE=python:3.13-alpine
@@ -206,11 +217,25 @@ case_ram-overuse() {
     fi
 }
 
+# Apptainer converts an uncached image inside the task's job; the
+# conversion must fit a small ram_gb.
+case_cold-image() {
+    run cold-image "$(task 1 0.25 "$COLD_IMAGE" 'echo cold image ok')"
+    if [ "$STATE" != COMPLETE ]; then
+        fail "cold-image (expected COMPLETE)"
+    elif [[ "$DETAIL" != *"Converting OCI blobs to SIF"* ]]; then
+        # Apptainer's stderr shows it; without it nothing proves a conversion.
+        fail "cold-image (inconclusive: no \"Converting OCI blobs to SIF\" in the task's logs; was $COLD_IMAGE cached?)"
+    else
+        pass cold-image
+    fi
+}
+
 cases=("$@")
 [ ${#cases[@]} -gt 0 ] || cases=("${ALL_CASES[@]}")
 for c in "${cases[@]}"; do
-    if [[ " ${ALL_CASES[*]} " != *" $c "* ]]; then
-        echo "unknown case: $c (known: ${ALL_CASES[*]})" >&2
+    if [[ " ${ALL_CASES[*]} ${OPT_CASES[*]} " != *" $c "* ]]; then
+        echo "unknown case: $c (known: ${ALL_CASES[*]} ${OPT_CASES[*]})" >&2
         exit 2
     fi
 done

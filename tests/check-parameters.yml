@@ -256,6 +256,24 @@
       - why: a negative task runtime cap
         expect: tesp_max_wait_seconds must be
         vars: {tesp_max_wait_seconds: -1}
+      - why: mksquashfs memory without a unit
+        expect: tesp_apptainer_mksquashfs_mem must be
+        vars: {tesp_apptainer_mksquashfs_mem: '128'}
+      - why: a fractional mksquashfs memory
+        expect: tesp_apptainer_mksquashfs_mem must be
+        vars: {tesp_apptainer_mksquashfs_mem: 1.5G}
+      - why: mksquashfs memory below its 16 MiB minimum
+        expect: tesp_apptainer_mksquashfs_mem must be
+        vars: {tesp_apptainer_mksquashfs_mem: 15M}
+      - why: mksquashfs memory in K (1024K is below 16 MiB)
+        expect: tesp_apptainer_mksquashfs_mem must be
+        vars: {tesp_apptainer_mksquashfs_mem: 1024K}
+      - why: a trailing line break in mksquashfs memory
+        expect: tesp_apptainer_mksquashfs_mem must be
+        vars: {tesp_apptainer_mksquashfs_mem: "128M\n"}
+      - why: an apptainer.conf line break in mksquashfs memory
+        expect: tesp_apptainer_mksquashfs_mem must be
+        vars: {tesp_apptainer_mksquashfs_mem: "128M\nallow setuid = yes"}
   tasks:
     - name: Keep the default issuer list for a case
       ansible.builtin.set_fact:
