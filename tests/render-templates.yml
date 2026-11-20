@@ -856,7 +856,8 @@
               - slurm_config.ProctrackType == 'proctrack/linuxproc'
               - slurm_config.Epilog == '/usr/local/sbin/tesp-slurm-epilog'
               - >-
-                plays[1].pre_tasks | map('dict2items') | flatten
+                (plays | selectattr('name', 'eq', 'Install pre-requisites (SLURM, DRMAA, time sync)') | first).pre_tasks
+                | map('dict2items') | flatten
                 | selectattr('key', 'eq', 'ansible.builtin.copy')
                 | map(attribute='value')
                 | selectattr('dest', 'in', [tesp_slurm_epilog, '{' ~ '{ tesp_slurm_epilog }' ~ '}'])

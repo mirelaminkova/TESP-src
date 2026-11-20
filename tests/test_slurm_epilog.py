@@ -28,18 +28,29 @@ def alive(pid: int) -> bool:
     return state != "Z"
 
 
-def orphan(argv: list[str], env: dict[str, str]) -> int:
-    """Starts argv orphaned (its parent exits at once), returns its PID."""
+def orphans(argv: list[str], env: dict[str, str], sibling: bool = False,
+            sibling_job: str = "") -> list[int]:
+    """Starts argv orphaned (its parent exits at once) in a new session and
+    returns [its PID]; with sibling, also a sleep in the same session (with
+    SLURM_JOB_ID=sibling_job if given) and its PID."""
+    script = '"$@" >/dev/null 2>&1 & echo $!'
+    if sibling:
+        job = f"SLURM_JOB_ID={sibling_job} " if sibling_job else ""
+        script += f"; {job}sleep 300 >/dev/null 2>&1 & echo $!"
     out = subprocess.run(
-        ["sh", "-c", '"$@" >/dev/null 2>&1 & echo $!', "sh", *argv],
+        ["setsid", "sh", "-c", f"({script})", "sh", *argv],
         env=env, check=True, capture_output=True, text=True,
     )
-    pid = int(out.stdout)
+    pids = [int(p) for p in out.stdout.split()]
     for _ in range(50):
-        if Path(f"/proc/{pid}/status").exists():
+        if Path(f"/proc/{pids[0]}/status").exists():
             break
         time.sleep(0.02)
-    return pid
+    return pids
+
+
+def orphan(argv: list[str], env: dict[str, str]) -> int:
+    return orphans(argv, env)[0]
 
 
 def run_epilog(job: str, uid: str | None = None) -> subprocess.CompletedProcess:
@@ -94,6 +105,60 @@ def test_kills_orphaned_squashfuse_ll(procs, tmp_path):
         pytest.skip(f"orphans go to a subreaper here (PPid {ppid}), not init")
 
     assert run_epilog("7").returncode == 0
+    for _ in range(50):
+        if not alive(pid):
+            break
+        time.sleep(0.02)
+    assert not alive(pid)
+
+
+def test_spares_orphaned_squashfuse_ll_with_a_live_session(procs, tmp_path):
+    # Its session still has a process: that job (or container) isn't over.
+    helper = tmp_path / "squashfuse_ll"
+    shutil.copy(shutil.which("sleep"), helper)
+    pid, sibling = orphans([str(helper), "300"], env_with(), sibling=True)
+    procs += [pid, sibling]
+    ppid = Path(f"/proc/{pid}/status").read_text().split("PPid:")[1].split()[0]
+    if ppid != "1":
+        pytest.skip(f"orphans go to a subreaper here (PPid {ppid}), not init")
+
+    assert run_epilog("7").returncode == 0
+    time.sleep(0.2)
+    assert alive(pid)
+
+
+def test_kills_helper_once_the_jobs_own_processes_are_gone(procs, tmp_path):
+    # The helper's session still holds a process of this job: the Epilog
+    # kills that first, then the helper is alone.
+    helper = tmp_path / "squashfuse_ll"
+    shutil.copy(shutil.which("sleep"), helper)
+    pid, sibling = orphans([str(helper), "300"], env_with(), sibling=True,
+                           sibling_job="4245")
+    procs += [pid, sibling]
+    ppid = Path(f"/proc/{pid}/status").read_text().split("PPid:")[1].split()[0]
+    if ppid != "1":
+        pytest.skip(f"orphans go to a subreaper here (PPid {ppid}), not init")
+    # Like Apptainer's helper, it has no SLURM_JOB_ID; the sibling has.
+    assert b"SLURM_JOB_ID" not in Path(f"/proc/{pid}/environ").read_bytes()
+    assert b"SLURM_JOB_ID=4245" in Path(f"/proc/{sibling}/environ").read_bytes()
+
+    assert run_epilog("4245").returncode == 0
+    for _ in range(100):
+        if not alive(pid) and not alive(sibling):
+            break
+        time.sleep(0.02)
+    assert not alive(sibling)
+    assert not alive(pid)
+
+
+def test_works_without_path(procs):
+    # slurmd runs the Epilog with no PATH at all.
+    pid = orphan(["sleep", "300"], env_with(SLURM_JOB_ID="4244"))
+    procs.append(pid)
+    result = subprocess.run(
+        [str(EPILOG)], env={"SLURM_JOB_ID": "4244", "SLURM_JOB_UID": str(os.getuid())},
+        capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0
     for _ in range(50):
         if not alive(pid):
             break
