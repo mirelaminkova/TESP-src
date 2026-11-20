@@ -1,0 +1,153 @@
+---
+# One case of tests/slurm-health.yml: writes stand-ins that answer as
+# case.daemons (systemctl is-active slurmd slurmctld, one line each; from
+# the second call on case.daemons_later if set), case.states (sinfo's node
+# state, one per call; the last one repeats), case.partition (sinfo %a),
+# case.queue (squeue's job ids), case.job_rc (sbatch; 124 = timeout's) and
+# case.job_state (squeue for the test job), runs tasks/slurm-health.yml with them first on PATH,
+# and checks that it passed (case.expect_ok, and the test job ran as
+# case.expect_job or not at all) or failed with every text in case.expect.
+- name: "SLURM check: {{ case.why }}"
+  vars:
+    stubs: "{{ stub_dir.path }}/case"
+    stub_states: "{{ case.states | default(['idle']) }}"
+    stub_daemons: "{{ case.daemons | default(['active', 'active']) }}"
+    stub_daemons_later: "{{ case.daemons_later | default(stub_daemons) }}"
+  # The stand-ins first (an include can't take environment).
+  environment:
+    PATH: "{{ stubs }}:{{ lookup('ansible.builtin.env', 'PATH') }}"
+  block:
+    - name: Reset the stand-ins
+      ansible.builtin.file:
+        path: "{{ stubs }}"
+        state: "{{ item }}"
+        mode: '0755'
+      loop: [absent, directory]
+
+    - name: Write the stand-ins
+      ansible.builtin.copy:
+        dest: "{{ stubs }}/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: '0755'
+      loop:
+        - name: systemctl
+          content: |
+            #!/bin/sh
+            if [ -e "{{ stubs }}/systemctl.called" ]; then
+              printf '%s\n' {{ stub_daemons_later | map('quote') | join(' ') }}
+              {{ 'exit 0' if stub_daemons_later | unique == ['active'] else 'exit 3' }}
+            fi
+            touch "{{ stubs }}/systemctl.called"
+            printf '%s\n' {{ stub_daemons | map('quote') | join(' ') }}
+            {{ 'exit 0' if stub_daemons | unique == ['active'] else 'exit 3' }}
+        - name: sinfo
+          content: |
+            #!/bin/sh
+            # The -h -N -o '%N %T' calls take the states in turn.
+            if [ "$1 $2" = "-h -o" ]; then
+              echo "debug* {{ case.partition | default('up') }}"
+            elif [ "$1" = -h ]; then
+              n=$(cat "{{ stubs }}/sinfo.calls" 2>/dev/null || echo 0)
+              echo $((n + 1)) > "{{ stubs }}/sinfo.calls"
+              set -- {{ stub_states | map('quote') | join(' ') }}
+              [ $# -gt 0 ] || exit 0
+              [ "$n" -lt $# ] || n=$(($# - 1))
+              shift "$n"
+              [ -z "$1" ] || echo "localhost $1"
+            elif [ "$1" = -R ]; then
+              echo "REASON               USER      TIMESTAMP           NODELIST"
+              echo "Low socket*core*thread count slurm 2026-11-19T10:00:00 localhost"
+            else
+              echo "localhost {{ stub_states | last | default('unknown') }} none"
+            fi
+        - name: runuser
+          content: |
+            #!/bin/sh
+            # runuser -u <user> -- <command...>
+            echo "$2" > "{{ stubs }}/job.user"
+            shift 3
+            exec "$@"
+        - name: sbatch
+          content: |
+            #!/bin/sh
+            echo "$*" > "{{ stubs }}/job.args"
+            {{ 'echo "stand-in sbatch failed" >&2' if case.job_rc | default(0) else '' }}
+            exit {{ case.job_rc | default(0) }}
+        - name: scancel
+          content: |
+            #!/bin/sh
+            echo "scancel $*" | tee -a "{{ stubs }}/scancel.calls"
+        - name: squeue
+          content: |
+            #!/bin/sh
+            case "$*" in
+              "-h -o %i") {{ 'printf "%s\\n" ' ~ (case.queue | map('quote') | join(' ')) if case.queue | default([]) else ':' }} ;;
+              -h\ --name=*) echo {{ case.job_state | default('') | quote }} ;;
+              *) echo "stand-in squeue listing" ;;
+            esac
+        - name: slurmd.log
+          content: "stand-in slurmd log line\n"
+        - name: slurmctld.log
+          content: "stand-in slurmctld log line\n"
+
+    - name: Run the SLURM check
+      ansible.builtin.include_tasks: ../../tasks/slurm-health.yml
+      vars:
+        tesp_slurm_health_retries: 3
+        tesp_slurm_health_delay: 0
+        tesp_slurm_health_settle: 0
+        tesp_slurm_health_job_user: "{{ case.job_user | default('pulsar') }}"
+        tesp_slurmd_log_file: "{{ stubs }}/slurmd.log"
+        tesp_slurmctld_log_file: "{{ stubs }}/slurmctld.log"
+
+    - name: The check should have failed
+      ansible.builtin.fail:
+        msg: "SLURM check passed: {{ case.why }}"
+      when: not case.expect_ok | default(false)
+
+    - name: Look for the test job
+      ansible.builtin.stat:
+        path: "{{ stubs }}/job.user"
+      register: job_user_file
+
+    - name: The test job ran as expected
+      ansible.builtin.assert:
+        that: >-
+          (case.expect_job is defined
+           and lookup('ansible.builtin.file', stubs ~ '/job.user') == case.expect_job)
+          or (case.expect_job is not defined and not job_user_file.stat.exists)
+        fail_msg: "test job: expected {{ case.expect_job | default('none') }}: {{ case.why }}"
+        quiet: true
+
+    - name: The test job is bounded and runs as Pulsar's do
+      ansible.builtin.assert:
+        that:
+          - job_args is search('--wait')
+          - job_args is search('--job-name=tesp-deploy-check')
+          - job_args is search('--time=1')
+        quiet: true
+      vars:
+        job_args: "{{ lookup('ansible.builtin.file', stubs ~ '/job.args') }}"
+      when: case.expect_job is defined
+
+    - name: Look for a cancelled test job
+      ansible.builtin.stat:
+        path: "{{ stubs }}/scancel.calls"
+      register: scancel_file
+
+    - name: The test job was cancelled only if it timed out
+      ansible.builtin.assert:
+        that: scancel_file.stat.exists == (case.expect_cancel | default(false))
+        fail_msg: "scancel: expected {{ case.expect_cancel | default(false) }}: {{ case.why }}"
+        quiet: true
+  rescue:
+    - name: "Failed as expected: {{ case.why }}"
+      ansible.builtin.assert:
+        that:
+          - not case.expect_ok | default(false)
+          - ansible_failed_task.name == 'Stop the deploy because SLURM does not work'
+          - case.expect | reject('in', message) | list | length == 0
+        fail_msg: "expected {{ case.expect | default('success') }}, got: {{ message }}"
+        quiet: true
+      vars:
+        message: "{{ ansible_failed_result.msg | default('') | string }}"
