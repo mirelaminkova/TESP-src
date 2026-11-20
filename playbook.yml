@@ -151,6 +151,17 @@
       diff: false
 
   post_tasks:
+    # Cap mksquashfs, which converts an uncached image inside the task's job,
+    # so the conversion fits a small ram_gb (issue #42). apptainer.conf is
+    # read at each apptainer run: no restart.
+    - name: Cap the memory Apptainer's image conversion may use
+      ansible.builtin.lineinfile:
+        path: /etc/apptainer/apptainer.conf
+        regexp: '^#?\s*mksquashfs mem\s*='
+        line: "mksquashfs mem = {{ tesp_apptainer_mksquashfs_mem }}"
+        insertafter: '^# MKSQUASHFS MEM:'
+      when: tesp_apptainer_mksquashfs_mem | string | length > 0
+
     # The role's restart (pulsar_restart_handler_name) is a handler: if a run
     # stops after the role wrote a new app.yml but before handlers ran, the
     # next run changes nothing and Pulsar would keep the old token. So also

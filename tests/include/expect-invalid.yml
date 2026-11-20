@@ -11,6 +11,7 @@
         src_s3_endpoint_url: "{{ case.vars.src_s3_endpoint_url | default('') }}"
         workspace_fqdn: "{{ case.vars.workspace_fqdn | default('tesp.example.src.surf-hosted.nl') }}"
         tesp_max_wait_seconds: "{{ case.vars.tesp_max_wait_seconds | default(0) }}"
+        tesp_apptainer_mksquashfs_mem: "{{ case.vars.tesp_apptainer_mksquashfs_mem | default('128M') }}"
         src_tes_service_name: "{{ case.vars.src_tes_service_name | default('') }}"
         src_tes_organization_name: "{{ case.vars.src_tes_organization_name | default('') }}"
         src_tes_organization_url: "{{ case.vars.src_tes_organization_url | default('') }}"

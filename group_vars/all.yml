@@ -374,6 +374,14 @@ tesp_native_spec_ram_gb: "--mem={ram_mib}"
 # "auto" adds them for docker only. Keep it for singularity: Apptainer needs a
 # cgroups manager for these flags and fails the task without one.
 tesp_container_resource_limits: auto
+# Memory mksquashfs may use when Apptainer converts an uncached docker://
+# image to SIF (issue #42), written to apptainer.conf as "mksquashfs mem".
+# The conversion runs inside the task's SLURM job and counts against its
+# ram_gb; without a cap mksquashfs took about a third of the node's memory
+# (2 GiB of 6 GiB on the test bed for rocker/tidyverse) and the task was
+# killed. With 128M the same conversion stays under 140 MiB and took no
+# longer. A number with K, M or G; "" leaves apptainer.conf alone.
+tesp_apptainer_mksquashfs_mem: 128M
 
 # Task network fence (templates/task-fence.sh.j2, issue #45): TCP ports on
 # this host (any of its addresses: that traffic goes over lo) that the Pulsar
