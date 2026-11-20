@@ -1,0 +1,36 @@
+---
+# One deploy for tests/tesp-api-config.yml: the playbook's config tasks, then
+# the compose file, read back as compose[run], compose_src[run] and
+# labels[run] ({api: tesp-api's labels, proxy: pulsar-proxy's labels}).
+# Needs from the caller: run (a name for this deploy), scratch (the
+# tempfile result) and templates_dir (the repo's templates/).
+- name: Template the generated tesp-api config ({{ run }})
+  ansible.builtin.include_tasks: ../../tasks/tesp-api-config.yml
+
+- name: Render the compose file ({{ run }})
+  ansible.builtin.template:
+    src: "{{ templates_dir }}/tesp-api/docker-compose.yml.j2"
+    dest: "{{ scratch.path }}/docker-compose.{{ run }}.yml"
+    mode: '0600'
+
+- name: Read the compose file back ({{ run }})
+  ansible.builtin.set_fact:
+    compose: >-
+      {{ compose | default({}) | combine({run: parsed}) }}
+    compose_src: >-
+      {{ compose_src | default({}) | combine({run: src}) }}
+    labels: >-
+      {{ labels | default({}) | combine({run: {
+           'api': parsed.services['tesp-api'].labels | default({}),
+           'proxy': parsed.services['pulsar-proxy'].labels | default({})}}) }}
+  vars:
+    src: "{{ lookup('file', scratch.path ~ '/docker-compose.' ~ run ~ '.yml') }}"
+    parsed: "{{ src | from_yaml }}"
+
+- name: Look at the generated files ({{ run }})
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ tesp_settings_file }}"
+    - "{{ tesp_secrets_file }}"
+  register: config_stat

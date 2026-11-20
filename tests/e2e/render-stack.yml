@@ -8,6 +8,8 @@
 #     -e e2e_dir=/tmp/e2e [-e @tests/e2e/oauth-vars.yml]
 #
 # The TES password comes from $E2E_TES_PASSWORD, a throwaway test value.
+# Re-running it with other -e values (for example tesp_max_wait_seconds) is a
+# redeploy with a changed config.
 - name: Render the tesp-api stack for the end-to-end test
   hosts: localhost
   gather_facts: false
@@ -53,14 +55,16 @@
         - "{{ tesp_gateway_dir }}/validator"
         - "{{ tesp_validator_dir }}"
 
+    # playbook.yml's own tasks (issue #10), so the e2e checks them.
+    - name: Render the generated tesp-api config
+      ansible.builtin.include_tasks: ../../tasks/tesp-api-config.yml
+
     - name: Render the stack
       ansible.builtin.template:
         src: "{{ templates_dir }}/{{ item.src }}"
         dest: "{{ item.dest }}"
         mode: '0644'
       loop:
-        - {src: settings.toml.j2, dest: "{{ tesp_install_dir }}/settings.toml"}
-        - {src: secrets.toml.j2, dest: "{{ tesp_secrets_file }}"}
         # Outside the build context, like playbook.yml (#20).
         - {src: pulsar-token-proxy.conf.j2, dest: "{{ tesp_pulsar_proxy_conf }}"}
         - src: docker-compose.yml.j2

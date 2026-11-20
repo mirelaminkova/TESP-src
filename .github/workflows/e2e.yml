@@ -8,6 +8,8 @@ name: e2e
 # the password and keys are throwaway test values.
 # Issue #45 (job task-fence): applies the task network fence in a network
 # namespace and checks what a task user can reach.
+# Issue #10: checks that the image holds no generated config and that a
+# changed setting recreates tesp-api.
 
 on:
   pull_request:
@@ -105,6 +107,43 @@ jobs:
           echo "tesp-api moved from $old_ip to $new_ip"
           test "$old_ip" != "$new_ip"
           "$GITHUB_WORKSPACE/tests/e2e/wait-for-tesp-api.sh" http://127.0.0.1:8080 tes "$E2E_TES_PASSWORD"
+
+      # Issue #10: the generated config stays out of the image. grep exits
+      # 1 when nothing matches, 0 on a match, 2 on an error.
+      - name: the tesp-api image has no generated config
+        run: |
+          set +e
+          docker run --rm --entrypoint grep "$(docker inspect -f '{{.Image}}' tesp-api)" \
+            -rlsF -e "$E2E_TES_PASSWORD" -e e2e-pulsar-token /app
+          status=$?
+          set -e
+          test "$status" -eq 1
+
+      # Issue #10: a redeploy with a changed setting recreates tesp-api, which
+      # then uses the new value; the other containers stay as they are.
+      # --no-build and the image check: the compose file is in the build
+      # context, so a rebuild alone would also recreate tesp-api; this shows
+      # that the config label does it.
+      - name: a changed setting recreates tesp-api only
+        run: |
+          cid() { docker inspect -f '{{.Id}}' "$1"; }
+          api=$(cid tesp-api); proxy=$(cid tesp-pulsar-proxy); gateway=$(cid tesp-gateway)
+          image=$(docker inspect -f '{{.Image}}' tesp-api)
+          extra=()
+          if [ "${{ matrix.auth }}" = oauth ]; then
+            extra=(-e @tests/e2e/oauth-vars.yml -e "tesp_oauth_ca_bundle=$E2E_IDP_KEYS/ca.pem")
+          fi
+          ansible-playbook -i localhost, -c local tests/e2e/render-stack.yml \
+            -e "e2e_dir=$E2E_DIR" "${extra[@]}" -e tesp_max_wait_seconds=4321
+          (cd "$E2E_DIR/tesp-api" && docker compose up -d --no-build)
+          test "$(docker inspect -f '{{.Image}}' tesp-api)" = "$image"
+          test "$(cid tesp-api)" != "$api"
+          test "$(cid tesp-pulsar-proxy)" = "$proxy"
+          test "$(cid tesp-gateway)" = "$gateway"
+          # The app's venv; plain `python` is Poetry's own.
+          docker exec -w /app tesp-api /opt/pysetup/.venv/bin/python -c \
+            'from tesp_api.config.properties import properties as p; assert p.pulsar.status.max_wait_seconds == 4321, p.pulsar.status.max_wait_seconds'
+          tests/e2e/wait-for-tesp-api.sh http://127.0.0.1:8080 tes "$E2E_TES_PASSWORD"
 
       - name: dump logs on failure
         if: failure()
