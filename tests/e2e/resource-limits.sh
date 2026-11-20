@@ -35,6 +35,11 @@
 #                 SLURM (EXECUTOR_ERROR/SYSTEM_ERROR, "exceeded memory
 #                 limit" in its logs) before it finishes (issue #13). Runs
 #                 ram-within first: the control for the same image.
+#   cpu-pinned    cpu_cores 1, then 2: must reach COMPLETE with nproc 1 and
+#                 2, that is pinned to as many CPUs as asked for (issue
+#                 #39). Fails where the deploy warned that the node's CPUs
+#                 can't be pinned (task/none). Needs a node with 3 or more
+#                 CPUs to tell pinning from the node's size.
 # tesp-api reports no reason for a rejection yet (mirelaminkova/tesp-api#66);
 # on the workspace, `sacct` and slurmctld's log show it.
 #
@@ -51,7 +56,7 @@ TIMEOUT=${TIMEOUT:-240}
 REJECT_SECONDS=${REJECT_SECONDS:-60}
 read -r -a curl_opts <<<"${CURL_OPTS:-}"
 
-ALL_CASES=(fits cpu-too-big ram-too-big ram-within ram-overuse)
+ALL_CASES=(fits cpu-too-big ram-too-big ram-within ram-overuse cpu-pinned)
 # hog <MiB> <seconds>: a shell command that holds that much memory, every
 # page written (bytes * n), then prints "held <MiB> MiB"
 HOG_IMAGE=python:3.13-alpine
@@ -204,6 +209,19 @@ case_ram-overuse() {
     else
         pass ram-overuse
     fi
+}
+
+case_cpu-pinned() {
+    local n bad=''
+    for n in 1 2; do
+        run "cpu-pinned($n)" "$(task "$n" null alpine:3.20 "echo nproc=\$(nproc).")"
+        if [ "$STATE" != COMPLETE ]; then
+            bad+=" cpu_cores $n: expected COMPLETE;"
+        elif [[ "$DETAIL" != *"nproc=$n."* ]]; then
+            bad+=" cpu_cores $n: not pinned to $n CPU(s) (TaskPlugin isn't task/affinity?);"
+        fi
+    done
+    if [ -n "$bad" ]; then fail "cpu-pinned ($bad )"; else pass cpu-pinned; fi
 }
 
 cases=("$@")

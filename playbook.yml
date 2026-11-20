@@ -16,6 +16,33 @@
 
 - name: Install pre-requisites (SLURM, DRMAA, time sync)
   hosts: "{{ lookup('env', 'variable_host') | default('localhost', true) }}" # workaround because SRC needs localhost, but molecule needs specifc hostvars
+  pre_tasks:
+    # task/affinity pins each job to the CPUs SLURM numbers 0..N-1. Only
+    # where the node may run on all of them (see tesp_slurm_task_plugin in
+    # group_vars). Tagged always: without them SLURM falls back to task/none.
+    - name: Read the CPUs this node may run on
+      ansible.builtin.slurp:
+        src: /proc/1/status
+      register: tesp_pid1_status
+      tags: [always]
+
+    - name: Read the online CPUs
+      ansible.builtin.slurp:
+        src: /sys/devices/system/cpu/online
+      register: tesp_cpus_online
+      tags: [always]
+
+    - name: Warn that tasks won't be pinned to their CPUs
+      ansible.builtin.debug:
+        msg: >-
+          SLURM needs CPUs 0..{{ (tesp_slurm_cpus | int) - 1 }} to pin tasks, but
+          this node may run on CPUs {{ tesp_slurm_cpus_allowed | default('?', true) }}
+          (online: {{ tesp_slurm_cpus_online | default('?', true) }}).
+          TaskPlugin=task/none: a task can use more CPUs than its cpu_cores
+          (see "Resource limits" in the README).
+      when: tesp_slurm_task_plugin != 'task/affinity'
+      tags: [always]
+
   roles:
     - galaxyproject.repos
     - galaxyproject.slurm
