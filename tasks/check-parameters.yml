@@ -63,10 +63,15 @@
   ansible.builtin.assert:
     quiet: true
     that:
-      - tesp_apptainer_mksquashfs_mem | string is match('([1-9][0-9]*[KMG])?\Z')
+      # mksquashfs refuses less than 16 MiB ("-mem should be 16 Mbytes or
+      # larger"), which would fail every conversion.
+      - >-
+        tesp_apptainer_mksquashfs_mem | string is match('([1-9][0-9]*G|[1-9][0-9]*M)?\Z')
+        and not (tesp_apptainer_mksquashfs_mem | string is match('([1-9]|1[0-5])M\Z'))
     fail_msg: >-
-      tesp_apptainer_mksquashfs_mem must be a number with K, M or G (128M),
-      or "" to leave apptainer.conf alone. See "Resource limits" in the README.
+      tesp_apptainer_mksquashfs_mem must be at least 16M: a whole number with
+      M or G (128M, 1G), or "" to leave apptainer.conf alone. See "Resource
+      limits" in the README.
 
 # Issue #25: what the gateway serves at /v1/service-info. The ELIXIR Cloud
 # Registry accepts only https URLs; register only test or prod there.

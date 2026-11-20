@@ -39,8 +39,9 @@
 #   cold-image    ram_gb 0.25 with a large image (COLD_IMAGE, default
 #                 rocker/tidyverse:4.4.1, about 2 GB) that isn't cached on
 #                 the node: must reach COMPLETE, the conversion fitting the
-#                 task's memory (issue #42). Inconclusive (fails) if the image
-#                 was cached: clear it with `apptainer cache clean` as the
+#                 task's memory (issue #42). Inconclusive (fails) unless the
+#                 task's logs show the conversion ("Converting OCI blobs to
+#                 SIF"), for example because the image was cached: clear it with `apptainer cache clean` as the
 #                 Pulsar user, or pick another COLD_IMAGE. TIMEOUT must cover
 #                 the download (default 240 s; use 900).
 # tesp-api reports no reason for a rejection yet (mirelaminkova/tesp-api#66);
@@ -220,10 +221,11 @@ case_ram-overuse() {
 # conversion must fit a small ram_gb.
 case_cold-image() {
     run cold-image "$(task 1 0.25 "$COLD_IMAGE" 'echo cold image ok')"
-    if [[ "$DETAIL" == *"Using cached SIF image"* ]]; then
-        fail "cold-image (inconclusive: $COLD_IMAGE was cached)"
-    elif [ "$STATE" != COMPLETE ]; then
+    if [ "$STATE" != COMPLETE ]; then
         fail "cold-image (expected COMPLETE)"
+    elif [[ "$DETAIL" != *"Converting OCI blobs to SIF"* ]]; then
+        # Apptainer's stderr shows it; without it nothing proves a conversion.
+        fail "cold-image (inconclusive: no \"Converting OCI blobs to SIF\" in the task's logs; was $COLD_IMAGE cached?)"
     else
         pass cold-image
     fi

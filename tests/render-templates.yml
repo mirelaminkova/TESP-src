@@ -883,6 +883,51 @@
                  | selectattr('path', 'eq', '/etc/apptainer/apptainer.conf')
                  | first }}
 
+        # The task itself, on a copy of the package's apptainer.conf section:
+        # it sets the value once and then changes nothing.
+        - name: Write a stand-in for the package's apptainer.conf
+          ansible.builtin.copy:
+            dest: "{{ out.path }}/apptainer.conf"
+            mode: '0644'
+            content: |
+              # MKSQUASHFS PROCS: [UINT]
+              # mksquashfs procs = 0
+              mksquashfs procs = 0
+
+              # MKSQUASHFS MEM: [STRING]
+              # DEFAULT: Unlimited
+              # mksquashfs mem = 1G
+
+              # SHARED LOOP DEVICES: [BOOL]
+              shared loop devices = no
+
+        - name: Run the apptainer.conf task twice on it
+          ansible.builtin.lineinfile:
+            path: "{{ out.path }}/apptainer.conf"
+            regexp: "{{ conf_task.regexp }}"
+            line: "mksquashfs mem = {{ tesp_apptainer_mksquashfs_mem }}"
+          register: conf_runs
+          loop: [1, 2]
+          vars:
+            conf_task: >-
+              {{ plays | map(attribute='post_tasks', default=[]) | flatten
+                 | map('dict2items') | flatten
+                 | selectattr('key', 'eq', 'ansible.builtin.lineinfile')
+                 | map(attribute='value')
+                 | selectattr('path', 'eq', '/etc/apptainer/apptainer.conf')
+                 | first }}
+
+        - name: The cap replaced the example line, once
+          ansible.builtin.assert:
+            that:
+              - conf_runs.results[0].changed
+              - not conf_runs.results[1].changed
+              - conf_lines | select('match', '#?\s*mksquashfs mem') | list == ['mksquashfs mem = 128M']
+              - "'mksquashfs procs = 0' in conf_lines"
+              - "'shared loop devices = no' in conf_lines"
+          vars:
+            conf_lines: "{{ lookup('file', out.path ~ '/apptainer.conf').splitlines() }}"
+
         - name: SLURM gets online CPUs and at least half of a small node
           ansible.builtin.assert:
             that:
