@@ -1,0 +1,33 @@
+---
+# One step of tests/tesp-api-checkout.yml: optionally edits a file in the
+# checkout (step.edit), runs tasks/tesp-api-checkout.yml, and checks that it
+# checked out (and so reset the edit) or left the checkout alone.
+- name: "Edit a file in the checkout: {{ step.why }}"
+  ansible.builtin.copy:
+    content: "edited\n"
+    dest: "{{ tesp_install_dir }}/{{ step.edit }}"
+    mode: '0644'
+  when: step.edit is defined
+
+- name: "Check out tesp-api: {{ step.why }}"
+  ansible.builtin.include_tasks: ../../tasks/tesp-api-checkout.yml
+
+- name: "Look at the checkout: {{ step.why }}"
+  ansible.builtin.shell: |
+    set -eu
+    cd {{ tesp_install_dir | quote }}
+    git rev-parse HEAD
+    git remote get-url origin
+    git status --porcelain --untracked-files=no
+  register: checkout_state
+  changed_when: false
+
+- name: "The checkout is as expected: {{ step.why }}"
+  ansible.builtin.assert:
+    that:
+      - (tesp_api_checkout_clone is skipped) == (step.expect == 'skip')
+      - checkout_state.stdout_lines[:2] == [tesp_api_version, tesp_api_repo]
+      # A checkout resets every edit.
+      - step.expect == 'skip' or checkout_state.stdout_lines[2:] | length == 0
+    fail_msg: "expected {{ step.expect }}: {{ step.why }} ({{ checkout_state.stdout_lines }})"
+    quiet: true

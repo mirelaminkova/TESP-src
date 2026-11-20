@@ -1,0 +1,61 @@
+---
+# Issue #41: tasks/tesp-api-checkout.yml checks out tesp-api only when the
+# checkout isn't already at the pinned commit and remote, unchanged except
+# for the files the playbook writes there; against a local repository.
+#
+#   ansible-playbook -i localhost, -c local tests/tesp-api-checkout.yml
+- name: Check when the tesp-api checkout is reset
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Create a scratch directory
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: tesp-api-checkout
+      register: scratch
+
+    - name: Make a repository with two commits, and a second URL for it
+      ansible.builtin.shell: |
+        set -eu
+        git init -q "$R"
+        cd "$R"
+        git config user.email test@example.org
+        git config user.name test
+        echo 'x = 1' > settings.toml
+        echo one > README
+        git add . && git commit -qm one
+        git rev-parse HEAD
+        echo two > README
+        git commit -qam two
+        git rev-parse HEAD
+        ln -s "$R" "$R-alias"
+      environment:
+        R: "{{ scratch.path }}/repo"
+      register: repo
+      changed_when: true
+
+    - name: Run the steps
+      ansible.builtin.include_tasks: include/tesp-api-checkout-step.yml
+      loop:
+        - {why: a fresh host, expect: checkout}
+        - {why: a re-run, expect: skip}
+        - {why: the playbook's settings.toml in the checkout, expect: skip, edit: settings.toml}
+        - {why: a hand-edited tracked file, expect: checkout, edit: README}
+        - {why: a re-run after it, expect: skip}
+        - {why: a new pin, expect: checkout, version: 1}
+        - {why: a re-run at the new pin, expect: skip, version: 1}
+        - {why: another remote, expect: checkout, version: 1, alias: true}
+        - {why: 'no settings.toml exception, as after #22', expect: checkout, version: 1, alias: true, edit: settings.toml, generated: []}
+      loop_control:
+        loop_var: step
+        label: "{{ step.why }}"
+      vars:
+        tesp_install_dir: "{{ scratch.path }}/checkout"
+        tesp_api_repo: "file://{{ scratch.path }}/repo{{ '-alias' if step.alias | default(false) else '' }}"
+        tesp_api_version: "{{ repo.stdout_lines[step.version | default(0)] }}"
+        tesp_api_checkout_generated_files: "{{ step.generated | default(['settings.toml']) }}"
+
+    - name: Remove the scratch directory
+      ansible.builtin.file:
+        path: "{{ scratch.path }}"
+        state: absent

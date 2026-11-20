@@ -36,7 +36,7 @@ What the playbook sets up:
 | Host firewall rule for Pulsar's port | `templates/pulsar-firewall.*.j2`, `playbook.yml`, `group_vars/all.yml` (`pulsar_port`) |
 | Network fence for TES tasks, and Pulsar's uwsgi socket | `templates/task-fence.*.j2`, `templates/pulsar-uwsgi-socket.conf.j2`, `playbook.yml`, `group_vars/all.yml` (`tesp_task_fence_loopback_tcp_ports`, `tesp_pulsar_uwsgi_socket`, `docker_users`); see [Task network fence](#task-network-fence) |
 
-Secrets are generated at deploy time: a random Pulsar token (only used between `pulsar-proxy` and Pulsar) and a random password for the TES endpoint. The Pulsar token is generated once and kept in `/etc/tesp-api/pulsar_token` (root, 0600), so re-running the playbook keeps it.
+Secrets are generated at deploy time: a random Pulsar token (only used between `pulsar-proxy` and Pulsar) and a random password for the TES endpoint. Both are generated once and kept in `/etc/tesp-api/pulsar_token` and `/etc/tesp-api/tes_password` (root, 0600), so re-running the playbook keeps them; delete a file and re-run to change that secret. A re-run of the playbook on a deployed workspace changes nothing (no restarts) unless a setting or a pinned version changed.
 
 ## Using the catalog item
 

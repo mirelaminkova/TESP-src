@@ -1,0 +1,202 @@
+---
+# Issue #41: a re-run of playbook.yml on a deployed node changes nothing.
+#
+#   ansible-playbook -i localhost, -c local tests/idempotence.yml
+#
+# The TES password tasks (tasks/basic-auth-password.yml) keep the password,
+# and playbook.yml has no task that changes something on every run: no
+# unconditional restart, no secret made anew, no reset of the tesp-api
+# checkout, and the nginx reverse proxy role only when needed
+# (tests/nginx-locations.yml checks when).
+- name: The TES password is generated once
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Create a scratch directory
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: tes-password
+      register: scratch
+
+    - name: First run
+      ansible.builtin.include_tasks: ../tasks/basic-auth-password.yml
+      vars:
+        tesp_basic_auth_password_file: "{{ scratch.path }}/tes_password"
+
+    - name: Remember the first password
+      ansible.builtin.set_fact:
+        first_password: "{{ tesp_basic_auth_password }}"
+      no_log: true
+
+    - name: Second run
+      ansible.builtin.include_tasks: ../tasks/basic-auth-password.yml
+      vars:
+        tesp_basic_auth_password_file: "{{ scratch.path }}/tes_password"
+
+    - name: Look at the stored password file
+      ansible.builtin.stat:
+        path: "{{ scratch.path }}/tes_password"
+      register: password_file
+
+    # Not no_log: the messages name no secret, and the password is a test one.
+    - name: The second run keeps the password, and it is private
+      ansible.builtin.assert:
+        that:
+          - tesp_basic_auth_password == first_password
+          - tesp_basic_auth_password is match('^[A-Za-z0-9]{24}$')
+          - password_file.stat.mode == '0600'
+        quiet: true
+
+    - name: Store a password that is too short
+      ansible.builtin.copy:
+        content: "short\n"
+        dest: "{{ scratch.path }}/short_password"
+        mode: '0600'
+
+    - name: A short stored password stops the run
+      block:
+        - name: Run with the short password
+          ansible.builtin.include_tasks: ../tasks/basic-auth-password.yml
+          vars:
+            tesp_basic_auth_password_file: "{{ scratch.path }}/short_password"
+
+        - name: The run should have stopped
+          ansible.builtin.fail:
+            msg: a short stored TES password was accepted
+      rescue:
+        - name: Stopped by the password check
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_task.name == 'Check the stored TES password'
+              - ansible_failed_result.msg is search('holds no usable TES password')
+            quiet: true
+
+    # As tests/render-templates.yml does for the Pulsar token: the same
+    # ansible-core as this run.
+    - name: Run the password tasks under ansible-playbook --check
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - -m
+          - ansible.cli.playbook
+          - --check
+          - -i
+          - localhost,
+          - -c
+          - local
+          - "{{ playbook_dir }}/check-mode/basic-auth-password.yml"
+          - -e
+          - "tesp_basic_auth_password_file={{ scratch.path }}/check_mode_password"
+      register: check_mode_run
+      changed_when: false
+      failed_when: false
+
+    - name: Look for a password file written in check mode
+      ansible.builtin.stat:
+        path: "{{ scratch.path }}/check_mode_password"
+      register: check_mode_password_file
+
+    - name: Check mode uses a stand-in password and writes nothing
+      ansible.builtin.assert:
+        that:
+          - check_mode_run.rc == 0
+          - not check_mode_password_file.stat.exists
+        fail_msg: >-
+          the password tasks fail or write a file under --check:
+          rc={{ check_mode_run.rc }}
+          {{ check_mode_run.stdout_lines | select('search', 'fatal|msg') | list }}
+        quiet: true
+
+    - name: Remove the scratch directory
+      ansible.builtin.file:
+        path: "{{ scratch.path }}"
+        state: absent
+
+- name: The playbook has no task that changes something on every run
+  hosts: localhost
+  gather_facts: false
+  vars:
+    plays: "{{ lookup('ansible.builtin.file', '../playbook.yml') | from_yaml }}"
+    playbook_text: "{{ lookup('ansible.builtin.file', '../playbook.yml') }}"
+    # Every task in pre_tasks, tasks and post_tasks, blocks flattened.
+    play_tasks: >-
+      {{ plays | map(attribute='pre_tasks', default=[]) | flatten
+         + plays | map(attribute='tasks', default=[]) | flatten
+         + plays | map(attribute='post_tasks', default=[]) | flatten }}
+    # The task files the playbook includes, too.
+    file_tasks: >-
+      {{ query('ansible.builtin.file', *query('ansible.builtin.fileglob', playbook_dir ~ '/../tasks/*.yml'))
+         | map('from_yaml') | flatten }}
+    all_tasks: >-
+      {{ (play_tasks + file_tasks)
+         + (play_tasks + file_tasks) | map(attribute='block', default=[]) | flatten
+         + (play_tasks + file_tasks) | map(attribute='rescue', default=[]) | flatten }}
+    restart_modules:
+      - ansible.builtin.service
+      - ansible.builtin.systemd
+      - ansible.builtin.systemd_service
+  tasks:
+    - name: Every restart outside the handlers has a condition
+      ansible.builtin.assert:
+        that: item.when is defined
+        fail_msg: "{{ item.name }} restarts {{ item[module].name }} on every run; make it a handler or give it a when"
+        quiet: true
+      loop: "{{ all_tasks }}"
+      loop_control:
+        label: "{{ item.name | default('?') }}"
+      vars:
+        module: "{{ restart_modules | select('in', item) | first | default('') }}"
+      when: module != '' and item[module].state | default('') in ['restarted', 'reloaded']
+
+    - name: Chronyd restarts only when its config changes
+      ansible.builtin.assert:
+        that:
+          - slurm_play.handlers | selectattr('name', 'eq', 'Restart chronyd') | list | length == 1
+          - >-
+            (slurm_play.post_tasks | selectattr('name', 'eq', 'Deploy chrony.conf template') | first).notify
+            == 'Restart chronyd'
+        quiet: true
+      vars:
+        slurm_play: "{{ plays | selectattr('roles', 'defined') | selectattr('roles', 'contains', 'galaxyproject.slurm') | first }}"
+
+    - name: Secrets are read back, not made anew on each run
+      ansible.builtin.assert:
+        that:
+          - playbook_text is not search('random_string')
+          - playbook_text is not search("lookup\\('(ansible\\.builtin\\.)?password'")
+          - >-
+            (all_tasks | selectattr('name', 'eq', 'Get the TES password') | first)['ansible.builtin.include_tasks']
+            == 'tasks/basic-auth-password.yml'
+        quiet: true
+
+    # tests/tesp-api-checkout.yml checks when it is reset.
+    - name: The tesp-api checkout goes through tasks/tesp-api-checkout.yml
+      ansible.builtin.assert:
+        that:
+          - >-
+            (all_tasks | selectattr('name', 'eq', 'Check out TESP-API') | first)['ansible.builtin.include_tasks']
+            == 'tasks/tesp-api-checkout.yml'
+          - playbook_text is not search('ansible.builtin.git:')
+        quiet: true
+
+    - name: The S3 keys' mount point exists before the first build
+      ansible.builtin.assert:
+        that:
+          - names is contains("Create the S3 keys' mount point in the TESP-API checkout")
+          - >-
+            names.index("Create the S3 keys' mount point in the TESP-API checkout")
+            < names.index('Build and start the TESP-API stack')
+        quiet: true
+      vars:
+        names: "{{ all_tasks | map(attribute='name', default='') | list }}"
+
+    - name: The nginx reverse proxy role runs only through tasks/nginx-locations.yml
+      ansible.builtin.assert:
+        that:
+          - >-
+            plays | map(attribute='roles', default=[]) | flatten
+            | map('string') | select('search', 'nginx_reverse_proxy') | list | length == 0
+          - >-
+            (all_tasks | selectattr('name', 'eq', 'Write the nginx locations') | first)['ansible.builtin.include_tasks']
+            == 'tasks/nginx-locations.yml'
+        quiet: true

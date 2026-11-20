@@ -11,6 +11,16 @@ nginx_reverse_proxy_locations:
     # The gateway container, which fronts tesp-api (templates/tesp-api/).
     proxy_pass: "http://127.0.0.1:{{ tesp_api_port }}/"
     auth: noauth
+# Where uusrc.general.nginx_reverse_proxy writes them (its default), and
+# what it last wrote (issue #41; playbook.yml).
+nginx_apps_location: /etc/nginx/app-location-conf.d
+tesp_nginx_role: uusrc.general.nginx_reverse_proxy
+tesp_nginx_locations_stamp: "{{ tesp_secrets_dir }}/nginx-locations.json"
+# Pins the role's collection, so a new pin runs the role again.
+tesp_requirements_file: "{{ playbook_dir }}/requirements.yml"
+# The TES password (Basic), generated on the first run and reused on later
+# ones (tasks/basic-auth-password.yml). Delete it and re-run to change it.
+tesp_basic_auth_password_file: "{{ tesp_secrets_dir }}/tes_password"
 # Pulsar is not published through nginx: only tesp-api talks to it, via the
 # token-injecting pulsar-proxy sidecar (templates/tesp-api/).
 
@@ -168,6 +178,11 @@ tesp_api_repo: "https://github.com/mirelaminkova/tesp-api.git"
 # https://github.com/mirelaminkova/tesp-api/actions/runs/40359853249
 tesp_api_version: "c3a9f2376df7a634ad6c33959800d169219b7560"
 tesp_install_dir: /srv/tesp-api
+# Tracked files of the tesp-api checkout that the playbook overwrites, so
+# a change to them doesn't count as a local change that needs a forced
+# checkout (tasks/tesp-api-checkout.yml). Empty once settings.toml is no
+# longer written into the checkout (#22).
+tesp_api_checkout_generated_files: [settings.toml]
 # Host-localhost port of the gateway container (the /tes/ nginx proxy_pass
 # above). Named after tesp-api, which had this port before the gateway.
 tesp_api_port: 8080
