@@ -48,10 +48,19 @@ slurm_config:
   JobAcctGatherType: jobacct_gather/linux
   JobAcctGatherFrequency: task=10
   JobAcctGatherParams: OverMemoryKill,UsePss
+  # Track a job's processes by parent PID, not by process group (issue #40):
+  # with proctrack/pgid a process that calls setsid (or Apptainer's FUSE
+  # helper) leaves the job, so OverMemoryKill doesn't see its memory and
+  # scancel doesn't stop it. linuxproc loses a process orphaned to init, so
+  # the Epilog kills what is left of the job afterwards.
+  ProctrackType: proctrack/linuxproc
+  Epilog: "{{ tesp_slurm_epilog }}"
 # Online CPUs, as slurmd counts them; more than slurmd finds drains the node.
 tesp_slurm_cpus: >-
   {{ [ansible_facts['processor_vcpus'] | int,
       ansible_facts['processor_nproc'] | int] | min }}
+# Installed by playbook.yml from files/slurm/tesp-slurm-epilog.
+tesp_slurm_epilog: /usr/local/sbin/tesp-slurm-epilog
 # Memory (MiB) kept out of SLURM for the OS, Docker (tesp-api, MongoDB),
 # Pulsar and nginx. At most half of the node's memory is held back.
 tesp_slurm_reserved_memory_mb: 2048

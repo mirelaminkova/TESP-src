@@ -1,0 +1,65 @@
+#!/bin/sh
+# SLURM Epilog (issue #40): runs as root on the node after each job and
+# kills what the job left behind. ProctrackType=proctrack/linuxproc follows a
+# job's processes by parent PID, so a process that was orphaned (double fork,
+# or its parent exited first) is no longer the job's, and SLURM neither kills
+# it nor counts its memory. This kills, for the job's user only:
+#  - processes whose environment still says SLURM_JOB_ID=<this job>, which
+#    covers processes started inside the Apptainer container;
+#  - Apptainer's FUSE helper (squashfuse_ll) once orphaned to init and alone
+#    in its session: it has no SLURM_JOB_ID, and it outlives a container that
+#    was killed. While its container runs, Apptainer is its parent and the
+#    job's other processes share its session, so another job's is spared.
+# A process that clears its environment and daemonises still escapes.
+# Always exits 0: a failing Epilog drains the node.
+# slurmd runs the Epilog without a PATH.
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+job=${SLURM_JOB_ID:-}
+uid=${SLURM_JOB_UID:-}
+case "$job" in '' | *[!0-9]*) exit 0 ;; esac
+case "$uid" in '' | 0 | *[!0-9]*) exit 0 ;; esac
+
+# stat_field <pid> <n>: field n after the command name in /proc/<pid>/stat
+# (1 state, 2 ppid, 3 pgrp, 4 session)
+stat_field() {
+    sed 's/.*) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f"$2"
+}
+
+# alone_in_session <pid> <sid>: no other process is in session <sid>
+alone_in_session() {
+    for s in /proc/[0-9]*; do
+        [ "$s" != "/proc/$1" ] || continue
+        [ "$(stat_field "${s#/proc/}" 4)" != "$2" ] || return 1
+    done
+    return 0
+}
+
+# owned <dir>: the process is the job user's (not this script)
+owned() {
+    [ "${1#/proc/}" != "$$" ] && [ "$(stat -c %u "$1" 2>/dev/null)" = "$uid" ]
+}
+
+killed=''
+# First the job's processes, so that its session is empty for the second pass.
+for d in /proc/[0-9]*; do
+    owned "$d" || continue
+    if { tr '\0' '\n' <"$d/environ"; } 2>/dev/null | grep -qx "SLURM_JOB_ID=$job"; then
+        kill -KILL "${d#/proc/}" 2>/dev/null && killed="$killed ${d#/proc/}"
+    fi
+done
+[ -z "$killed" ] || sleep 1
+for d in /proc/[0-9]*; do
+    owned "$d" || continue
+    pid=${d#/proc/}
+    [ "$(cat "$d/comm" 2>/dev/null)" = squashfuse_ll ] || continue
+    [ "$(stat_field "$pid" 2)" = 1 ] || continue
+    sid=$(stat_field "$pid" 4)
+    [ -n "$sid" ] || continue
+    alone_in_session "$pid" "$sid" || continue
+    kill -KILL "$pid" 2>/dev/null && killed="$killed $pid"
+done
+if [ -n "$killed" ]; then
+    logger -t tesp-slurm-epilog "job $job: killed left-over processes:$killed" 2>/dev/null
+fi
+exit 0

@@ -16,6 +16,16 @@
 
 - name: Install pre-requisites (SLURM, DRMAA, time sync)
   hosts: "{{ lookup('env', 'variable_host') | default('localhost', true) }}" # workaround because SRC needs localhost, but molecule needs specifc hostvars
+  pre_tasks:
+    # Before the role restarts slurmd with Epilog set (issue #40).
+    - name: Install the SLURM Epilog that kills a job's left-over processes
+      ansible.builtin.copy:
+        src: files/slurm/tesp-slurm-epilog
+        dest: "{{ tesp_slurm_epilog }}"
+        owner: root
+        group: root
+        mode: '0755'
+
   roles:
     - galaxyproject.repos
     - galaxyproject.slurm

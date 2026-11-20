@@ -35,6 +35,9 @@
 #                 SLURM (EXECUTOR_ERROR/SYSTEM_ERROR, "exceeded memory
 #                 limit" in its logs) before it finishes (issue #13). Runs
 #                 ram-within first: the control for the same image.
+#   ram-overuse-setsid  the same, with the hog started by setsid, in its own
+#                 process group and session: SLURM must still count it and
+#                 kill the task (issue #40, proctrack/linuxproc).
 # tesp-api reports no reason for a rejection yet (mirelaminkova/tesp-api#66);
 # on the workspace, `sacct` and slurmctld's log show it.
 #
@@ -51,7 +54,7 @@ TIMEOUT=${TIMEOUT:-240}
 REJECT_SECONDS=${REJECT_SECONDS:-60}
 read -r -a curl_opts <<<"${CURL_OPTS:-}"
 
-ALL_CASES=(fits cpu-too-big ram-too-big ram-within ram-overuse)
+ALL_CASES=(fits cpu-too-big ram-too-big ram-within ram-overuse ram-overuse-setsid)
 # hog <MiB> <seconds>: a shell command that holds that much memory, every
 # page written (bytes * n), then prints "held <MiB> MiB"
 HOG_IMAGE=python:3.13-alpine
@@ -190,20 +193,32 @@ case_ram-within() {
 
 # The task must fail because SLURM killed it for its memory: the hog never
 # finished, and slurmstepd's message reached the task's logs.
+expect_killed_for_memory() {  # <case>
+    if [ -z "$ram_within_ok" ]; then
+        fail "$1 (inconclusive: the control task 'ram-within' didn't complete)"
+    elif [[ "$FAILED_STATES" != *" $STATE "* ]]; then
+        fail "$1 (expected EXECUTOR_ERROR or SYSTEM_ERROR)"
+    elif [[ "$DETAIL" == *"held 1536 MiB"* ]]; then
+        fail "$1 (the task held its memory to the end: not killed)"
+    elif [[ "$DETAIL" != *"exceeded memory limit"* ]]; then
+        fail "$1 (failed without SLURM's \"exceeded memory limit\")"
+    else
+        pass "$1"
+    fi
+}
+
 case_ram-overuse() {
     case_ram-within  # the control; runs once
     run ram-overuse "$(task 1 0.5 "$HOG_IMAGE" "$(hog 1536 90)")"
-    if [ -z "$ram_within_ok" ]; then
-        fail "ram-overuse (inconclusive: the control task 'ram-within' didn't complete)"
-    elif [[ "$FAILED_STATES" != *" $STATE "* ]]; then
-        fail "ram-overuse (expected EXECUTOR_ERROR or SYSTEM_ERROR)"
-    elif [[ "$DETAIL" == *"held 1536 MiB"* ]]; then
-        fail "ram-overuse (the task held its memory to the end: not killed)"
-    elif [[ "$DETAIL" != *"exceeded memory limit"* ]]; then
-        fail "ram-overuse (failed without SLURM's \"exceeded memory limit\")"
-    else
-        pass ram-overuse
-    fi
+    expect_killed_for_memory ram-overuse
+}
+
+# setsid puts the hog in a new process group: proctrack/pgid loses it, and the
+# shell waits for it so the task lasts as long as the hog.
+case_ram-overuse-setsid() {
+    case_ram-within
+    run ram-overuse-setsid "$(task 1 0.5 "$HOG_IMAGE" "setsid $(hog 1536 90) & wait")"
+    expect_killed_for_memory ram-overuse-setsid
 }
 
 cases=("$@")
