@@ -573,6 +573,21 @@
           ansible.builtin.set_fact:
             tesp_validator_conf_checksum: "{{ tesp_validator_conf.checksum | default('check-mode') }}"
 
+    # Issue #41: Docker creates the mount point of the S3 keys
+    # (/app/.secrets.toml, see the compose file) in the checkout, the image
+    # build context, when tesp-api first starts. The next run's build then
+    # saw a new file and rebuilt the image once. An empty file from the
+    # start; times preserved, so it never reports a change.
+    - name: Create the S3 keys' mount point in the TESP-API checkout
+      ansible.builtin.file:
+        path: "{{ tesp_install_dir }}/.secrets.toml"
+        state: touch
+        owner: root
+        group: root
+        mode: '0644'
+        modification_time: preserve
+        access_time: preserve
+
     - name: Template TESP-API deployment compose file
       ansible.builtin.template:
         src: templates/tesp-api/docker-compose.yml.j2

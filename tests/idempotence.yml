@@ -179,6 +179,17 @@
           - playbook_text is not search('ansible.builtin.git:')
         quiet: true
 
+    - name: The S3 keys' mount point exists before the first build
+      ansible.builtin.assert:
+        that:
+          - names is contains("Create the S3 keys' mount point in the TESP-API checkout")
+          - >-
+            names.index("Create the S3 keys' mount point in the TESP-API checkout")
+            < names.index('Build and start the TESP-API stack')
+        quiet: true
+      vars:
+        names: "{{ all_tasks | map(attribute='name', default='') | list }}"
+
     - name: The nginx reverse proxy role runs only through tasks/nginx-locations.yml
       ansible.builtin.assert:
         that:
