@@ -1231,6 +1231,7 @@
                               'Check that nothing still requires the task network fence',
                               'Stop the task network fence unit',
                               'Remove the task network fence unit',
+                              'Forget a failed task network fence unit',
                               'Reload systemd without the task network fence unit',
                               'Remove the task network fence rules']
               - "'RequiredBy' in off_block[0].block[1]['ansible.builtin.command']"
@@ -1242,7 +1243,7 @@
               - early[0].block[1]['ansible.builtin.systemd_service'].daemon_reload is sameas true
               - plays[0].tasks | map(attribute='name') | list | last == 'Unlink the task network fence from Pulsar and slurmd'
               - off_block[0].block[2]['ansible.builtin.systemd_service'].state == 'stopped'
-              - off_block[0].block[5]['ansible.builtin.command'] == '/usr/local/sbin/tesp-task-fence --remove'
+              - off_block[0].block[6]['ansible.builtin.command'] == '/usr/local/sbin/tesp-task-fence --remove'
               - "'Apply the task network fence' in (on_block[0].block | map(attribute='name'))"
               - "'Take the Pulsar user out of the docker group' in (main.post_tasks | map(attribute='name'))"
               - "'--remove) remove=1' in files['task-fence.sh']"

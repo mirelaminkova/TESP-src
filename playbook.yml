@@ -359,6 +359,14 @@
             path: /etc/systemd/system/tesp-task-fence.service
             state: absent
 
+        # A unit that failed (the rescue case) stays listed as failed after
+        # its file is gone until this.
+        - name: Forget a failed task network fence unit
+          ansible.builtin.command: systemctl reset-failed tesp-task-fence.service  # noqa: command-instead-of-module
+          changed_when: false
+          failed_when: false
+          when: tesp_task_fence_unit_file.stat.exists
+
         - name: Reload systemd without the task network fence unit
           ansible.builtin.systemd_service:
             daemon_reload: true
