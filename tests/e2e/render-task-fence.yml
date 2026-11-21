@@ -17,6 +17,9 @@
     - name: Make "nobody" the task user
       ansible.builtin.set_fact:
         pulsar_user: {name: nobody}
+        # What playbook.yml would find on the test's host: a bridge no
+        # default pattern covers (check-task-fence.sh creates it).
+        tesp_task_fence_found_bridges: [docker0, br-tesp, tesp-custom]
 
     - name: Render the fence
       ansible.builtin.template:

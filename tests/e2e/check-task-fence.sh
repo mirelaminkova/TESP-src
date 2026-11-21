@@ -7,8 +7,9 @@
 # The fence must have been rendered for <task user> (render-task-fence.yml
 # uses "nobody"). Root stands in for every other user. Stand-ins for the
 # workspace: services on loopback and on the node's own addresses, and, in a
-# second namespace behind veth links, containers behind "docker0" and a
-# "br-*" bridge, the cloud metadata address and a host outside. Every target
+# second namespace behind veth links, containers behind "docker0", a "br-*"
+# bridge and a custom-named one, the cloud metadata address and a host
+# outside. Every target
 # is first shown reachable without the fence, so a "refused" afterwards is the
 # fence's doing. Needs root, iproute2, iptables, ip6tables, setpriv, python3.
 set -euo pipefail
@@ -29,6 +30,7 @@ fail() { printf 'FAIL %s\n' "$1"; fails=$((fails + 1)); }
 
 # ---- Stand-ins ------------------------------------------------------------
 mount -t tmpfs tmpfs /run   # private /run: netns mounts, xtables lock
+mount -t sysfs sysfs /sys   # /sys/class/net of this namespace (find-bridges.sh)
 ip netns add peer
 ip link set lo up
 ip netns exec peer ip link set lo up
@@ -47,6 +49,10 @@ veth() {
 }
 veth docker0:172.31.0.1/24 172.31.0.2/24
 veth br-tesp:172.30.0.1/24 172.30.0.2/24 172.30.0.3/24
+# A bridge with a name no default pattern covers (a Docker network with
+# com.docker.network.bridge.name, lxdbr0, ...): render-task-fence.yml passes
+# it as found on the host, as the playbook does (issue #49).
+veth tesp-custom:172.29.0.1/24 172.29.0.2/24
 veth ext0:198.51.100.1/24 198.51.100.2/24 169.254.169.254/32
 ip -6 addr add fd00:51::1/64 dev ext0 nodad
 ip netns exec peer ip -6 addr add fd00:51::2/64 dev p-ext0 nodad
@@ -114,13 +120,13 @@ while True:
 # host.docker.internal path), is the task user's own listener below.
 fenced_tcp=(127.0.0.1:8080 127.0.0.1:22 10.99.0.10:443 ::1:8080 fd00:99::10:22
             127.0.0.1:8913 10.99.0.10:8913 172.31.0.1:8913
-            172.31.0.2:27017 172.30.0.2:8080 172.30.0.3:8913 169.254.169.254:80)
+            172.31.0.2:27017 172.30.0.2:8080 172.30.0.3:8913 172.29.0.2:5432 169.254.169.254:80)
 fenced_udp=(127.0.0.1:5353 10.99.0.10:5353 ::1:5353 172.31.0.2:5353)
 for t in 127.0.0.1:8080 127.0.0.1:22 10.99.0.10:443 ::1:8080 fd00:99::10:22 127.0.0.1:6817 127.0.0.53:53; do
     serve tcp "${t%:*}" "${t##*:}"
 done
 for t in 127.0.0.1:5353 10.99.0.10:5353 ::1:5353 127.0.0.53:53; do serve udp "${t%:*}" "${t##*:}"; done
-for t in 172.31.0.2:27017 172.30.0.2:8080 172.30.0.3:8913 169.254.169.254:80 198.51.100.2:443; do
+for t in 172.31.0.2:27017 172.30.0.2:8080 172.30.0.3:8913 172.29.0.2:5432 169.254.169.254:80 198.51.100.2:443; do
     serve tcp "${t%:*}" "${t##*:}" "" peer
 done
 for t in 172.31.0.2:5353 198.51.100.2:53; do serve udp "${t%:*}" "${t##*:}" "" peer; done
@@ -267,6 +273,22 @@ expect "on again: task -/-> loopback 8080" refused tcp 127.0.0.1 8080 "$task_use
 expect "on again: task -/-> [::1]:8080" refused tcp ::1 8080 "$task_user"
 # An unknown argument is an error, not a run that applies (or removes) rules.
 if sh "$fence" --bogus >/dev/null 2>&1; then fail "an unknown argument was accepted"; else pass "an unknown argument is refused"; fi
+
+# ---- files/find-bridges.sh: what playbook.yml passes on as found bridges -----
+# Linux bridges only (not the veth links above), without one that carries a
+# default route (the uplink), IPv4 or IPv6.
+find_bridges="$(dirname "$0")/../../files/find-bridges.sh"
+ip link add tesp-br0 type bridge; ip link set tesp-br0 up
+ip link add upl0 type bridge; ip link set upl0 up
+ip addr add 192.0.2.1/24 dev upl0; ip route add default via 192.0.2.254 dev upl0
+ip link add upl6 type bridge; ip link set upl6 up
+ip -6 addr add fd00:77::1/64 dev upl6 nodad; ip -6 route add default via fd00:77::fe dev upl6
+got=$(sh "$find_bridges" | sort | tr '\n' ' ')
+if [ "$got" = "tesp-br0 " ]; then pass "find-bridges.sh: tesp-br0 found, uplinks left out"; else fail "find-bridges.sh printed: $got"; fi
+ip route del default; ip -6 route del default
+got=$(sh "$find_bridges" | sort | tr '\n' ' ')
+if [ "$got" = "tesp-br0 upl0 upl6 " ]; then pass "find-bridges.sh: without default routes, every bridge"; else fail "find-bridges.sh without default routes printed: $got"; fi
+for b in tesp-br0 upl0 upl6; do ip link del "$b"; done
 
 echo
 if [ "$fails" = 0 ]; then echo "task fence: all checks passed"; else echo "task fence: $fails check(s) failed"; exit 1; fi

@@ -449,6 +449,33 @@ tesp_task_fence_loopback_tcp_ports:
   # iptables needs (6817:6818).
   - "{{ slurm_config.SlurmctldPort | default(6817) }}"
 
+# Bridges whose containers or guests tasks must not reach (issue #49): iptables
+# interface names, a trailing + matching any name that starts with the rest.
+# Docker's default bridge and compose networks. The playbook adds every other
+# Linux bridge it finds on the host when it runs (a Docker network with a
+# custom com.docker.network.bridge.name, lxdbr0, virbr0), except one that
+# carries a default route; list here bridges created later, or re-run the
+# playbook after creating them.
+tesp_task_fence_bridge_interfaces: [docker0, "br-+"]
+# Up to 15 characters (IFNAMSIZ), letters, digits, ., _ and -, + only last.
+tesp_task_fence_interface_re: '[A-Za-z0-9_.-]{1,15}\Z|[A-Za-z0-9_.-]{1,14}\+\Z'
+# Set by playbook.yml: the bridges on the host (/sys/class/net/*/bridge).
+# tesp_task_fence_found_bridges: []
+# What the fence refuses: the patterns, then each found bridge none of them
+# covers (exact name, or prefix of a pattern ending in +).
+tesp_task_fence_interfaces: >-
+  {{ tesp_task_fence_bridge_interfaces | map('string') | list
+     + (tesp_task_fence_found_bridges | default([]) | map('string')
+        | reject('in', tesp_task_fence_bridge_interfaces | map('string')
+                       | reject('match', '.*\+\Z') | list)
+        | reject('match', tesp_task_fence_covered_re) | list) }}
+tesp_task_fence_covered_re: >-
+  {{ '(' ~ (tesp_task_fence_bridge_interfaces | map('string') | select('match', '.*\+\Z')
+            | map('regex_replace', '\+\Z', '') | map('regex_escape')
+            | join('|')) ~ ')'
+     if tesp_task_fence_bridge_interfaces | map('string') | select('match', '.*\+\Z') | list
+     else '(?!)' }}
+
 # S3 storage for s3://bucket/key task inputs and outputs (see "Using S3" in the
 # README). Set from the optional src_s3_* component parameters; with none set,
 # tesp-api uses AWS S3 anonymously (public buckets only). Values are trimmed

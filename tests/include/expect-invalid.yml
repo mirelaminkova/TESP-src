@@ -41,6 +41,7 @@
         tesp_oauth_audit_tag_keys: "{{ case.vars.tesp_oauth_audit_tag_keys | default([]) }}"
         tesp_oauth_ca_bundle: "{{ case.vars.tesp_oauth_ca_bundle | default('') }}"
         tesp_task_fence_enabled: "{{ case.vars.tesp_task_fence_enabled | default(true) }}"
+        tesp_task_fence_bridge_interfaces: "{{ case.vars.tesp_task_fence_bridge_interfaces | default(['docker0', 'br-+']) }}"
 
     - name: The checks should have failed
       ansible.builtin.fail:

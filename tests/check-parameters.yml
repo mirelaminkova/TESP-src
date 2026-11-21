@@ -304,6 +304,26 @@
       - why: an empty task fence switch
         expect: tesp_task_fence_enabled must be
         vars: {tesp_task_fence_enabled: ''}
+      # Issue #49: names go into the fence script, so only what iptables
+      # takes as an interface: up to 15 characters, + only at the end.
+      - why: a fence interface with a space
+        expect: Invalid task fence interfaces
+        vars: {tesp_task_fence_bridge_interfaces: ['docker0', 'br 0']}
+      - why: a fence interface with + inside
+        expect: Invalid task fence interfaces
+        vars: {tesp_task_fence_bridge_interfaces: ['a+b']}
+      - why: a fence interface over 15 characters
+        expect: Invalid task fence interfaces
+        vars: {tesp_task_fence_bridge_interfaces: ['abcdefghijklmnop']}
+      - why: an empty fence interface
+        expect: Invalid task fence interfaces
+        vars: {tesp_task_fence_bridge_interfaces: ['']}
+      - why: fence interfaces as a string, not a list
+        expect: Invalid task fence interfaces
+        vars: {tesp_task_fence_bridge_interfaces: 'docker0'}
+      - why: a fence interface with shell syntax
+        expect: Invalid task fence interfaces
+        vars: {tesp_task_fence_bridge_interfaces: ['$(id)']}
   tasks:
     - name: Keep the default issuer list for a case
       ansible.builtin.set_fact:
